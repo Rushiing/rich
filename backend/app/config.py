@@ -12,7 +12,11 @@ class Settings(BaseSettings):
     AUTH_SECRET: str = "change-me-to-32-bytes-of-random-hex"
     DATABASE_URL: str = "postgresql+psycopg://rich:rich@localhost:5432/rich"
     FRONTEND_ORIGIN: str = "http://localhost:3000"
+
+    # Claude API. ANTHROPIC_BASE_URL lets you point to a proxy/wrapper service
+    # (e.g., the user's zenmux.ai endpoint). Empty = use the official endpoint.
     ANTHROPIC_API_KEY: str = ""
+    ANTHROPIC_BASE_URL: str = ""
 
     # Toggle the in-process APScheduler. Set False during local tests / when
     # running multiple replicas (only one should schedule).

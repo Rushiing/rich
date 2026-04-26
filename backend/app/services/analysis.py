@@ -173,7 +173,10 @@ def generate(
             raise RuntimeError(
                 "ANTHROPIC_API_KEY not set. Add it in Railway → backend → Variables."
             )
-        client = Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+        kwargs: dict[str, Any] = {"api_key": settings.ANTHROPIC_API_KEY}
+        if settings.ANTHROPIC_BASE_URL:
+            kwargs["base_url"] = settings.ANTHROPIC_BASE_URL
+        client = Anthropic(**kwargs)
 
     msg = client.messages.create(
         model=MODEL,
