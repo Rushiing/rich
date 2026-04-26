@@ -45,6 +45,30 @@ export type StockDetail = {
 
 export type SnapshotResult = { codes: number; inserted: number; post_close: boolean };
 
+export type KeyTable = {
+  actionable: string;
+  buy_price_low: number;
+  buy_price_high: number;
+  sell_price_low: number;
+  sell_price_high: number;
+  position_pct: number;
+  hold_period: string;
+  stop_loss: number;
+  confidence: string;
+  one_line_reason: string;
+};
+
+export type StockAnalysis = {
+  code: string;
+  key_table: KeyTable;
+  deep_analysis: string;
+  model: string;
+  strategy: string;
+  created_at: string;
+  snapshot_id: number | null;
+  is_fresh: boolean;
+};
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
@@ -77,4 +101,8 @@ export const api = {
   stockDetail: (code: string) => request<StockDetail>(`/api/stocks/${code}`),
   triggerSnapshot: () =>
     request<SnapshotResult>("/api/stocks/snapshot", { method: "POST" }),
+  getAnalysis: (code: string) =>
+    request<StockAnalysis | null>(`/api/stocks/${code}/analysis`),
+  generateAnalysis: (code: string) =>
+    request<StockAnalysis>(`/api/stocks/${code}/analysis`, { method: "POST" }),
 };

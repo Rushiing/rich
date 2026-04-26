@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session
 
 from ..auth import require_auth
 from ..db import get_db
-from ..models import Snapshot, Watchlist
+from ..models import Analysis, Snapshot, Watchlist
+from ..services.analysis import generate as analysis_generate, get_cached as analysis_cached
 from ..services.cron import run_snapshot_job
 from ..services.signals import has_strong
 
@@ -147,3 +148,57 @@ def stock_detail(code: str, db: Session = Depends(get_db)):
         notices=(s.notices if s else None) or [],
         lhb=(s.lhb if s else None),
     )
+
+
+# --- Phase 3: deep analysis ----------------------------------------------
+
+
+class AnalysisOut(BaseModel):
+    code: str
+    key_table: dict[str, Any]
+    deep_analysis: str
+    model: str
+    strategy: str
+    created_at: str
+    snapshot_id: int | None
+    is_fresh: bool
+
+    @classmethod
+    def from_row(cls, row: Analysis, is_fresh: bool) -> "AnalysisOut":
+        return cls(
+            code=row.code,
+            key_table=row.key_table,
+            deep_analysis=row.deep_analysis,
+            model=row.model,
+            strategy=row.strategy,
+            created_at=row.created_at.isoformat() if row.created_at else "",
+            snapshot_id=row.snapshot_id,
+            is_fresh=is_fresh,
+        )
+
+
+@router.get("/{code}/analysis", response_model=AnalysisOut | None)
+def get_analysis(code: str, db: Session = Depends(get_db)):
+    """Return cached analysis if it exists and is < 4h old. Returns null otherwise.
+
+    Frontend reads this on page load; if null it shows a "生成" CTA.
+    """
+    row = db.query(Analysis).filter(Analysis.code == code).first()
+    if row is None:
+        return None
+    fresh = analysis_cached(db, code) is not None
+    return AnalysisOut.from_row(row, is_fresh=fresh)
+
+
+@router.post("/{code}/analysis", response_model=AnalysisOut)
+def generate_analysis(code: str, db: Session = Depends(get_db)):
+    """Force regenerate. Returns the new row."""
+    if not db.query(Watchlist).filter(Watchlist.code == code).first():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not in watchlist")
+    try:
+        row = analysis_generate(db, code)
+    except RuntimeError as e:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    return AnalysisOut.from_row(row, is_fresh=True)

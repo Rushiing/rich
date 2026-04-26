@@ -53,3 +53,19 @@ class Snapshot(Base):
         Index("ix_snapshots_code_ts", "code", "ts"),
         Index("ix_snapshots_ts", "ts"),
     )
+
+
+class Analysis(Base):
+    """Cached LLM-generated analysis for a stock. One row per code (latest only)."""
+
+    __tablename__ = "analyses"
+
+    code: Mapped[str] = mapped_column(String(6), primary_key=True)
+    key_table: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    deep_analysis: Mapped[str] = mapped_column(String, nullable=False)  # markdown
+    snapshot_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    model: Mapped[str] = mapped_column(String(50), nullable=False)
+    strategy: Mapped[str] = mapped_column(String(50), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

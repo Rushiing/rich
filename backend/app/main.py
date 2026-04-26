@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .db import Base, engine
-from .models import Snapshot, Watchlist  # noqa: F401  (register tables with metadata)
+from .models import Analysis, Snapshot, Watchlist  # noqa: F401  (register tables with metadata)
 from .routes import auth as auth_routes
 from .routes import stocks as stocks_routes
 from .routes import watchlist as watchlist_routes
