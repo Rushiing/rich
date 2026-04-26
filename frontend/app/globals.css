@@ -1,0 +1,45 @@
+/* Global resets + mobile responsive helpers. Inline styles handle layout per
+   component; this file owns media queries (which can't live in inline style). */
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+}
+
+/* Tighten up vertical rhythm on small screens. */
+@media (max-width: 640px) {
+  main {
+    padding: 12px !important;
+  }
+  h1 {
+    font-size: 16px !important;
+  }
+  /* Tables: many columns get cramped on phones. Allow horizontal scroll inside
+     the .table-scroll wrapper rather than blowing out the viewport. */
+  .table-scroll table {
+    min-width: 720px;
+  }
+}
+
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  margin: 0 -4px;  /* let the scrollbar hug the edges on narrow screens */
+}
+
+/* Mobile-friendly tap targets. */
+button {
+  min-height: 32px;
+  -webkit-tap-highlight-color: rgba(255,255,255,0.05);
+}
+
+/* Make sure text doesn't get tiny in detail/markdown sections on phones. */
+@media (max-width: 640px) {
+  body {
+    font-size: 14px;
+  }
+}

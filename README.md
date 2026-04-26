@@ -9,9 +9,9 @@ A股盯盘与深度解析工具 — 内部使用，不超过 10 人共用。
 
 - ✅ Phase 0 — 骨架（Next.js + FastAPI + Postgres + 单密码登录）
 - ✅ Phase 1 — 自选池（CRUD + 粘贴/Excel/CSV 导入 + akshare 校验）
-- ⏳ Phase 2 — 抓取与盯盘
-- ⏳ Phase 3 — 深度解析
-- ⏳ Phase 4 — 移动端 + PWA
+- ✅ Phase 2 — 小时级抓取 + 信号引擎 + 盯盘视图
+- ✅ Phase 3 — Claude 驱动的关键表 + 500 字深度解析（4h 缓存）
+- ✅ Phase 4 — 移动端响应式 + PWA（可加桌面）
 
 ## 快速开始（本机）
 

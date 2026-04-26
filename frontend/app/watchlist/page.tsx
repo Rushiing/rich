@@ -49,6 +49,7 @@ export default function WatchlistPage() {
         共 {items.length} 支
       </div>
 
+      <div className="table-scroll">
       <table style={tableStyle}>
         <thead>
           <tr style={{ color: "#888", fontSize: 12 }}>
@@ -87,6 +88,7 @@ export default function WatchlistPage() {
           ))}
         </tbody>
       </table>
+      </div>
 
       {showImport && (
         <ImportDialog

@@ -73,6 +73,7 @@ export default function StocksPage() {
         <span style={{ marginLeft: 12 }}>红色 = 强信号</span>
       </div>
 
+      <div className="table-scroll">
       <table style={tableStyle}>
         <thead>
           <tr style={{ color: "#888", fontSize: 12 }}>
@@ -158,6 +159,7 @@ export default function StocksPage() {
           ))}
         </tbody>
       </table>
+      </div>
     </main>
   );
 }

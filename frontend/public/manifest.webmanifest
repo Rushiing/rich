@@ -1,9 +1,19 @@
 {
-  "name": "rich",
+  "name": "rich — A股盯盘",
   "short_name": "rich",
+  "description": "A股盯盘与深度解析（内部使用）",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
+  "orientation": "portrait",
   "background_color": "#0a0a0a",
   "theme_color": "#0a0a0a",
-  "icons": []
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "type": "image/svg+xml",
+      "sizes": "any",
+      "purpose": "any maskable"
+    }
+  ]
 }
