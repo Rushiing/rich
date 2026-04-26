@@ -1,18 +1,218 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { api, StockRow } from "../../lib/api";
+
+const SIGNAL_LABEL: Record<string, string> = {
+  limit_up: "涨停",
+  limit_down: "跌停",
+  big_inflow: "主力大额流入",
+  big_outflow: "主力大额流出",
+  important_notice: "重要公告",
+  lhb: "上龙虎榜",
+};
+
+const exchangeLabel: Record<string, string> = {
+  sh: "上",
+  sz: "深",
+  bj: "北",
+  unknown: "?",
+};
+
 export default function StocksPage() {
+  const [rows, setRows] = useState<StockRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  async function refresh() {
+    setLoading(true);
+    try {
+      setRows(await api.listStocks());
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    refresh();
+  }, []);
+
+  async function manualSnapshot() {
+    setRefreshing(true);
+    setMsg(null);
+    try {
+      const r = await api.triggerSnapshot();
+      setMsg(`抓取完成：${r.inserted} 行（${r.codes} 支股票）`);
+      await refresh();
+    } catch (e) {
+      setMsg(`抓取失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
   return (
-    <main style={{ padding: 20, maxWidth: 880, margin: "0 auto" }}>
+    <main style={{ padding: 20, maxWidth: 1100, margin: "0 auto" }}>
       <header style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
         <h1 style={{ fontSize: 18, margin: 0 }}>盯盘</h1>
-        <a
-          href="/watchlist"
-          style={{ color: "#9ca3af", fontSize: 13, textDecoration: "none", padding: "6px 10px" }}
-        >
-          自选池
-        </a>
+        <div style={{ display: "flex", gap: 8 }}>
+          <a href="/watchlist" style={linkStyle}>自选池</a>
+          <button onClick={manualSnapshot} disabled={refreshing} style={primaryBtn}>
+            {refreshing ? "抓取中…" : "手动抓取"}
+          </button>
+        </div>
       </header>
-      <p style={{ color: "#888", fontSize: 13 }}>
-        Phase 2 将在此渲染自选池每小时快照与异动信号。
-      </p>
+
+      {msg && (
+        <div style={{ marginTop: 12, color: "#aaa", fontSize: 13 }}>{msg}</div>
+      )}
+
+      <div style={{ marginTop: 16, color: "#888", fontSize: 13 }}>
+        共 {rows.length} 支
+        <span style={{ marginLeft: 12 }}>红色 = 强信号</span>
+      </div>
+
+      <table style={tableStyle}>
+        <thead>
+          <tr style={{ color: "#888", fontSize: 12 }}>
+            <th style={th}>代码</th>
+            <th style={th}>名称</th>
+            <th style={{ ...th, textAlign: "right" }}>价</th>
+            <th style={{ ...th, textAlign: "right" }}>涨跌</th>
+            <th style={{ ...th, textAlign: "right" }}>主力净流入</th>
+            <th style={th}>信号</th>
+            <th style={th}>消息</th>
+            <th style={th}>更新</th>
+            <th style={{ ...th, textAlign: "right" }}>详情</th>
+          </tr>
+        </thead>
+        <tbody>
+          {loading && (
+            <tr>
+              <td colSpan={9} style={{ ...td, textAlign: "center", color: "#666" }}>
+                加载中…
+              </td>
+            </tr>
+          )}
+          {!loading && rows.length === 0 && (
+            <tr>
+              <td colSpan={9} style={{ ...td, textAlign: "center", color: "#666" }}>
+                自选池为空，先去
+                <a href="/watchlist" style={{ color: "#3b82f6", marginLeft: 4 }}>
+                  导入股票
+                </a>
+                ；导入后点右上角"手动抓取"或等下个整点
+              </td>
+            </tr>
+          )}
+          {rows.map((r) => (
+            <tr key={r.code} style={r.has_strong_signal ? rowStrong : undefined}>
+              <td style={{ ...td, fontFamily: "monospace" }}>
+                <span style={{ color: "#666", marginRight: 4 }}>{exchangeLabel[r.exchange] || ""}</span>
+                {r.code}
+              </td>
+              <td style={td}>{r.name}</td>
+              <td style={{ ...td, textAlign: "right", fontFamily: "monospace" }}>
+                {r.price != null ? r.price.toFixed(2) : "-"}
+              </td>
+              <td style={{
+                ...td,
+                textAlign: "right",
+                fontFamily: "monospace",
+                color: r.change_pct == null ? "#888" : r.change_pct >= 0 ? "#ef4444" : "#22c55e",
+              }}>
+                {r.change_pct != null ? `${r.change_pct >= 0 ? "+" : ""}${r.change_pct.toFixed(2)}%` : "-"}
+              </td>
+              <td style={{ ...td, textAlign: "right", fontFamily: "monospace", color: "#aaa" }}>
+                {fmtFlow(r.main_net_flow)}
+              </td>
+              <td style={td}>
+                {r.signals.length === 0 ? (
+                  <span style={{ color: "#444" }}>–</span>
+                ) : (
+                  r.signals.map((s) => (
+                    <span key={s} style={signalChip(r.has_strong_signal && (s === "limit_up" || s === "limit_down" || s === "important_notice" || s === "lhb"))}>
+                      {SIGNAL_LABEL[s] || s}
+                    </span>
+                  ))
+                )}
+              </td>
+              <td style={td}>
+                <span style={{ color: "#aaa", fontSize: 12 }}>
+                  {r.news_count > 0 && <span style={{ marginRight: 6 }}>新闻×{r.news_count}</span>}
+                  {r.notices_count > 0 && <span style={{ color: "#facc15", marginRight: 6 }}>公告×{r.notices_count}</span>}
+                  {r.on_lhb && <span style={{ color: "#ef4444" }}>龙虎榜</span>}
+                  {r.news_count + r.notices_count === 0 && !r.on_lhb && <span style={{ color: "#444" }}>–</span>}
+                </span>
+              </td>
+              <td style={{ ...td, color: "#666", fontSize: 12 }}>
+                {r.last_ts ? new Date(r.last_ts).toLocaleString("zh-CN", { hour: "2-digit", minute: "2-digit", month: "numeric", day: "numeric" }) : "未抓取"}
+              </td>
+              <td style={{ ...td, textAlign: "right" }}>
+                <a href={`/stocks/${r.code}`} style={{ color: "#3b82f6", fontSize: 12, textDecoration: "none" }}>
+                  解析 →
+                </a>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </main>
   );
+}
+
+function fmtFlow(yuan: number | null): string {
+  if (yuan == null) return "-";
+  const abs = Math.abs(yuan);
+  const sign = yuan >= 0 ? "+" : "-";
+  if (abs >= 1e8) return `${sign}${(abs / 1e8).toFixed(1)}亿`;
+  if (abs >= 1e4) return `${sign}${(abs / 1e4).toFixed(0)}万`;
+  return `${sign}${abs.toFixed(0)}`;
+}
+
+const linkStyle: React.CSSProperties = {
+  color: "#9ca3af",
+  fontSize: 13,
+  textDecoration: "none",
+  padding: "6px 10px",
+};
+const primaryBtn: React.CSSProperties = {
+  padding: "6px 12px",
+  background: "#3b82f6",
+  color: "white",
+  border: "none",
+  borderRadius: 6,
+  fontSize: 13,
+  cursor: "pointer",
+};
+const tableStyle: React.CSSProperties = {
+  width: "100%",
+  marginTop: 12,
+  borderCollapse: "collapse",
+};
+const th: React.CSSProperties = {
+  textAlign: "left",
+  padding: "8px 10px",
+  borderBottom: "1px solid #222",
+  fontWeight: 500,
+};
+const td: React.CSSProperties = {
+  padding: "10px",
+  borderBottom: "1px solid #1a1a1a",
+  fontSize: 13,
+};
+const rowStrong: React.CSSProperties = {
+  background: "rgba(239, 68, 68, 0.06)",
+};
+function signalChip(strong: boolean): React.CSSProperties {
+  return {
+    display: "inline-block",
+    padding: "1px 6px",
+    marginRight: 4,
+    borderRadius: 3,
+    background: strong ? "rgba(239, 68, 68, 0.2)" : "rgba(255,255,255,0.05)",
+    color: strong ? "#fca5a5" : "#aaa",
+    fontSize: 11,
+  };
 }

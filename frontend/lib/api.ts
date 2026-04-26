@@ -14,6 +14,37 @@ export type ImportResult = {
   invalid: string[];
 };
 
+export type StockRow = {
+  code: string;
+  name: string;
+  exchange: string;
+  last_ts: string | null;
+  price: number | null;
+  change_pct: number | null;
+  main_net_flow: number | null;
+  signals: string[];
+  has_strong_signal: boolean;
+  news_count: number;
+  notices_count: number;
+  on_lhb: boolean;
+};
+
+export type StockDetail = {
+  code: string;
+  name: string;
+  exchange: string;
+  last_ts: string | null;
+  price: number | null;
+  change_pct: number | null;
+  main_net_flow: number | null;
+  signals: string[];
+  news: { title: string; url: string; ts: string }[];
+  notices: { title: string; url: string; ts: string; type?: string | null }[];
+  lhb: { name?: string; reason?: string; net_buy?: number | null } | null;
+};
+
+export type SnapshotResult = { codes: number; inserted: number; post_close: boolean };
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
@@ -42,4 +73,8 @@ export const api = {
     }),
   deleteCode: (code: string) =>
     request<{ ok: boolean }>(`/api/watchlist/${code}`, { method: "DELETE" }),
+  listStocks: () => request<StockRow[]>("/api/stocks"),
+  stockDetail: (code: string) => request<StockDetail>(`/api/stocks/${code}`),
+  triggerSnapshot: () =>
+    request<SnapshotResult>("/api/stocks/snapshot", { method: "POST" }),
 };

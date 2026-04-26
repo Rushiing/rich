@@ -14,5 +14,9 @@ class Settings(BaseSettings):
     FRONTEND_ORIGIN: str = "http://localhost:3000"
     ANTHROPIC_API_KEY: str = ""
 
+    # Toggle the in-process APScheduler. Set False during local tests / when
+    # running multiple replicas (only one should schedule).
+    SCHEDULER_ENABLED: bool = True
+
 
 settings = Settings()

@@ -10,3 +10,7 @@ itsdangerous==2.2.0
 # Phase 1: A-share data
 akshare==1.18.57
 pandas==2.2.3
+
+# Phase 2: scheduler
+apscheduler==3.10.4
+tzdata==2024.2
