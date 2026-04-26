@@ -33,12 +33,20 @@ This is an MVP for a small trusted group. **Do not over-engineer.** No multi-ten
 ## Phase plan (~6 working days total)
 
 - [x] **Phase 0** — Skeleton: Next.js + FastAPI + Postgres + single-password login
-- [ ] **Phase 1** — Watchlist CRUD + paste/Excel import + akshare code validation (~1 day)
+- [x] **Phase 1** — Watchlist CRUD + paste/Excel import + akshare code validation
 - [ ] **Phase 2** — APScheduler + 6 akshare endpoints + signals engine + 盯盘 view (~2 days)
 - [ ] **Phase 3** — Prompt template + strategy slot + Claude tool use key table + 500-word markdown + 4h cache (~2 days)
 - [ ] **Phase 4** — Mobile responsive pass + PWA install (~0.5 day)
 
 When you finish a phase, check the box above and add a one-line summary of what landed.
+
+### Phase 1 — what landed
+
+- `Watchlist` model (code PK, name, exchange, added_at). Tables auto-create on startup.
+- `app/services/stocks.py`: per-stock `stock_individual_info_em` lookup with `ThreadPoolExecutor(20)` for batch validation. Names cached in-process forever. Format check (`^\d{6}$`) gates the network call.
+- Routes: `GET /api/watchlist`, `POST /api/watchlist/import` (returns `{added, skipped_existing, invalid}`), `DELETE /api/watchlist/{code}`.
+- Frontend `/watchlist`: table + import modal accepting paste, `.csv`, and `.xlsx` (via `read-excel-file`, first column only).
+- Next.js catch-all proxy at `/api/[...path]/route.ts` replaces the bespoke `/api/login` route — all backend calls flow through it, cookies forwarded both directions.
 
 ## Architecture
 
@@ -78,26 +86,32 @@ rich/
 ├── docker-compose.yml   ← local Postgres
 ├── frontend/
 │   ├── package.json
-│   ├── middleware.ts    ← auth gate (redirects to /login)
+│   ├── middleware.ts    ← auth gate (redirects to /login); /api/* always passes
 │   ├── railway.json
+│   ├── lib/api.ts       ← thin client for the backend
 │   ├── app/
 │   │   ├── layout.tsx
 │   │   ├── page.tsx              → redirects to /stocks
 │   │   ├── login/page.tsx
-│   │   ├── api/login/route.ts    ← proxies to backend, forwards Set-Cookie
-│   │   ├── stocks/page.tsx       (placeholder, Phase 2)
-│   │   └── watchlist/page.tsx    (placeholder, Phase 1)
+│   │   ├── api/[...path]/route.ts ← catch-all proxy → backend, forwards cookies
+│   │   ├── stocks/page.tsx       (placeholder until Phase 2)
+│   │   └── watchlist/page.tsx    (Phase 1: table + import modal)
 │   └── public/manifest.webmanifest
 └── backend/
     ├── requirements.txt
     ├── Procfile
     ├── railway.json
     └── app/
-        ├── main.py        ← FastAPI app + CORS + routes
-        ├── config.py      ← env via pydantic-settings
-        ├── db.py          ← SQLAlchemy engine + session
-        ├── auth.py        ← itsdangerous-signed cookie token
-        └── routes/auth.py ← /api/auth/login, /logout, /me
+        ├── main.py             ← FastAPI app + lifespan (create_all) + routes
+        ├── config.py           ← env via pydantic-settings
+        ├── db.py               ← SQLAlchemy engine + session
+        ├── auth.py             ← itsdangerous-signed cookie token
+        ├── models.py           ← SQLAlchemy ORM models (Watchlist, ...)
+        ├── services/
+        │   └── stocks.py       ← akshare lookup + format/exchange detection
+        └── routes/
+            ├── auth.py         ← /api/auth/{login,logout,me}
+            └── watchlist.py    ← /api/watchlist (list, import, delete)
 ```
 
 ## Local development
@@ -157,6 +171,11 @@ Notes:
 - **Commits**: small, scoped, conventional-commit style (`feat(watchlist): ...`, `chore: ...`). Don't squash phases into one commit.
 - **Secrets**: never commit `.env`. Always read via `app.config.settings` on the backend, `process.env.NEXT_PUBLIC_*` on the frontend (only `NEXT_PUBLIC_*` is exposed to the browser).
 - **Branches**: work on `main` for now (it's a tiny team). If we ever add CI, switch to PR flow.
+
+## Known environmental gotchas
+
+- **akshare + local HTTPS proxy**: some Mac users run Clash/V2Ray on `127.0.0.1:7897` for international traffic; that proxy can drop connections to `*.eastmoney.com` (Chinese host). On Railway (Linux container, no proxy), akshare works without issue. If you need to validate akshare locally, either disable the proxy for the eastmoney host or test through Railway.
+- **Python version**: backend requires Python 3.11+ (psycopg3 binary wheels start there). macOS system Python 3.9 will fail at `pip install`.
 
 ## Open questions (TBD in their phases)
 

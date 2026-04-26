@@ -12,7 +12,8 @@
   "dependencies": {
     "next": "15.0.4",
     "react": "19.0.0",
-    "react-dom": "19.0.0"
+    "react-dom": "19.0.0",
+    "read-excel-file": "^5.8.7"
   },
   "devDependencies": {
     "@types/node": "22.10.2",

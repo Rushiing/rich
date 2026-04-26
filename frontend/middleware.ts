@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const PUBLIC_PATHS = ["/login", "/api/login", "/_next", "/favicon.ico"];
+// Pages that don't require auth. /api/* is always passed through — the backend
+// is the actual auth gate (returns 401 if needed).
+const PUBLIC_PAGES = ["/login"];
 
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
-  if (PUBLIC_PATHS.some((p) => pathname.startsWith(p))) {
-    return NextResponse.next();
-  }
+  if (pathname.startsWith("/api/")) return NextResponse.next();
+  if (PUBLIC_PAGES.some((p) => pathname.startsWith(p))) return NextResponse.next();
+
   const session = req.cookies.get("rich_session")?.value;
   if (!session) {
     const url = req.nextUrl.clone();

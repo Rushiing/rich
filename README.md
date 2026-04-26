@@ -8,7 +8,7 @@ A股盯盘与深度解析工具 — 内部使用，不超过 10 人共用。
 ## 当前状态
 
 - ✅ Phase 0 — 骨架（Next.js + FastAPI + Postgres + 单密码登录）
-- ⏳ Phase 1 — 自选池
+- ✅ Phase 1 — 自选池（CRUD + 粘贴/Excel/CSV 导入 + akshare 校验）
 - ⏳ Phase 2 — 抓取与盯盘
 - ⏳ Phase 3 — 深度解析
 - ⏳ Phase 4 — 移动端 + PWA
