@@ -324,57 +324,203 @@ function Footnote({ analysis }: { analysis: StockAnalysis }) {
   );
 }
 
-// Minimal markdown: ## headings, paragraphs, - lists, **bold**.
-function renderMarkdown(md: string): ReactNode[] {
-  const blocks: ReactNode[] = [];
-  const lines = md.split(/\r?\n/);
-  let listBuf: string[] = [];
-  let paraBuf: string[] = [];
+// Hand-rolled markdown renderer. Block grammar:
+//   ## heading
+//   - / * unordered list item
+//   1. / 2. ordered list item (number arbitrary; we keep model's numbering)
+//   | a | b |  table row (with separator | --- | --- | on second row)
+//   blank line   block break
+//   anything else is a paragraph
+//
+// Inline grammar: **bold**. Lists support 2-space (or tab) indent for one
+// nesting level — enough for the conversational style without pulling in
+// a real markdown lib.
+type ListItem = { text: string; depth: number };
+type Block =
+  | { kind: "h"; text: string }
+  | { kind: "p"; text: string }
+  | { kind: "ul"; items: ListItem[] }
+  | { kind: "ol"; items: ListItem[] }
+  | { kind: "table"; header: string[]; rows: string[][] };
 
-  const flushList = () => {
-    if (!listBuf.length) return;
-    blocks.push(
-      <ul key={`u${blocks.length}`} style={{ margin: "8px 0 8px 20px", padding: 0 }}>
-        {listBuf.map((l, i) => <li key={i} style={{ marginBottom: 4 }}>{inline(l)}</li>)}
-      </ul>
-    );
-    listBuf = [];
-  };
-  const flushPara = () => {
-    if (!paraBuf.length) return;
-    blocks.push(
-      <p key={`p${blocks.length}`} style={{ margin: "8px 0", color: "#d4d4d4" }}>
-        {inline(paraBuf.join(" "))}
-      </p>
-    );
-    paraBuf = [];
-  };
-
-  for (const raw of lines) {
+function parseBlocks(md: string): Block[] {
+  const blocks: Block[] = [];
+  const lines = md.replace(/\r\n/g, "\n").split("\n");
+  let i = 0;
+  while (i < lines.length) {
+    const raw = lines[i];
     const line = raw.replace(/\s+$/, "");
+
+    if (line.trim() === "") { i++; continue; }
+
     if (/^#{1,6}\s/.test(line)) {
-      flushPara(); flushList();
-      const text = line.replace(/^#+\s+/, "");
-      blocks.push(
-        <h3 key={`h${blocks.length}`} style={{ fontSize: 15, margin: "16px 0 4px", color: "#e5e5e5", borderBottom: "1px solid #222", paddingBottom: 4 }}>
-          {text}
-        </h3>
-      );
-    } else if (/^-\s/.test(line)) {
-      flushPara();
-      listBuf.push(line.replace(/^-\s+/, ""));
-    } else if (line.trim() === "") {
-      flushPara(); flushList();
-    } else {
-      flushList();
-      paraBuf.push(line);
+      blocks.push({ kind: "h", text: line.replace(/^#+\s+/, "") });
+      i++; continue;
     }
+
+    // Markdown table: starts with `|` and the next line is the separator.
+    if (line.startsWith("|") && i + 1 < lines.length && /^\|[\s|:-]+\|\s*$/.test(lines[i + 1])) {
+      const header = splitTableRow(line);
+      i += 2; // skip separator
+      const rows: string[][] = [];
+      while (i < lines.length && lines[i].startsWith("|")) {
+        rows.push(splitTableRow(lines[i]));
+        i++;
+      }
+      blocks.push({ kind: "table", header, rows });
+      continue;
+    }
+
+    // List run (unordered or ordered). The first line decides which kind;
+    // subsequent indented bullets join in (one-level nesting).
+    const u = matchUL(line);
+    const o = matchOL(line);
+    if (u || o) {
+      const ordered = !!o;
+      const items: ListItem[] = [];
+      while (i < lines.length) {
+        const cur = lines[i].replace(/\s+$/, "");
+        if (cur.trim() === "") break;
+        const um = matchUL(cur);
+        const om = matchOL(cur);
+        if (ordered && om) items.push({ text: om.text, depth: om.depth });
+        else if (!ordered && um) items.push({ text: um.text, depth: um.depth });
+        else if (ordered && um) items.push({ text: um.text, depth: um.depth });   // sub bullets under ordered
+        else if (!ordered && om) items.push({ text: om.text, depth: om.depth });
+        else break;
+        i++;
+      }
+      blocks.push({ kind: ordered ? "ol" : "ul", items });
+      continue;
+    }
+
+    // Paragraph: collect consecutive non-special lines.
+    const paraStart = i;
+    const buf: string[] = [];
+    while (i < lines.length) {
+      const cur = lines[i].replace(/\s+$/, "");
+      if (cur.trim() === "") break;
+      if (/^#{1,6}\s/.test(cur)) break;
+      if (matchUL(cur) || matchOL(cur)) break;
+      if (cur.startsWith("|")) break;
+      buf.push(cur);
+      i++;
+    }
+    if (buf.length) blocks.push({ kind: "p", text: buf.join(" ") });
+    if (i === paraStart) i++; // safety
   }
-  flushPara(); flushList();
   return blocks;
 }
 
+function matchUL(line: string): { text: string; depth: number } | null {
+  const m = /^(\s*)[-*]\s+(.+)$/.exec(line);
+  if (!m) return null;
+  const depth = Math.min(2, Math.floor(m[1].replace(/\t/g, "  ").length / 2));
+  return { text: m[2], depth };
+}
+
+function matchOL(line: string): { text: string; depth: number } | null {
+  const m = /^(\s*)\d+[.)]\s+(.+)$/.exec(line);
+  if (!m) return null;
+  const depth = Math.min(2, Math.floor(m[1].replace(/\t/g, "  ").length / 2));
+  return { text: m[2], depth };
+}
+
+function splitTableRow(line: string): string[] {
+  return line.replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+}
+
+function renderMarkdown(md: string): ReactNode[] {
+  return parseBlocks(md).map((b, i) => {
+    if (b.kind === "h") {
+      return (
+        <h3
+          key={i}
+          style={{ fontSize: 15, margin: "20px 0 6px", color: "#e5e5e5",
+                   borderBottom: "1px solid #222", paddingBottom: 4 }}
+        >
+          {inline(b.text)}
+        </h3>
+      );
+    }
+    if (b.kind === "p") {
+      return (
+        <p key={i} style={{ margin: "8px 0", color: "#d4d4d4" }}>
+          {inline(b.text)}
+        </p>
+      );
+    }
+    if (b.kind === "ul" || b.kind === "ol") {
+      return renderList(b, i);
+    }
+    // table
+    return (
+      <div key={i} style={{ overflowX: "auto", margin: "12px 0" }}>
+        <table style={{ borderCollapse: "collapse", fontSize: 13 }}>
+          <thead>
+            <tr>
+              {b.header.map((h, j) => (
+                <th key={j} style={{ padding: "6px 12px", textAlign: "left",
+                                     borderBottom: "1px solid #333", color: "#aaa", fontWeight: 500 }}>
+                  {inline(h)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {b.rows.map((row, ri) => (
+              <tr key={ri}>
+                {row.map((cell, ci) => (
+                  <td key={ci} style={{ padding: "6px 12px", borderBottom: "1px solid #1a1a1a", color: "#d4d4d4" }}>
+                    {inline(cell)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  });
+}
+
+function renderList(
+  b: { kind: "ul" | "ol"; items: ListItem[] },
+  key: number,
+): ReactNode {
+  // Group items into a tree so depth-1 items become a nested list under
+  // the previous depth-0 item. Two levels are enough for our use.
+  type Node = { text: string; children: string[] };
+  const top: Node[] = [];
+  for (const it of b.items) {
+    if (it.depth === 0 || top.length === 0) {
+      top.push({ text: it.text, children: [] });
+    } else {
+      top[top.length - 1].children.push(it.text);
+    }
+  }
+  const Tag = b.kind === "ol" ? "ol" : "ul";
+  return (
+    <Tag key={key} style={{ margin: "8px 0 8px 24px", padding: 0, color: "#d4d4d4" }}>
+      {top.map((n, i) => (
+        <li key={i} style={{ marginBottom: 4, lineHeight: 1.65 }}>
+          {inline(n.text)}
+          {n.children.length > 0 && (
+            <ul style={{ margin: "4px 0 4px 20px", padding: 0 }}>
+              {n.children.map((c, j) => (
+                <li key={j} style={{ marginBottom: 2 }}>{inline(c)}</li>
+              ))}
+            </ul>
+          )}
+        </li>
+      ))}
+    </Tag>
+  );
+}
+
 function inline(s: string): ReactNode {
+  // Bold first, then preserve the rest as plain text. Emojis and Chinese
+  // pass through untouched.
   const parts = s.split(/(\*\*[^*]+\*\*)/g);
   return parts.map((p, i) => {
     if (p.startsWith("**") && p.endsWith("**")) {
