@@ -2,6 +2,9 @@
 
 A-share trading hours: 09:30-11:30, 13:00-15:00 (Asia/Shanghai).
 We snapshot at 09:30, 10:30, 11:30, 14:00, 15:00 + 16:00 (post-close LHB pass).
+We also auto-generate LLM analyses once per trading morning at 09:35,
+right after the open snapshot, so the 盯盘 list has fresh verdicts on
+arrival without anyone needing to click 解析.
 The scheduler runs in-process; Railway must be pinned to 1 backend replica.
 """
 from __future__ import annotations
@@ -13,8 +16,10 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy.orm import Session
 
+from ..config import settings
 from ..db import SessionLocal
 from ..models import Snapshot, Watchlist
+from .analysis import generate as analysis_generate
 from .scraper import collect_lhb_today, collect_many
 from .signals import compute_signals
 
@@ -89,6 +94,49 @@ def _scheduled_tick(post_close: bool):
         pass
 
 
+def run_daily_analysis_job() -> dict:
+    """Generate (and cache) a fresh LLM analysis for every watched code.
+
+    Runs serially — each call is one Anthropic round-trip — so the whole
+    batch for ~30 codes takes a couple of minutes. One bad code doesn't
+    sink the rest. If ANTHROPIC_API_KEY is unset we log and skip, so this
+    job is harmless when the key isn't configured yet.
+    """
+    if not settings.ANTHROPIC_API_KEY:
+        logger.info("daily analysis job: ANTHROPIC_API_KEY not set, skipping")
+        return {"codes": 0, "generated": 0, "failed": 0, "skipped": True}
+
+    db: Session = SessionLocal()
+    try:
+        codes = [w.code for w in db.query(Watchlist.code).all()]
+        if not codes:
+            logger.info("daily analysis job: watchlist empty, skipping")
+            return {"codes": 0, "generated": 0, "failed": 0}
+
+        logger.info("daily analysis job: generating for %d codes", len(codes))
+        generated = 0
+        failed = 0
+        for code in codes:
+            try:
+                analysis_generate(db, code)
+                generated += 1
+            except Exception:
+                failed += 1
+                logger.exception("daily analysis job: %s failed", code)
+        logger.info("daily analysis job: generated=%d failed=%d", generated, failed)
+        return {"codes": len(codes), "generated": generated, "failed": failed}
+    finally:
+        db.close()
+
+
+def _daily_analysis_tick():
+    try:
+        run_daily_analysis_job()
+    except Exception:
+        # already logged; don't let APScheduler kill the job permanently
+        pass
+
+
 def start_scheduler() -> None:
     """Idempotent. Called from FastAPI lifespan."""
     global scheduler
@@ -105,9 +153,18 @@ def start_scheduler() -> None:
             replace_existing=True,
             misfire_grace_time=600,
         )
+    # Daily analysis pass at 09:35 — runs ~5 min after the open snapshot so
+    # it consumes today's 09:30 data. mon-fri only.
+    sched.add_job(
+        _daily_analysis_tick,
+        CronTrigger(day_of_week="mon-fri", hour=9, minute=35, timezone="Asia/Shanghai"),
+        id="daily_analysis_09_35",
+        replace_existing=True,
+        misfire_grace_time=1800,  # 30min — analysis is fine even if scheduler was late
+    )
     sched.start()
     scheduler = sched
-    logger.info("scheduler started: %d jobs registered", len(CRON_TIMES))
+    logger.info("scheduler started: %d snapshot jobs + 1 analysis job", len(CRON_TIMES))
 
 
 def stop_scheduler() -> None:
