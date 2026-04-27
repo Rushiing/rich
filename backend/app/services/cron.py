@@ -144,6 +144,18 @@ def run_quotes_job() -> dict:
         logger.info("quotes job: bulk pulling %d codes", len(codes))
         bulk = collect_quotes_bulk(codes)
 
+        # If the bulk endpoints handed back nothing at all, abort instead of
+        # writing 22 empty rows that would shadow the last good snapshot in
+        # the 盯盘 list. Caller logs already contain the akshare failure.
+        if not any(bulk.values()):
+            logger.warning(
+                "quotes job: bulk returned no data for any of %d codes; "
+                "skipping insert to preserve last good snapshot",
+                len(codes),
+            )
+            return {"codes": len(codes), "inserted": 0, "tier": "quotes",
+                    "skipped": "bulk_empty"}
+
         # Load each code's latest snapshot once to carry context forward.
         latest_by_code: dict[str, Snapshot] = {}
         for code in codes:
@@ -157,8 +169,20 @@ def run_quotes_job() -> dict:
                 latest_by_code[code] = row
 
         inserted = 0
+        skipped = 0
         for code in codes:
             quote = bulk.get(code) or {}
+            # Skip codes the bulk endpoints didn't cover this tick — writing
+            # a quote-less row here would replace a perfectly good prior
+            # snapshot with nulls (e.g., that's what produced the 13:30
+            # all-blank state). Caller still has the previous row to display.
+            has_core = any(
+                quote.get(k) is not None
+                for k in ("price", "change_pct", "main_net_flow")
+            )
+            if not has_core:
+                skipped += 1
+                continue
             carry = _carry_forward(latest_by_code.get(code))
             snap = {
                 "code": code,
@@ -187,8 +211,9 @@ def run_quotes_job() -> dict:
             db.add(row)
             inserted += 1
         db.commit()
-        logger.info("quotes job: inserted %d rows", inserted)
-        return {"codes": len(codes), "inserted": inserted, "tier": "quotes"}
+        logger.info("quotes job: inserted %d rows, skipped %d", inserted, skipped)
+        return {"codes": len(codes), "inserted": inserted, "skipped_codes": skipped,
+                "tier": "quotes"}
     except Exception:
         db.rollback()
         logger.exception("quotes job failed")
