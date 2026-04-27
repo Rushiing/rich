@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 from ..config import settings
 from ..db import SessionLocal
 from ..models import Snapshot, Watchlist
-from .analysis import generate as analysis_generate
+from .analysis import generate as analysis_generate, get_cached as analysis_cached
 from .scraper import collect_lhb_today, collect_many, collect_quotes_bulk
 from .signals import compute_signals
 
@@ -248,37 +248,56 @@ def _quotes_tick():
         pass  # already logged
 
 
-def run_daily_analysis_job() -> dict:
-    """Generate (and cache) a fresh LLM analysis for every watched code.
+def run_daily_analysis_job(only_stale: bool = True) -> dict:
+    """Generate (and cache) LLM analyses for the watchlist.
 
-    Runs serially — each call is one Anthropic round-trip — so the whole
-    batch for ~30 codes takes a couple of minutes. One bad code doesn't
-    sink the rest. If ANTHROPIC_API_KEY is unset we log and skip, so this
-    job is harmless when the key isn't configured yet.
+    `only_stale=True` (default) skips any code whose cached analysis is
+    still inside the 4h freshness window — so the manual "生成解析" button
+    can be hit repeatedly without re-burning tokens. The 09:35 cron also
+    runs with only_stale=True; by definition rows from the previous trading
+    day are >24h old and will all repaint.
+
+    Runs serially. One bad code doesn't sink the rest. If ANTHROPIC_API_KEY
+    isn't set we log and skip, so the job is harmless without a key.
     """
     if not settings.ANTHROPIC_API_KEY:
         logger.info("daily analysis job: ANTHROPIC_API_KEY not set, skipping")
-        return {"codes": 0, "generated": 0, "failed": 0, "skipped": True}
+        return {"codes": 0, "generated": 0, "failed": 0, "skipped_fresh": 0,
+                "skipped": True}
 
     db: Session = SessionLocal()
     try:
         codes = [w.code for w in db.query(Watchlist.code).all()]
         if not codes:
             logger.info("daily analysis job: watchlist empty, skipping")
-            return {"codes": 0, "generated": 0, "failed": 0}
+            return {"codes": 0, "generated": 0, "failed": 0, "skipped_fresh": 0}
 
-        logger.info("daily analysis job: generating for %d codes", len(codes))
+        logger.info(
+            "daily analysis job: %d codes, only_stale=%s", len(codes), only_stale,
+        )
         generated = 0
         failed = 0
+        skipped_fresh = 0
         for code in codes:
+            if only_stale and analysis_cached(db, code) is not None:
+                skipped_fresh += 1
+                continue
             try:
                 analysis_generate(db, code)
                 generated += 1
             except Exception:
                 failed += 1
                 logger.exception("daily analysis job: %s failed", code)
-        logger.info("daily analysis job: generated=%d failed=%d", generated, failed)
-        return {"codes": len(codes), "generated": generated, "failed": failed}
+        logger.info(
+            "daily analysis job: generated=%d failed=%d skipped_fresh=%d",
+            generated, failed, skipped_fresh,
+        )
+        return {
+            "codes": len(codes),
+            "generated": generated,
+            "failed": failed,
+            "skipped_fresh": skipped_fresh,
+        }
     finally:
         db.close()
 

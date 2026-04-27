@@ -20,7 +20,7 @@ from ..auth import require_auth
 from ..db import get_db
 from ..models import Analysis, Snapshot, Watchlist
 from ..services.analysis import generate as analysis_generate, get_cached as analysis_cached
-from ..services.cron import run_snapshot_job
+from ..services.cron import run_daily_analysis_job, run_snapshot_job
 from ..services.signals import has_strong
 
 logger = logging.getLogger(__name__)
@@ -30,6 +30,11 @@ logger = logging.getLogger(__name__)
 # need correctness within a single backend replica (Railway runs 1 replica).
 _snapshot_lock = threading.Lock()
 _snapshot_running = False
+
+# Same guard for the manual "批量解析" button — prevents the user from
+# kicking off 23 LLM calls twice if they double-click.
+_analysis_lock = threading.Lock()
+_analysis_running = False
 
 router = APIRouter(prefix="/api/stocks", tags=["stocks"], dependencies=[Depends(require_auth)])
 
@@ -184,6 +189,60 @@ def trigger_snapshot(post_close: bool = False):
 def snapshot_status():
     """Lets the frontend poll whether a manual/background job is still running."""
     return SnapshotStatus(running=_snapshot_running)
+
+
+# --- Batch LLM analysis ---------------------------------------------------
+# These two routes are intentionally above /{code} below so the static
+# /analysis/batch path doesn't get parsed as code="analysis".
+
+
+class AnalysisBatchResult(BaseModel):
+    started: bool
+    already_running: bool = False
+
+
+class AnalysisBatchStatus(BaseModel):
+    running: bool
+
+
+def _run_analysis_batch_in_background():
+    global _analysis_running
+    try:
+        run_daily_analysis_job(only_stale=True)
+    except Exception:
+        logger.exception("batch analysis job failed")
+    finally:
+        with _analysis_lock:
+            _analysis_running = False
+
+
+@router.post("/analysis/batch", response_model=AnalysisBatchResult)
+def trigger_batch_analysis():
+    """Generate LLM analyses for every watched code that's missing or stale.
+
+    Fire-and-forget: launches a daemon thread, returns immediately. Each
+    code is one Anthropic round-trip so 20-odd codes take a couple of
+    minutes total. The frontend polls /analysis/batch/status + /api/stocks
+    to follow progress (rows light up with their actionable verdict as
+    each LLM call completes).
+    """
+    global _analysis_running
+    with _analysis_lock:
+        if _analysis_running:
+            return AnalysisBatchResult(started=False, already_running=True)
+        _analysis_running = True
+
+    threading.Thread(
+        target=_run_analysis_batch_in_background,
+        daemon=True,
+        name="batch-analysis",
+    ).start()
+    return AnalysisBatchResult(started=True)
+
+
+@router.get("/analysis/batch/status", response_model=AnalysisBatchStatus)
+def batch_analysis_status():
+    return AnalysisBatchStatus(running=_analysis_running)
 
 
 class StockDetail(BaseModel):

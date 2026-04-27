@@ -52,6 +52,8 @@ export type StockDetail = {
 
 export type SnapshotTriggerResult = { started: boolean; already_running?: boolean };
 export type SnapshotStatus = { running: boolean };
+export type AnalysisBatchResult = { started: boolean; already_running?: boolean };
+export type AnalysisBatchStatus = { running: boolean };
 
 export type KeyTable = {
   actionable: string;
@@ -110,6 +112,10 @@ export const api = {
   triggerSnapshot: () =>
     request<SnapshotTriggerResult>("/api/stocks/snapshot", { method: "POST" }),
   snapshotStatus: () => request<SnapshotStatus>("/api/stocks/snapshot/status"),
+  triggerBatchAnalysis: () =>
+    request<AnalysisBatchResult>("/api/stocks/analysis/batch", { method: "POST" }),
+  batchAnalysisStatus: () =>
+    request<AnalysisBatchStatus>("/api/stocks/analysis/batch/status"),
   getAnalysis: (code: string) =>
     request<StockAnalysis | null>(`/api/stocks/${code}/analysis`),
   generateAnalysis: (code: string) =>

@@ -8,6 +8,9 @@ import { api, AnalysisBrief, StockRow } from "../../lib/api";
 const POLL_INTERVAL_MS = 5000;
 // Hard cap so we eventually stop polling even if the status endpoint lies.
 const POLL_MAX_DURATION_MS = 5 * 60 * 1000;
+// LLM batch is much longer than a snapshot (~5-10s per code × ~25 codes),
+// so its polling deadline gets a wider window.
+const ANALYSIS_POLL_MAX_DURATION_MS = 10 * 60 * 1000;
 
 // Maps the LLM's structured `actionable` enum to a (color, short label) pair.
 // A股语境：红=买/涨，绿=卖/跌；中性观望灰色。
@@ -38,12 +41,17 @@ export default function StocksPage() {
   const [rows, setRows] = useState<StockRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   // null = show all rows; otherwise exact match against StockRow.analysis.actionable
   // (or "__pending" for rows that don't have a cached analysis yet).
   const [filter, setFilter] = useState<string | null>(null);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollDeadline = useRef<number>(0);
+  // Analysis batch polling is independent from snapshot polling — user may
+  // legitimately have both running at once.
+  const analysisPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const analysisPollDeadline = useRef<number>(0);
 
   async function refresh(opts: { silent?: boolean } = {}) {
     if (!opts.silent) setLoading(true);
@@ -68,8 +76,12 @@ export default function StocksPage() {
     api.snapshotStatus().then((s) => {
       if (s.running) startPolling();
     }).catch(() => {});
+    api.batchAnalysisStatus().then((s) => {
+      if (s.running) startAnalysisPolling();
+    }).catch(() => {});
     return () => {
       if (pollTimer.current) clearInterval(pollTimer.current);
+      if (analysisPollTimer.current) clearInterval(analysisPollTimer.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -122,12 +134,65 @@ export default function StocksPage() {
     }
   }
 
+  function stopAnalysisPolling() {
+    if (analysisPollTimer.current) {
+      clearInterval(analysisPollTimer.current);
+      analysisPollTimer.current = null;
+    }
+    setAnalyzing(false);
+  }
+
+  function startAnalysisPolling() {
+    if (analysisPollTimer.current) return;
+    setAnalyzing(true);
+    analysisPollDeadline.current = Date.now() + ANALYSIS_POLL_MAX_DURATION_MS;
+    analysisPollTimer.current = setInterval(async () => {
+      try {
+        await refresh({ silent: true });
+        const status = await api.batchAnalysisStatus();
+        if (!status.running) {
+          stopAnalysisPolling();
+          setMsg("批量解析完成");
+          return;
+        }
+      } catch {
+        // ignore transient poll errors
+      }
+      if (Date.now() > analysisPollDeadline.current) {
+        stopAnalysisPolling();
+        setMsg("批量解析超过 10 分钟未结束，已停止刷新；可在 Railway logs 查看后端");
+      }
+    }, POLL_INTERVAL_MS);
+  }
+
+  async function batchAnalyze() {
+    setMsg(null);
+    try {
+      const r = await api.triggerBatchAnalysis();
+      if (r.already_running) {
+        setMsg("已有解析任务在进行中，正在跟随刷新");
+      } else {
+        // Stale + missing rows only — fresh ones are skipped server-side.
+        const pending = rows.filter(
+          (x) => !x.analysis || !x.analysis.is_fresh,
+        ).length;
+        setMsg(`已开始解析约 ${pending} 支，每支约 5–10 秒，会逐步刷新`);
+      }
+      startAnalysisPolling();
+    } catch (e) {
+      setMsg(`触发失败：${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
   return (
     <main style={{ padding: 20, maxWidth: 1100, margin: "0 auto" }}>
       <header style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
         <h1 style={{ fontSize: 18, margin: 0 }}>盯盘</h1>
         <div style={{ display: "flex", gap: 8 }}>
           <a href="/watchlist" style={linkStyle}>自选池</a>
+          <button onClick={batchAnalyze} disabled={analyzing} style={ghostBtn}>
+            {analyzing ? "解析中…" : "批量解析"}
+          </button>
           <button onClick={manualSnapshot} disabled={refreshing} style={primaryBtn}>
             {refreshing ? "抓取中…" : "手动抓取"}
           </button>
@@ -363,6 +428,15 @@ const primaryBtn: React.CSSProperties = {
   background: "#3b82f6",
   color: "white",
   border: "none",
+  borderRadius: 6,
+  fontSize: 13,
+  cursor: "pointer",
+};
+const ghostBtn: React.CSSProperties = {
+  padding: "6px 12px",
+  background: "transparent",
+  color: "#aaa",
+  border: "1px solid #333",
   borderRadius: 6,
   fontSize: 13,
   cursor: "pointer",
