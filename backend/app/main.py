@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -10,6 +11,11 @@ from .routes import auth as auth_routes
 from .routes import stocks as stocks_routes
 from .routes import watchlist as watchlist_routes
 from .services.cron import start_scheduler, stop_scheduler
+
+# Default Python logging swallows INFO; that hid `snapshot job: ...` and
+# `scheduler started: ...` from Railway logs and made cron health hard to
+# diagnose. Promote our own loggers to INFO without touching uvicorn's.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 
 @asynccontextmanager
