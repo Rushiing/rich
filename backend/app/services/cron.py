@@ -1,16 +1,25 @@
-"""APScheduler wiring + the snapshot job.
+"""APScheduler wiring + the snapshot jobs.
 
 A-share trading hours: 09:30-11:30, 13:00-15:00 (Asia/Shanghai).
-We snapshot at 09:30, 10:30, 11:30, 14:00, 15:00 + 16:00 (post-close LHB pass).
-We also auto-generate LLM analyses once per trading morning at 09:35,
-right after the open snapshot, so the 盯盘 list has fresh verdicts on
-arrival without anyone needing to click 解析.
+
+Two snapshot tiers run concurrently:
+
+  - **Quotes (5min)**: bulk eastmoney pull of price/change/volume/turnover
+    + main fund flow for every watched code in a single round-trip. Light,
+    fast, and the only thing the 盯盘 list actually needs to feel live.
+  - **Full (hourly)**: per-code akshare fan-out for news/notices, plus the
+    post-close 龙虎榜 pass. Heavy but rare. Carried over by the next quotes
+    tick so the latest snapshot row always has the most recent context
+    fields filled in.
+
+Daily LLM analysis pass runs once at 09:35 so verdicts are fresh on arrival.
 The scheduler runs in-process; Railway must be pinned to 1 backend replica.
 """
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -20,10 +29,11 @@ from ..config import settings
 from ..db import SessionLocal
 from ..models import Snapshot, Watchlist
 from .analysis import generate as analysis_generate
-from .scraper import collect_lhb_today, collect_many
+from .scraper import collect_lhb_today, collect_many, collect_quotes_bulk
 from .signals import compute_signals
 
 logger = logging.getLogger(__name__)
+SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 CRON_TIMES = [
     {"hour": 9, "minute": 30},
@@ -94,6 +104,111 @@ def _scheduled_tick(post_close: bool):
         pass
 
 
+def _is_trading_minute(now: datetime) -> bool:
+    """A-share continuous-trading window in Asia/Shanghai time."""
+    h, m = now.hour, now.minute
+    morning = (h == 9 and m >= 30) or (h == 10) or (h == 11 and m <= 30)
+    afternoon = (h == 13) or (h == 14) or (h == 15 and m == 0)
+    return morning or afternoon
+
+
+def _carry_forward(latest: Snapshot | None) -> dict:
+    """Pull news/notices/lhb from the most recent full snapshot for this code.
+
+    The quotes-only tier doesn't refetch these heavy fields, but we still
+    want the *latest* snapshot row to carry them so the 盯盘 list and the
+    detail page see continuity. Empty dicts are fine when nothing's there.
+    """
+    if latest is None:
+        return {"news": [], "notices": [], "lhb": None}
+    return {
+        "news": latest.news or [],
+        "notices": latest.notices or [],
+        "lhb": latest.lhb,
+    }
+
+
+def run_quotes_job() -> dict:
+    """Bulk-pull price + main flow for the whole watchlist in one shot.
+
+    Writes a snapshot row per code, copying news/notices/lhb forward from
+    the previous snapshot so signal detection and the detail view keep
+    seeing the latest context fields without the heavy per-code fan-out.
+    """
+    db: Session = SessionLocal()
+    try:
+        codes = [w.code for w in db.query(Watchlist.code).all()]
+        if not codes:
+            return {"codes": 0, "inserted": 0, "tier": "quotes"}
+
+        logger.info("quotes job: bulk pulling %d codes", len(codes))
+        bulk = collect_quotes_bulk(codes)
+
+        # Load each code's latest snapshot once to carry context forward.
+        latest_by_code: dict[str, Snapshot] = {}
+        for code in codes:
+            row = (
+                db.query(Snapshot)
+                .filter(Snapshot.code == code)
+                .order_by(Snapshot.id.desc())
+                .first()
+            )
+            if row is not None:
+                latest_by_code[code] = row
+
+        inserted = 0
+        for code in codes:
+            quote = bulk.get(code) or {}
+            carry = _carry_forward(latest_by_code.get(code))
+            snap = {
+                "code": code,
+                "price": quote.get("price"),
+                "change_pct": quote.get("change_pct"),
+                "volume": quote.get("volume"),
+                "turnover": quote.get("turnover"),
+                "main_net_flow": quote.get("main_net_flow"),
+                "north_hold_change": None,
+                **carry,
+            }
+            snap["signals"] = compute_signals(snap)
+            row = Snapshot(
+                code=code,
+                price=snap["price"],
+                change_pct=snap["change_pct"],
+                volume=snap["volume"],
+                turnover=snap["turnover"],
+                main_net_flow=snap["main_net_flow"],
+                north_hold_change=None,
+                signals=snap["signals"],
+                news=snap["news"],
+                notices=snap["notices"],
+                lhb=snap["lhb"],
+            )
+            db.add(row)
+            inserted += 1
+        db.commit()
+        logger.info("quotes job: inserted %d rows", inserted)
+        return {"codes": len(codes), "inserted": inserted, "tier": "quotes"}
+    except Exception:
+        db.rollback()
+        logger.exception("quotes job failed")
+        raise
+    finally:
+        db.close()
+
+
+def _quotes_tick():
+    # APScheduler fires us every 5 min during 09:00–14:55 mon-fri, but only
+    # ~49 of those slots are actually in-session. Skip the rest so we don't
+    # bloat snapshots with no-op rows during lunch break / pre-open.
+    if not _is_trading_minute(datetime.now(SHANGHAI)):
+        return
+    try:
+        run_quotes_job()
+    except Exception:
+        pass  # already logged
+
+
 def run_daily_analysis_job() -> dict:
     """Generate (and cache) a fresh LLM analysis for every watched code.
 
@@ -162,9 +277,26 @@ def start_scheduler() -> None:
         replace_existing=True,
         misfire_grace_time=1800,  # 30min — analysis is fine even if scheduler was late
     )
+    # 5-min quotes pass during the trading window. APScheduler doesn't have a
+    # "trading hours" concept so we cast a slightly wider net (09:00–14:55
+    # mon-fri) and the tick function itself short-circuits outside 09:30–11:30
+    # / 13:00–15:00.
+    sched.add_job(
+        _quotes_tick,
+        CronTrigger(
+            day_of_week="mon-fri", hour="9-14", minute="*/5",
+            timezone="Asia/Shanghai",
+        ),
+        id="quotes_5min",
+        replace_existing=True,
+        misfire_grace_time=120,
+    )
     sched.start()
     scheduler = sched
-    logger.info("scheduler started: %d snapshot jobs + 1 analysis job", len(CRON_TIMES))
+    logger.info(
+        "scheduler started: %d full-snapshot jobs + 1 quotes job + 1 analysis job",
+        len(CRON_TIMES),
+    )
 
 
 def stop_scheduler() -> None:

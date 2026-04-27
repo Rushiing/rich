@@ -169,6 +169,65 @@ def collect_many(codes: list[str], max_workers: int = 10) -> list[dict[str, Any]
     return results
 
 
+def collect_quotes_bulk(codes: list[str]) -> dict[str, dict[str, Any]]:
+    """Pull price/change/volume/turnover + main fund flow for many codes in
+    two bulk akshare calls — one for the whole spot table, one for the whole
+    fund-flow rank. Used by the high-frequency quotes-only cron.
+
+    Returns {code: {price, change_pct, volume, turnover, main_net_flow}}.
+    Codes that aren't in the bulk responses (e.g., 北交所 sometimes drops
+    out, or akshare hiccups) come back missing — caller decides what to do.
+
+    Why not stay on per-code endpoints: at 20+ codes the per-code spot
+    endpoint (Xueqiu) starts rate-limiting, leaving rows with – – in the UI.
+    The bulk eastmoney endpoint returns the whole market in one shot.
+    """
+    if not codes:
+        return {}
+    code_set = set(codes)
+    out: dict[str, dict[str, Any]] = {c: {} for c in codes}
+
+    spot_df = _safe(ak.stock_zh_a_spot_em)
+    if spot_df is not None and len(spot_df) > 0 and "代码" in spot_df.columns:
+        sub = spot_df[spot_df["代码"].astype(str).isin(code_set)]
+        for _, row in sub.iterrows():
+            c = str(row["代码"])
+            out.setdefault(c, {}).update({
+                "price": _to_float(row.get("最新价")),
+                "change_pct": _to_float(row.get("涨跌幅")),
+                "volume": _to_float(row.get("成交量")),
+                "turnover": _to_float(row.get("成交额")),
+            })
+
+    flow_df = _safe(ak.stock_individual_fund_flow_rank, indicator="今日")
+    if flow_df is not None and len(flow_df) > 0 and "代码" in flow_df.columns:
+        sub = flow_df[flow_df["代码"].astype(str).isin(code_set)]
+        # The column is "今日主力净流入-净额" (元).
+        flow_col = next(
+            (c for c in ("今日主力净流入-净额", "主力净流入-净额") if c in sub.columns),
+            None,
+        )
+        if flow_col is not None:
+            for _, row in sub.iterrows():
+                c = str(row["代码"])
+                out.setdefault(c, {})["main_net_flow"] = _to_float(row.get(flow_col))
+
+    return out
+
+
+def _to_float(v: Any) -> float | None:
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    # akshare uses NaN for missing cells; treat them the same as None upstream.
+    if f != f:  # NaN check without importing math
+        return None
+    return f
+
+
 def collect_lhb_today() -> dict[str, dict[str, Any]]:
     """Pull today's 龙虎榜 list, return {code: lhb_info}."""
     today = datetime.now(timezone(timedelta(hours=8))).strftime("%Y%m%d")
