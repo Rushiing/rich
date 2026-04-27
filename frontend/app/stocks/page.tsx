@@ -39,6 +39,9 @@ export default function StocksPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  // null = show all rows; otherwise exact match against StockRow.analysis.actionable
+  // (or "__pending" for rows that don't have a cached analysis yet).
+  const [filter, setFilter] = useState<string | null>(null);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollDeadline = useRef<number>(0);
 
@@ -94,6 +97,16 @@ export default function StocksPage() {
     }, POLL_INTERVAL_MS);
   }
 
+  // Filter only narrows the visible set; sort + strong-signal highlighting
+  // were already applied server-side, so just keep that order.
+  const visibleRows = filter === null
+    ? rows
+    : rows.filter((r) => {
+        const a = r.analysis?.actionable ?? "";
+        if (filter === "__pending") return !a;
+        return a === filter;
+      });
+
   async function manualSnapshot() {
     setMsg(null);
     try {
@@ -125,8 +138,10 @@ export default function StocksPage() {
         <div style={{ marginTop: 12, color: "#aaa", fontSize: 13 }}>{msg}</div>
       )}
 
-      <div style={{ marginTop: 16, color: "#888", fontSize: 13 }}>
-        共 {rows.length} 支
+      <ActionableFilter rows={rows} value={filter} onChange={setFilter} />
+
+      <div style={{ marginTop: 8, color: "#888", fontSize: 13 }}>
+        {filter === null ? `共 ${rows.length} 支` : `${visibleRows.length} / ${rows.length} 支`}
         <span style={{ marginLeft: 12 }}>红色 = 强信号</span>
       </div>
 
@@ -164,7 +179,14 @@ export default function StocksPage() {
               </td>
             </tr>
           )}
-          {rows.map((r) => (
+          {!loading && rows.length > 0 && visibleRows.length === 0 && (
+            <tr>
+              <td colSpan={9} style={{ ...td, textAlign: "center", color: "#666" }}>
+                当前筛选下没有股票
+              </td>
+            </tr>
+          )}
+          {visibleRows.map((r) => (
             <tr key={r.code} style={r.has_strong_signal ? rowStrong : undefined}>
               <td style={{ ...td, fontFamily: "monospace" }}>
                 <span style={{ color: "#666", marginRight: 4 }}>{exchangeLabel[r.exchange] || ""}</span>
@@ -213,6 +235,66 @@ export default function StocksPage() {
       </table>
       </div>
     </main>
+  );
+}
+
+function ActionableFilter({
+  rows,
+  value,
+  onChange,
+}: {
+  rows: StockRow[];
+  value: string | null;
+  onChange: (next: string | null) => void;
+}) {
+  // Count how many rows fall into each bucket so we can show "建议买入 (3)".
+  // 0-count buckets stay clickable but visually muted — useful when waiting
+  // for the next analysis pass to populate them.
+  const counts: Record<string, number> = {
+    "建议买入": 0, "观望": 0, "建议卖出": 0, "不建议入手": 0, __pending: 0,
+  };
+  for (const r of rows) {
+    const a = r.analysis?.actionable;
+    if (!a) counts.__pending += 1;
+    else if (a in counts) counts[a] += 1;
+    else counts.__pending += 1; // unknown enum value -> treat as pending
+  }
+
+  const buttons: { key: string | null; label: string; count: number }[] = [
+    { key: null,           label: "全部",   count: rows.length },
+    { key: "建议买入",     label: "买入",   count: counts["建议买入"] },
+    { key: "观望",         label: "观望",   count: counts["观望"] },
+    { key: "建议卖出",     label: "卖出",   count: counts["建议卖出"] },
+    { key: "不建议入手",   label: "不入手", count: counts["不建议入手"] },
+    { key: "__pending",    label: "待生成", count: counts.__pending },
+  ];
+
+  return (
+    <div style={{ marginTop: 16, display: "flex", gap: 6, flexWrap: "wrap" }}>
+      {buttons.map((b) => {
+        const active = value === b.key;
+        const themed = b.key && b.key !== "__pending" ? ACTIONABLE_STYLE[b.key] : null;
+        const accent = themed?.color ?? "#9ca3af";
+        return (
+          <button
+            key={b.key ?? "all"}
+            onClick={() => onChange(b.key)}
+            style={{
+              padding: "4px 10px",
+              fontSize: 12,
+              borderRadius: 14,
+              border: `1px solid ${active ? accent : "#2a2a2a"}`,
+              background: active ? hexA(accent, 0.18) : "transparent",
+              color: active ? accent : b.count === 0 ? "#555" : "#aaa",
+              cursor: "pointer",
+              transition: "all 0.15s",
+            }}
+          >
+            {b.label} {b.count > 0 && <span style={{ opacity: 0.7 }}>({b.count})</span>}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
