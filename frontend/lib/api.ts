@@ -143,8 +143,11 @@ export const api = {
   triggerSnapshot: () =>
     request<SnapshotTriggerResult>("/api/stocks/snapshot", { method: "POST" }),
   snapshotStatus: () => request<SnapshotStatus>("/api/stocks/snapshot/status"),
-  triggerBatchAnalysis: () =>
-    request<AnalysisBatchResult>("/api/stocks/analysis/batch", { method: "POST" }),
+  triggerBatchAnalysis: (opts: { onlyMissing: boolean }) =>
+    request<AnalysisBatchResult>(
+      `/api/stocks/analysis/batch?only_missing=${opts.onlyMissing}`,
+      { method: "POST" },
+    ),
   batchAnalysisStatus: () =>
     request<AnalysisBatchStatus>("/api/stocks/analysis/batch/status"),
   getAnalysis: (code: string) =>

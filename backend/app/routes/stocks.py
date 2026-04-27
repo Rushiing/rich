@@ -239,10 +239,12 @@ class AnalysisBatchStatus(BaseModel):
     running: bool
 
 
-def _run_analysis_batch_in_background():
+def _run_analysis_batch_in_background(only_missing: bool):
     global _analysis_running
     try:
-        run_daily_analysis_job(only_stale=True)
+        # only_missing=True: fill in 待生成 only (skip any v2 cached row).
+        # only_missing=False: force regenerate every code.
+        run_daily_analysis_job(only_stale=False, only_missing=only_missing)
     except Exception:
         logger.exception("batch analysis job failed")
     finally:
@@ -251,14 +253,16 @@ def _run_analysis_batch_in_background():
 
 
 @router.post("/analysis/batch", response_model=AnalysisBatchResult)
-def trigger_batch_analysis():
-    """Generate LLM analyses for every watched code that's missing or stale.
+def trigger_batch_analysis(only_missing: bool = True):
+    """Generate LLM analyses for the watchlist.
 
-    Fire-and-forget: launches a daemon thread, returns immediately. Each
-    code is one Anthropic round-trip so 20-odd codes take a couple of
-    minutes total. The frontend polls /analysis/batch/status + /api/stocks
-    to follow progress (rows light up with their actionable verdict as
-    each LLM call completes).
+    Default `only_missing=true` matches the 盯盘 button's "fill 待生成 only"
+    behavior — clicking when 0 are pending should pass `only_missing=false`
+    explicitly to force-regen every code (the frontend confirms first).
+
+    Fire-and-forget: launches a daemon thread, returns immediately. The
+    frontend polls /analysis/batch/status + /api/stocks to follow progress
+    (rows light up with their actionable verdict as each LLM call lands).
     """
     global _analysis_running
     with _analysis_lock:
@@ -268,6 +272,7 @@ def trigger_batch_analysis():
 
     threading.Thread(
         target=_run_analysis_batch_in_background,
+        kwargs={"only_missing": only_missing},
         daemon=True,
         name="batch-analysis",
     ).start()

@@ -165,18 +165,30 @@ export default function StocksPage() {
     }, POLL_INTERVAL_MS);
   }
 
+  // 待生成 = no v2 analysis row yet (server-rendered as `analysis === null`).
+  // The button's behavior switches on this count: fill them in if any exist,
+  // otherwise fall through to "全部重新解析" (with a confirm to avoid
+  // accidentally burning tokens on every code).
+  const pendingCount = rows.filter((x) => !x.analysis).length;
+
   async function batchAnalyze() {
     setMsg(null);
+    const onlyMissing = pendingCount > 0;
+    if (!onlyMissing) {
+      const ok = window.confirm(
+        `所有股票都已有解析。确认要全部重新解析 ${rows.length} 支吗？\n` +
+        `这会调用 ${rows.length} 次 LLM API，约 ${Math.ceil(rows.length * 8 / 60)} 分钟、产生 token 费用。`,
+      );
+      if (!ok) return;
+    }
     try {
-      const r = await api.triggerBatchAnalysis();
+      const r = await api.triggerBatchAnalysis({ onlyMissing });
       if (r.already_running) {
         setMsg("已有解析任务在进行中，正在跟随刷新");
+      } else if (onlyMissing) {
+        setMsg(`已开始解析 ${pendingCount} 支待生成，每支约 5–10 秒，会逐步刷新`);
       } else {
-        // Stale + missing rows only — fresh ones are skipped server-side.
-        const pending = rows.filter(
-          (x) => !x.analysis || !x.analysis.is_fresh,
-        ).length;
-        setMsg(`已开始解析约 ${pending} 支，每支约 5–10 秒，会逐步刷新`);
+        setMsg(`已开始全部重新解析 ${rows.length} 支，每支约 5–10 秒，会逐步刷新`);
       }
       startAnalysisPolling();
     } catch (e) {
@@ -191,7 +203,11 @@ export default function StocksPage() {
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <a href="/watchlist" style={primaryLinkBtn}>自选池</a>
           <button onClick={batchAnalyze} disabled={analyzing} style={ghostBtn}>
-            {analyzing ? "解析中…" : "批量解析"}
+            {analyzing
+              ? "解析中…"
+              : pendingCount > 0
+                ? `批量解析 (${pendingCount})`
+                : "全部重新解析"}
           </button>
           <button onClick={manualSnapshot} disabled={refreshing} style={ghostBtn}>
             {refreshing ? "抓取中…" : "手动抓取"}

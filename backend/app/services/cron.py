@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..db import SessionLocal
-from ..models import Snapshot, Watchlist
+from ..models import Analysis, Snapshot, Watchlist
 from .analysis import generate as analysis_generate, get_cached as analysis_cached
 from .scraper import collect_lhb_today, collect_many, collect_quotes_bulk
 from .signals import compute_signals
@@ -248,39 +248,61 @@ def _quotes_tick():
         pass  # already logged
 
 
-def run_daily_analysis_job(only_stale: bool = True) -> dict:
+def run_daily_analysis_job(only_stale: bool = True, only_missing: bool = False) -> dict:
     """Generate (and cache) LLM analyses for the watchlist.
 
-    `only_stale=True` (default) skips any code whose cached analysis is
-    still inside the 4h freshness window — so the manual "生成解析" button
-    can be hit repeatedly without re-burning tokens. The 09:35 cron also
-    runs with only_stale=True; by definition rows from the previous trading
-    day are >24h old and will all repaint.
+    Two skip modes (mutually exclusive in spirit; `only_missing` wins when both
+    are True):
+
+    - `only_missing=True`: skip any code that already has a v2-schema cached
+      analysis row, *regardless of age*. Use this for the manual "批量解析"
+      button when there are 待生成 rows — we just want to fill in the gaps,
+      not re-burn tokens on rows the user already has.
+
+    - `only_stale=True` (default): skip any code whose cached analysis is
+      still within the 4h freshness window. The 09:35 cron uses this — the
+      previous day's rows are >24h old by morning so they all repaint.
+
+    Pass both False to force-regenerate every code (e.g., the manual button
+    falling through to "全部重新解析" when 待生成 == 0).
 
     Runs serially. One bad code doesn't sink the rest. If ANTHROPIC_API_KEY
     isn't set we log and skip, so the job is harmless without a key.
     """
     if not settings.ANTHROPIC_API_KEY:
         logger.info("daily analysis job: ANTHROPIC_API_KEY not set, skipping")
-        return {"codes": 0, "generated": 0, "failed": 0, "skipped_fresh": 0,
-                "skipped": True}
+        return {"codes": 0, "generated": 0, "failed": 0, "skipped": 0,
+                "no_api_key": True}
 
     db: Session = SessionLocal()
     try:
         codes = [w.code for w in db.query(Watchlist.code).all()]
         if not codes:
             logger.info("daily analysis job: watchlist empty, skipping")
-            return {"codes": 0, "generated": 0, "failed": 0, "skipped_fresh": 0}
+            return {"codes": 0, "generated": 0, "failed": 0, "skipped": 0}
 
         logger.info(
-            "daily analysis job: %d codes, only_stale=%s", len(codes), only_stale,
+            "daily analysis job: %d codes, only_missing=%s only_stale=%s",
+            len(codes), only_missing, only_stale,
         )
         generated = 0
         failed = 0
-        skipped_fresh = 0
+        skipped = 0
         for code in codes:
-            if only_stale and analysis_cached(db, code) is not None:
-                skipped_fresh += 1
+            if only_missing:
+                # "Has any v2 cached row" — same shape check get_cached uses
+                # for schema-version invalidation.
+                row = db.query(Analysis).filter(Analysis.code == code).first()
+                has_v2 = (
+                    row is not None
+                    and isinstance(row.key_table, dict)
+                    and "company_tag" in row.key_table
+                )
+                if has_v2:
+                    skipped += 1
+                    continue
+            elif only_stale and analysis_cached(db, code) is not None:
+                skipped += 1
                 continue
             try:
                 analysis_generate(db, code)
@@ -289,14 +311,14 @@ def run_daily_analysis_job(only_stale: bool = True) -> dict:
                 failed += 1
                 logger.exception("daily analysis job: %s failed", code)
         logger.info(
-            "daily analysis job: generated=%d failed=%d skipped_fresh=%d",
-            generated, failed, skipped_fresh,
+            "daily analysis job: generated=%d failed=%d skipped=%d",
+            generated, failed, skipped,
         )
         return {
             "codes": len(codes),
             "generated": generated,
             "failed": failed,
-            "skipped_fresh": skipped_fresh,
+            "skipped": skipped,
         }
     finally:
         db.close()
