@@ -188,12 +188,12 @@ export default function StocksPage() {
     <main style={{ padding: 20, maxWidth: 1100, margin: "0 auto" }}>
       <header style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
         <h1 style={{ fontSize: 18, margin: 0 }}>盯盘</h1>
-        <div style={{ display: "flex", gap: 8 }}>
-          <a href="/watchlist" style={linkStyle}>自选池</a>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <a href="/watchlist" style={primaryLinkBtn}>自选池</a>
           <button onClick={batchAnalyze} disabled={analyzing} style={ghostBtn}>
             {analyzing ? "解析中…" : "批量解析"}
           </button>
-          <button onClick={manualSnapshot} disabled={refreshing} style={primaryBtn}>
+          <button onClick={manualSnapshot} disabled={refreshing} style={ghostBtn}>
             {refreshing ? "抓取中…" : "手动抓取"}
           </button>
         </div>
@@ -438,20 +438,19 @@ function fmtFlow(yuan: number | null): string {
   return `${sign}${abs.toFixed(0)}`;
 }
 
-const linkStyle: React.CSSProperties = {
-  color: "#9ca3af",
-  fontSize: 13,
-  textDecoration: "none",
-  padding: "6px 10px",
-};
-const primaryBtn: React.CSSProperties = {
-  padding: "6px 12px",
+// "自选池" is the primary CTA on the 盯盘 page now — paint it as the
+// highlighted action; batch-analyze / manual-snapshot drop to ghost.
+const primaryLinkBtn: React.CSSProperties = {
+  display: "inline-block",
+  padding: "6px 14px",
   background: "#3b82f6",
   color: "white",
   border: "none",
   borderRadius: 6,
   fontSize: 13,
+  textDecoration: "none",
   cursor: "pointer",
+  fontWeight: 500,
 };
 const ghostBtn: React.CSSProperties = {
   padding: "6px 12px",
