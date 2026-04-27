@@ -170,22 +170,34 @@ def collect_many(codes: list[str], max_workers: int = 10) -> list[dict[str, Any]
 
 
 def collect_quotes_bulk(codes: list[str]) -> dict[str, dict[str, Any]]:
-    """Pull price/change/volume/turnover + main fund flow for many codes in
-    two bulk akshare calls — one for the whole spot table, one for the whole
-    fund-flow rank. Used by the high-frequency quotes-only cron.
+    """Pull price/change/volume/turnover + main fund flow for many codes.
 
-    Returns {code: {price, change_pct, volume, turnover, main_net_flow}}.
-    Codes that aren't in the bulk responses (e.g., 北交所 sometimes drops
-    out, or akshare hiccups) come back missing — caller decides what to do.
+    Strategy: try the eastmoney bulk endpoints first (one round-trip for
+    the whole watchlist), fall back to per-code parallel calls when those
+    fail. Railway's egress can't reach push2.eastmoney.com — RemoteDisconnected
+    on every spot bulk call — but per-code eastmoney + Xueqiu endpoints sit
+    on different hosts that work fine. So the fallback is the load-bearing
+    path in production today; the bulk path stays in case the host comes
+    back or we move infra.
 
-    Why not stay on per-code endpoints: at 20+ codes the per-code spot
-    endpoint (Xueqiu) starts rate-limiting, leaving rows with – – in the UI.
-    The bulk eastmoney endpoint returns the whole market in one shot.
+    Returns {code: {price, change_pct, volume, turnover, main_net_flow}}
+    only for codes we actually got data for. Codes missing from the result
+    should not have new snapshot rows written for them.
     """
     if not codes:
         return {}
+    bulk = _try_bulk(codes)
+    if bulk:
+        return bulk
+    logger.warning(
+        "quotes bulk endpoints unreachable; falling back to per-code fan-out"
+    )
+    return _per_code_quotes(codes)
+
+
+def _try_bulk(codes: list[str]) -> dict[str, dict[str, Any]]:
     code_set = set(codes)
-    out: dict[str, dict[str, Any]] = {c: {} for c in codes}
+    out: dict[str, dict[str, Any]] = {}
 
     spot_df = _safe(ak.stock_zh_a_spot_em)
     if spot_df is not None and len(spot_df) > 0 and "代码" in spot_df.columns:
@@ -202,7 +214,6 @@ def collect_quotes_bulk(codes: list[str]) -> dict[str, dict[str, Any]]:
     flow_df = _safe(ak.stock_individual_fund_flow_rank, indicator="今日")
     if flow_df is not None and len(flow_df) > 0 and "代码" in flow_df.columns:
         sub = flow_df[flow_df["代码"].astype(str).isin(code_set)]
-        # The column is "今日主力净流入-净额" (元).
         flow_col = next(
             (c for c in ("今日主力净流入-净额", "主力净流入-净额") if c in sub.columns),
             None,
@@ -212,6 +223,33 @@ def collect_quotes_bulk(codes: list[str]) -> dict[str, dict[str, Any]]:
                 c = str(row["代码"])
                 out.setdefault(c, {})["main_net_flow"] = _to_float(row.get(flow_col))
 
+    return out
+
+
+def _quotes_one(code: str) -> dict[str, Any]:
+    """Per-code quotes fetch — same endpoints as the hourly full job uses
+    successfully on Railway (Xueqiu spot + per-code eastmoney fund-flow)."""
+    spot = _spot(code)
+    return {**spot, "main_net_flow": _fund_flow(code)}
+
+
+def _per_code_quotes(codes: list[str]) -> dict[str, dict[str, Any]]:
+    """Concurrent per-code fallback. Drops codes whose spot AND fund-flow
+    both came back None — caller treats them as 'no data this tick'."""
+    if not codes:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=min(10, len(codes))) as pool:
+        futures = {pool.submit(_quotes_one, c): c for c in codes}
+        for fut in as_completed(futures):
+            c = futures[fut]
+            try:
+                d = fut.result()
+            except Exception as e:
+                logger.warning("per-code quotes(%s) failed: %s", c, e)
+                continue
+            if any(v is not None for v in d.values()):
+                out[c] = d
     return out
 
 
