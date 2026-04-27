@@ -1,6 +1,8 @@
 """盯盘 view + manual snapshot trigger."""
 from __future__ import annotations
 
+import logging
+import threading
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -14,6 +16,14 @@ from ..models import Analysis, Snapshot, Watchlist
 from ..services.analysis import generate as analysis_generate, get_cached as analysis_cached
 from ..services.cron import run_snapshot_job
 from ..services.signals import has_strong
+
+logger = logging.getLogger(__name__)
+
+# Process-level guard so two simultaneous "手动抓取" clicks don't double-run
+# the snapshot job. The lock + bool pair is intentionally simple — we only
+# need correctness within a single backend replica (Railway runs 1 replica).
+_snapshot_lock = threading.Lock()
+_snapshot_running = False
 
 router = APIRouter(prefix="/api/stocks", tags=["stocks"], dependencies=[Depends(require_auth)])
 
@@ -93,20 +103,54 @@ def list_stocks(db: Session = Depends(get_db)):
     return rows
 
 
-class SnapshotResult(BaseModel):
-    codes: int
-    inserted: int
-    post_close: bool = False
+class SnapshotTriggerResult(BaseModel):
+    started: bool
+    already_running: bool = False
 
 
-@router.post("/snapshot", response_model=SnapshotResult)
-def trigger_snapshot(post_close: bool = False):
-    """Synchronously run the snapshot job. Useful for testing in production
-    without waiting for the cron tick."""
+class SnapshotStatus(BaseModel):
+    running: bool
+
+
+def _run_snapshot_in_background(post_close: bool) -> None:
+    global _snapshot_running
     try:
-        return SnapshotResult(**run_snapshot_job(post_close=post_close))
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        run_snapshot_job(post_close=post_close)
+    except Exception:
+        logger.exception("background snapshot job failed")
+    finally:
+        with _snapshot_lock:
+            _snapshot_running = False
+
+
+@router.post("/snapshot", response_model=SnapshotTriggerResult)
+def trigger_snapshot(post_close: bool = False):
+    """Kick off the snapshot job in a background thread and return immediately.
+
+    The job collects 4 akshare endpoints per code; for 20+ codes it routinely
+    takes 30–90s. Returning sync would let the browser/edge proxy time out
+    even though the job itself succeeds. The frontend polls `/api/stocks`
+    while we run.
+    """
+    global _snapshot_running
+    with _snapshot_lock:
+        if _snapshot_running:
+            return SnapshotTriggerResult(started=False, already_running=True)
+        _snapshot_running = True
+
+    threading.Thread(
+        target=_run_snapshot_in_background,
+        args=(post_close,),
+        daemon=True,
+        name="snapshot-job",
+    ).start()
+    return SnapshotTriggerResult(started=True)
+
+
+@router.get("/snapshot/status", response_model=SnapshotStatus)
+def snapshot_status():
+    """Lets the frontend poll whether a manual/background job is still running."""
+    return SnapshotStatus(running=_snapshot_running)
 
 
 class StockDetail(BaseModel):

@@ -138,12 +138,24 @@ function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone: () => 
     }
   }
 
-  async function onSubmit() {
+  async function onSubmit(retryText?: string) {
     setBusy(true);
     setError(null);
     try {
-      const r = await api.importCodes(text);
-      setResult(r);
+      const payload = retryText ?? text;
+      const r = await api.importCodes(payload);
+      // When retrying, merge into the existing result so the user keeps
+      // seeing what already succeeded.
+      setResult((prev) =>
+        prev
+          ? {
+              added: [...prev.added, ...r.added],
+              skipped_existing: prev.skipped_existing,
+              invalid_format: r.invalid_format,
+              lookup_failed: r.lookup_failed,
+            }
+          : r,
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -184,7 +196,22 @@ function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone: () => 
           <div style={resultBox}>
             <div>新增 <b style={{ color: "#4ade80" }}>{result.added.length}</b></div>
             <div>已存在 <b style={{ color: "#facc15" }}>{result.skipped_existing.length}</b>{result.skipped_existing.length > 0 ? `: ${result.skipped_existing.join(", ")}` : ""}</div>
-            <div>无效 <b style={{ color: "#ff6b6b" }}>{result.invalid.length}</b>{result.invalid.length > 0 ? `: ${result.invalid.join(", ")}` : ""}</div>
+            {result.invalid_format.length > 0 && (
+              <div>格式无效 <b style={{ color: "#ff6b6b" }}>{result.invalid_format.length}</b>: {result.invalid_format.join(", ")}</div>
+            )}
+            {result.lookup_failed.length > 0 && (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <span>查询失败 <b style={{ color: "#facc15" }}>{result.lookup_failed.length}</b>: {result.lookup_failed.join(", ")}</span>
+                <button
+                  onClick={() => onSubmit(result.lookup_failed.join("\n"))}
+                  disabled={busy}
+                  style={ghostBtn}
+                  title="akshare 偶发失败，再试一次通常就好"
+                >
+                  {busy ? "重试中..." : "重试这几支"}
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -193,7 +220,7 @@ function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone: () => 
             {result ? "完成" : "取消"}
           </button>
           {!result && (
-            <button onClick={onSubmit} disabled={busy || !text.trim()} style={primaryBtn}>
+            <button onClick={() => onSubmit()} disabled={busy || !text.trim()} style={primaryBtn}>
               {busy ? "校验中..." : "导入"}
             </button>
           )}

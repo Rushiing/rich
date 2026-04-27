@@ -36,7 +36,8 @@ class ImportRequest(BaseModel):
 class ImportResult(BaseModel):
     added: list[WatchlistItem]
     skipped_existing: list[str]
-    invalid: list[str]
+    invalid_format: list[str]  # ^\d{6}$ check failed
+    lookup_failed: list[str]   # format ok but akshare returned no name — retryable
 
 
 @router.get("", response_model=list[WatchlistItem])
@@ -61,12 +62,13 @@ def import_codes(body: ImportRequest, db: Session = Depends(get_db)):
             deduped.append(c)
 
     if not deduped:
-        return ImportResult(added=[], skipped_existing=[], invalid=[])
+        return ImportResult(added=[], skipped_existing=[], invalid_format=[], lookup_failed=[])
 
     resolved = lookup_codes(deduped)
 
-    invalid = [c for c, v in resolved.items() if v is None]
-    valid = {c: v for c, v in resolved.items() if v is not None}
+    invalid_format = [c for c, v in resolved.items() if v == "invalid_format"]
+    lookup_failed = [c for c, v in resolved.items() if v == "lookup_failed"]
+    valid = {c: v for c, v in resolved.items() if isinstance(v, dict)}
 
     existing_codes = {
         r.code
@@ -86,7 +88,8 @@ def import_codes(body: ImportRequest, db: Session = Depends(get_db)):
     return ImportResult(
         added=added,
         skipped_existing=sorted(existing_codes),
-        invalid=invalid,
+        invalid_format=invalid_format,
+        lookup_failed=lookup_failed,
     )
 
 

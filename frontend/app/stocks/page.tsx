@@ -1,7 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, StockRow } from "../../lib/api";
+
+// While a snapshot job is running we re-pull /api/stocks at this cadence so
+// rows surface as their data lands. 5s feels responsive without hammering.
+const POLL_INTERVAL_MS = 5000;
+// Hard cap so we eventually stop polling even if the status endpoint lies.
+const POLL_MAX_DURATION_MS = 5 * 60 * 1000;
 
 const SIGNAL_LABEL: Record<string, string> = {
   limit_up: "涨停",
@@ -24,31 +30,73 @@ export default function StocksPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollDeadline = useRef<number>(0);
 
-  async function refresh() {
-    setLoading(true);
+  async function refresh(opts: { silent?: boolean } = {}) {
+    if (!opts.silent) setLoading(true);
     try {
       setRows(await api.listStocks());
     } finally {
-      setLoading(false);
+      if (!opts.silent) setLoading(false);
     }
+  }
+
+  function stopPolling() {
+    if (pollTimer.current) {
+      clearInterval(pollTimer.current);
+      pollTimer.current = null;
+    }
+    setRefreshing(false);
   }
 
   useEffect(() => {
     refresh();
+    // If a job is already running (e.g., user reloaded mid-batch), join it.
+    api.snapshotStatus().then((s) => {
+      if (s.running) startPolling();
+    }).catch(() => {});
+    return () => {
+      if (pollTimer.current) clearInterval(pollTimer.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function manualSnapshot() {
+  function startPolling() {
+    if (pollTimer.current) return;
     setRefreshing(true);
+    pollDeadline.current = Date.now() + POLL_MAX_DURATION_MS;
+    pollTimer.current = setInterval(async () => {
+      try {
+        await refresh({ silent: true });
+        const status = await api.snapshotStatus();
+        if (!status.running) {
+          stopPolling();
+          setMsg("抓取完成");
+          return;
+        }
+      } catch {
+        // ignore transient poll errors; the deadline still bounds us
+      }
+      if (Date.now() > pollDeadline.current) {
+        stopPolling();
+        setMsg("抓取超过 5 分钟未结束，已停止刷新；可在 Railway logs 查看后端");
+      }
+    }, POLL_INTERVAL_MS);
+  }
+
+  async function manualSnapshot() {
     setMsg(null);
     try {
       const r = await api.triggerSnapshot();
-      setMsg(`抓取完成：${r.inserted} 行（${r.codes} 支股票）`);
-      await refresh();
+      if (r.already_running) {
+        setMsg("已有抓取任务在进行中，正在跟随刷新");
+      } else {
+        setMsg("已开始抓取，约 30–90 秒，会自动逐步刷新");
+      }
+      startPolling();
     } catch (e) {
-      setMsg(`抓取失败：${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      setRefreshing(false);
+      setMsg(`触发失败：${e instanceof Error ? e.message : String(e)}`);
     }
   }
 

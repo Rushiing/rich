@@ -10,14 +10,24 @@ change rarely, and the cache is rebuilt on restart.
 """
 from __future__ import annotations
 
+import logging
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Iterable
+from typing import Iterable, Literal
 
 import akshare as ak
 
+logger = logging.getLogger(__name__)
+
 CODE_RE = re.compile(r"^\d{6}$")
 _name_cache: dict[str, str] = {}
+
+# Result of a per-code lookup attempt. Carries success or the *kind* of
+# failure so the import UI can tell the user "retryable" vs "actually wrong".
+LookupOutcome = dict | Literal["invalid_format", "lookup_failed"]
+
+LOOKUP_RETRIES = 2  # total attempts; akshare is flaky enough that 1 retry helps a lot
 
 
 def detect_exchange(code: str) -> str:
@@ -37,38 +47,50 @@ def detect_exchange(code: str) -> str:
 
 
 def _fetch_name(code: str) -> str | None:
+    """Resolve a code's 股票简称. Retries on transient akshare failures."""
     if code in _name_cache:
         return _name_cache[code]
-    try:
-        df = ak.stock_individual_info_em(symbol=code)
-        # The "value" column has 股票简称 in one of its rows; layout varies, so look it up by item.
-        match = df[df["item"] == "股票简称"]
-        if len(match) == 0:
-            return None
-        name = str(match.iloc[0]["value"]).strip()
-        if not name:
-            return None
-        _name_cache[code] = name
-        return name
-    except Exception:
-        return None
+    last_err: Exception | None = None
+    for attempt in range(LOOKUP_RETRIES):
+        try:
+            df = ak.stock_individual_info_em(symbol=code)
+            match = df[df["item"] == "股票简称"]
+            if len(match) == 0:
+                # akshare succeeded but has no row — treat as "really not found",
+                # don't retry. Returning None here is a definitive "no such code".
+                return None
+            name = str(match.iloc[0]["value"]).strip()
+            if not name:
+                return None
+            _name_cache[code] = name
+            return name
+        except Exception as e:
+            last_err = e
+            if attempt < LOOKUP_RETRIES - 1:
+                time.sleep(0.5 * (attempt + 1))
+    logger.warning("stock name lookup failed for %s after %d attempts: %s",
+                   code, LOOKUP_RETRIES, last_err)
+    return None
 
 
-def lookup_codes(codes: Iterable[str]) -> dict[str, dict | None]:
+def lookup_codes(codes: Iterable[str]) -> dict[str, LookupOutcome]:
     """Validate and resolve a batch of codes in parallel.
 
-    Returns a dict mapping each input code to either:
-      - {"code", "name", "exchange"} if valid
-      - None if invalid (bad format, or akshare returned nothing)
+    Returns a dict mapping each input code to one of:
+      - {"code", "name", "exchange"}: success
+      - "invalid_format": doesn't match ^\\d{6}$
+      - "lookup_failed": format ok, but akshare didn't return a name (transient
+        network failure or — rarely — a delisted/non-existent code).
+        Caller should let the user retry these.
     """
     code_list = [c.strip() for c in codes]
-    out: dict[str, dict | None] = {}
+    out: dict[str, LookupOutcome] = {}
 
     # Format check is free; only spend network on syntactically valid codes.
     to_resolve: list[str] = []
     for c in code_list:
         if not CODE_RE.match(c):
-            out[c] = None
+            out[c] = "invalid_format"
         else:
             to_resolve.append(c)
 
@@ -79,7 +101,7 @@ def lookup_codes(codes: Iterable[str]) -> dict[str, dict | None]:
                 c = futures[fut]
                 name = fut.result()
                 if name is None:
-                    out[c] = None
+                    out[c] = "lookup_failed"
                 else:
                     out[c] = {"code": c, "name": name, "exchange": detect_exchange(c)}
 

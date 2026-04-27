@@ -11,7 +11,8 @@ export type WatchlistItem = {
 export type ImportResult = {
   added: WatchlistItem[];
   skipped_existing: string[];
-  invalid: string[];
+  invalid_format: string[];   // ^\d{6}$ failed
+  lookup_failed: string[];    // akshare didn't return a name — retryable
 };
 
 export type StockRow = {
@@ -43,7 +44,8 @@ export type StockDetail = {
   lhb: { name?: string; reason?: string; net_buy?: number | null } | null;
 };
 
-export type SnapshotResult = { codes: number; inserted: number; post_close: boolean };
+export type SnapshotTriggerResult = { started: boolean; already_running?: boolean };
+export type SnapshotStatus = { running: boolean };
 
 export type KeyTable = {
   actionable: string;
@@ -100,7 +102,8 @@ export const api = {
   listStocks: () => request<StockRow[]>("/api/stocks"),
   stockDetail: (code: string) => request<StockDetail>(`/api/stocks/${code}`),
   triggerSnapshot: () =>
-    request<SnapshotResult>("/api/stocks/snapshot", { method: "POST" }),
+    request<SnapshotTriggerResult>("/api/stocks/snapshot", { method: "POST" }),
+  snapshotStatus: () => request<SnapshotStatus>("/api/stocks/snapshot/status"),
   getAnalysis: (code: string) =>
     request<StockAnalysis | null>(`/api/stocks/${code}/analysis`),
   generateAnalysis: (code: string) =>
