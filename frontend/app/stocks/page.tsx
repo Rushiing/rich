@@ -1,13 +1,22 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { api, StockRow } from "../../lib/api";
+import { api, AnalysisBrief, StockRow } from "../../lib/api";
 
 // While a snapshot job is running we re-pull /api/stocks at this cadence so
 // rows surface as their data lands. 5s feels responsive without hammering.
 const POLL_INTERVAL_MS = 5000;
 // Hard cap so we eventually stop polling even if the status endpoint lies.
 const POLL_MAX_DURATION_MS = 5 * 60 * 1000;
+
+// Maps the LLM's structured `actionable` enum to a (color, short label) pair.
+// A股语境：红=买/涨，绿=卖/跌；中性观望灰色。
+const ACTIONABLE_STYLE: Record<string, { color: string; label: string }> = {
+  "建议买入":   { color: "#ef4444", label: "买" },
+  "观望":       { color: "#9ca3af", label: "观望" },
+  "建议卖出":   { color: "#22c55e", label: "卖" },
+  "不建议入手": { color: "#6b7280", label: "不入" },
+};
 
 const SIGNAL_LABEL: Record<string, string> = {
   limit_up: "涨停",
@@ -131,7 +140,7 @@ export default function StocksPage() {
             <th style={{ ...th, textAlign: "right" }}>涨跌</th>
             <th style={{ ...th, textAlign: "right" }}>主力净流入</th>
             <th style={th}>信号</th>
-            <th style={th}>消息</th>
+            <th style={th}>操作建议</th>
             <th style={th}>更新</th>
             <th style={{ ...th, textAlign: "right" }}>详情</th>
           </tr>
@@ -188,12 +197,7 @@ export default function StocksPage() {
                 )}
               </td>
               <td style={td}>
-                <span style={{ color: "#aaa", fontSize: 12 }}>
-                  {r.news_count > 0 && <span style={{ marginRight: 6 }}>新闻×{r.news_count}</span>}
-                  {r.notices_count > 0 && <span style={{ color: "#facc15", marginRight: 6 }}>公告×{r.notices_count}</span>}
-                  {r.on_lhb && <span style={{ color: "#ef4444" }}>龙虎榜</span>}
-                  {r.news_count + r.notices_count === 0 && !r.on_lhb && <span style={{ color: "#444" }}>–</span>}
-                </span>
+                <ActionableCell analysis={r.analysis} />
               </td>
               <td style={{ ...td, color: "#666", fontSize: 12 }}>
                 {r.last_ts ? new Date(r.last_ts).toLocaleString("zh-CN", { hour: "2-digit", minute: "2-digit", month: "numeric", day: "numeric" }) : "未抓取"}
@@ -210,6 +214,51 @@ export default function StocksPage() {
       </div>
     </main>
   );
+}
+
+function ActionableCell({ analysis }: { analysis: AnalysisBrief | null }) {
+  if (!analysis || !analysis.actionable) {
+    return <span style={{ color: "#444", fontSize: 12 }}>待生成</span>;
+  }
+  const style = ACTIONABLE_STYLE[analysis.actionable] ?? {
+    color: "#9ca3af",
+    label: analysis.actionable,
+  };
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 140 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <span
+          style={{
+            display: "inline-block",
+            padding: "1px 6px",
+            borderRadius: 3,
+            background: hexA(style.color, 0.15),
+            color: style.color,
+            fontSize: 11,
+            fontWeight: 600,
+          }}
+        >
+          {style.label}
+        </span>
+        {!analysis.is_fresh && (
+          <span style={{ color: "#666", fontSize: 10 }} title="生成时间已超过 4 小时">已过期</span>
+        )}
+      </div>
+      {analysis.one_line_reason && (
+        <span style={{ color: "#888", fontSize: 11, lineHeight: 1.4 }}>
+          {analysis.one_line_reason}
+        </span>
+      )}
+    </div>
+  );
+}
+
+// "#rrggbb" → "rgba(r,g,b,a)" — for tinted chip backgrounds.
+function hexA(hex: string, a: number): string {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
 }
 
 function fmtFlow(yuan: number | null): string {

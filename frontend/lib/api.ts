@@ -15,6 +15,13 @@ export type ImportResult = {
   lookup_failed: string[];    // akshare didn't return a name — retryable
 };
 
+export type AnalysisBrief = {
+  actionable: string;        // 建议买入 / 观望 / 建议卖出 / 不建议入手
+  one_line_reason: string;
+  created_at: string;
+  is_fresh: boolean;         // < 4h
+};
+
 export type StockRow = {
   code: string;
   name: string;
@@ -25,9 +32,8 @@ export type StockRow = {
   main_net_flow: number | null;
   signals: string[];
   has_strong_signal: boolean;
-  news_count: number;
-  notices_count: number;
   on_lhb: boolean;
+  analysis: AnalysisBrief | null;
 };
 
 export type StockDetail = {

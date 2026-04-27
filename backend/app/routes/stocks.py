@@ -3,12 +3,18 @@ from __future__ import annotations
 
 import logging
 import threading
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
+
+# 4h cache TTL for the LLM-generated analysis. Mirrors the value enforced
+# inside services.analysis.get_cached(); kept here so list_stocks can compute
+# is_fresh in a single SQL pass without re-querying per row.
+ANALYSIS_FRESH_HOURS = 4
 
 from ..auth import require_auth
 from ..db import get_db
@@ -28,6 +34,14 @@ _snapshot_running = False
 router = APIRouter(prefix="/api/stocks", tags=["stocks"], dependencies=[Depends(require_auth)])
 
 
+class AnalysisBrief(BaseModel):
+    """Just the bits the 盯盘 list needs from the cached Analysis row."""
+    actionable: str            # 建议买入 / 观望 / 建议卖出 / 不建议入手
+    one_line_reason: str
+    created_at: str
+    is_fresh: bool             # < 4h old
+
+
 class StockRow(BaseModel):
     code: str
     name: str
@@ -38,14 +52,13 @@ class StockRow(BaseModel):
     main_net_flow: float | None
     signals: list[str]
     has_strong_signal: bool
-    news_count: int
-    notices_count: int
     on_lhb: bool
+    analysis: AnalysisBrief | None  # null when never generated
 
 
 @router.get("", response_model=list[StockRow])
 def list_stocks(db: Session = Depends(get_db)):
-    """Latest snapshot per watched code, joined with name/exchange from watchlist."""
+    """Latest snapshot per watched code, joined with watchlist + cached analysis."""
     watch = {w.code: w for w in db.query(Watchlist).all()}
     if not watch:
         return []
@@ -58,7 +71,6 @@ def list_stocks(db: Session = Depends(get_db)):
         .subquery()
     )
     # The DISTINCT ON above is Postgres-only. Fallback for SQLite (smoke tests):
-    # query latest per code via a dialect-agnostic approach.
     bind = db.get_bind()
     if bind.dialect.name != "postgresql":
         latest_ids: list[int] = []
@@ -77,6 +89,28 @@ def list_stocks(db: Session = Depends(get_db)):
 
     by_code = {s.code: s for s in snaps}
 
+    # One-shot pull of every analysis row for the watched codes.
+    analyses = {
+        a.code: a
+        for a in db.query(Analysis).filter(Analysis.code.in_(list(watch.keys()))).all()
+    }
+    fresh_cutoff = datetime.now(timezone.utc) - timedelta(hours=ANALYSIS_FRESH_HOURS)
+
+    def _brief(code: str) -> AnalysisBrief | None:
+        a = analyses.get(code)
+        if a is None:
+            return None
+        kt = a.key_table or {}
+        created = a.created_at
+        if created and created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        return AnalysisBrief(
+            actionable=str(kt.get("actionable") or ""),
+            one_line_reason=str(kt.get("one_line_reason") or ""),
+            created_at=created.isoformat() if created else "",
+            is_fresh=bool(created and created >= fresh_cutoff),
+        )
+
     rows: list[StockRow] = []
     for code, w in watch.items():
         s = by_code.get(code)
@@ -91,9 +125,8 @@ def list_stocks(db: Session = Depends(get_db)):
             main_net_flow=(s.main_net_flow if s else None),
             signals=signals,
             has_strong_signal=has_strong(signals),
-            news_count=len(s.news) if s and s.news else 0,
-            notices_count=len(s.notices) if s and s.notices else 0,
             on_lhb=bool(s.lhb) if s else False,
+            analysis=_brief(code),
         ))
     # Strong-signal rows first, then by absolute change desc
     rows.sort(key=lambda r: (
