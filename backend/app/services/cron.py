@@ -29,7 +29,7 @@ from ..config import settings
 from ..db import SessionLocal
 from ..models import Analysis, Snapshot, Watchlist
 from .analysis import generate as analysis_generate, get_cached as analysis_cached
-from .scraper import collect_lhb_today, collect_many, collect_quotes_bulk
+from .scraper import VALUATION_FIELDS, collect_lhb_today, collect_many, collect_quotes_bulk
 from .signals import compute_signals
 
 logger = logging.getLogger(__name__)
@@ -82,6 +82,9 @@ def run_snapshot_job(post_close: bool = False) -> dict:
                 news=s.get("news") or [],
                 notices=s.get("notices") or [],
                 lhb=s.get("lhb"),
+                # Valuation fields land here when Tencent answered inside
+                # collect_many; null otherwise (next 5min quotes tick refills).
+                **{f: s.get(f) for f in VALUATION_FIELDS},
             )
             db.add(row)
             inserted += 1
@@ -113,24 +116,32 @@ def _is_trading_minute(now: datetime) -> bool:
 
 
 def _carry_forward(latest: Snapshot | None) -> dict:
-    """Pull context fields (news/notices/lhb) AND the prior main_net_flow
-    from the most recent snapshot for this code.
+    """Pull context fields (news/notices/lhb) AND prior values for any flaky
+    field (main_net_flow + valuation) from the most recent snapshot.
 
     Quotes ticks usually don't refetch news/notices/lhb at all (heavy
-    per-code fan-out), and main_net_flow is flaky (sina doesn't carry it
-    and the per-code akshare fund_flow fails intermittently on Railway).
-    Carrying the previous value forward keeps the 盯盘 list visually
-    stable instead of blinking to – every time one source is down.
+    per-code fan-out). main_net_flow is flaky (sina doesn't carry it; the
+    per-code akshare fund_flow fails intermittently on Railway). The
+    valuation fields (pe/pb/换手率/市值) come from Tencent — when Tencent
+    is down a sina-only tick would otherwise null them out. Carrying the
+    previous value forward keeps the 盯盘 list visually stable instead of
+    blinking to – every time one source hiccups.
+
+    "prev_*" keys are extracted (popped) by the caller so they don't end
+    up as Snapshot columns; the regular keys flow straight in.
     """
     if latest is None:
         return {
-            "news": [], "notices": [], "lhb": None, "prev_main_net_flow": None,
+            "news": [], "notices": [], "lhb": None,
+            "prev_main_net_flow": None,
+            **{f"prev_{f}": None for f in VALUATION_FIELDS},
         }
     return {
         "news": latest.news or [],
         "notices": latest.notices or [],
         "lhb": latest.lhb,
         "prev_main_net_flow": latest.main_net_flow,
+        **{f"prev_{f}": getattr(latest, f, None) for f in VALUATION_FIELDS},
     }
 
 
@@ -192,12 +203,17 @@ def run_quotes_job() -> dict:
             carry = _carry_forward(latest_by_code.get(code))
             # Use the freshly fetched main_net_flow if we got one; otherwise
             # carry the previous tick's value forward so the UI doesn't
-            # flicker when fund-flow is the flaky source.
-            net_flow = quote.get("main_net_flow")
-            if net_flow is None:
-                net_flow = carry.pop("prev_main_net_flow")
-            else:
-                carry.pop("prev_main_net_flow", None)
+            # flicker when fund-flow is the flaky source. Same pattern for
+            # the valuation fields — Tencent is reliable but not infallible.
+            net_flow = quote.get("main_net_flow") or carry.pop("prev_main_net_flow")
+            carry.pop("prev_main_net_flow", None)
+            valuation = {
+                f: (quote.get(f) if quote.get(f) is not None
+                    else carry.pop(f"prev_{f}", None))
+                for f in VALUATION_FIELDS
+            }
+            for f in VALUATION_FIELDS:
+                carry.pop(f"prev_{f}", None)
             snap = {
                 "code": code,
                 "price": quote.get("price"),
@@ -206,6 +222,7 @@ def run_quotes_job() -> dict:
                 "turnover": quote.get("turnover"),
                 "main_net_flow": net_flow,
                 "north_hold_change": None,
+                **valuation,
                 **carry,
             }
             snap["signals"] = compute_signals(snap)
@@ -221,6 +238,7 @@ def run_quotes_job() -> dict:
                 news=snap["news"],
                 notices=snap["notices"],
                 lhb=snap["lhb"],
+                **{f: snap[f] for f in VALUATION_FIELDS},
             )
             db.add(row)
             inserted += 1

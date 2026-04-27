@@ -271,6 +271,20 @@ def _user_prompt(w: Watchlist, s: Snapshot | None) -> str:
             f"上榜原因={s.lhb.get('reason','')}, 净买额={s.lhb.get('net_buy')}"
             if s.lhb else "（今日未上榜）"
         )
+        # Estimate units to keep the LLM grounded — bare numbers like
+        # "1757186000000" are easy to misread; "1.76 万亿" is hard to misread.
+        def _yi(v: float | None) -> str:
+            if v is None:
+                return "未知"
+            return f"{v / 1e8:.1f} 亿"
+
+        valuation_section = (
+            f"市盈率(PE,动态): {s.pe_ratio if s.pe_ratio is not None else '未知'}\n"
+            f"市净率(PB): {s.pb_ratio if s.pb_ratio is not None else '未知'}\n"
+            f"换手率: {f'{s.turnover_rate:.2f}%' if s.turnover_rate is not None else '未知'}\n"
+            f"总市值: {_yi(s.market_cap)}\n"
+            f"流通市值: {_yi(s.circ_market_cap)}\n"
+        )
         snap_section = (
             f"快照时间: {s.ts.isoformat()}\n"
             f"最新价: {s.price}\n"
@@ -279,6 +293,7 @@ def _user_prompt(w: Watchlist, s: Snapshot | None) -> str:
             f"成交额: {s.turnover} 元\n"
             f"主力净流入: {s.main_net_flow} 元\n"
             f"命中信号: {', '.join(s.signals or []) or '（无）'}\n\n"
+            f"## 估值与活跃度\n{valuation_section}\n"
             f"## 最近新闻\n{news_lines}\n\n"
             f"## 最近公告\n{notice_lines}\n\n"
             f"## 龙虎榜\n{lhb}\n"

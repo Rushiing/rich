@@ -39,6 +39,15 @@ class Snapshot(Base):
     main_net_flow: Mapped[float | None] = mapped_column(Float, nullable=True)  # 主力净流入(元)
     north_hold_change: Mapped[float | None] = mapped_column(Float, nullable=True)
 
+    # Valuation + activity (sourced from Tencent qt.gtimg.cn). Optional —
+    # nullable for any tick where Tencent didn't cover the code or wasn't
+    # reachable. Used to thicken the LLM prompt for the analysis pipeline.
+    pe_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pb_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    turnover_rate: Mapped[float | None] = mapped_column(Float, nullable=True)  # 换手率 (%)
+    market_cap: Mapped[float | None] = mapped_column(Float, nullable=True)  # 总市值 (元)
+    circ_market_cap: Mapped[float | None] = mapped_column(Float, nullable=True)  # 流通市值 (元)
+
     # Signals: list[str] of signal codes (e.g. ["limit_up", "lhb"])
     signals: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
 

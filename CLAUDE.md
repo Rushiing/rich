@@ -37,8 +37,13 @@ This is an MVP for a small trusted group. **Do not over-engineer.** No multi-ten
 - [x] **Phase 2** — APScheduler + akshare scrapers + signals engine + 盯盘 view
 - [x] **Phase 3** — Strategy-slot prompt + Claude tool-use key table + 500-word markdown + 4h cache
 - [x] **Phase 4** — Mobile responsive pass + PWA polish (manifest + icon + install meta)
+- [ ] **Phase 5** — K-line history + technical indicators (MA / MACD / BOLL / KDJ / RSI) and the signals that depend on them: 放量突破20日高 / 跌破20日均线 / 金叉死叉. *Planned for next-day work on a different machine.* The likely shape:
+  - `app/services/kline.py`: pull 60-day daily K-line per code via akshare (`stock_zh_a_hist`); cache in a new `klines` table or in a per-code parquet/JSON blob.
+  - Use `pandas-ta` (or hand-rolled — the formulas are short) for the indicator math; keep the dep small.
+  - Extend `signals.py` with 3-4 new rules; flag the strong ones (放量突破, 跌破年线) for red highlighting.
+  - Thread the latest indicator readings into the analysis prompt so the LLM stops "guessing" technical posture.
 
-All phases committed and pushed. See git log for atomic per-phase commits.
+All shipped phases committed and pushed. See git log for atomic per-phase commits.
 
 ### Phase 1 — what landed
 
@@ -216,11 +221,11 @@ Notes:
 
 ## Done — and what's next-level work
 
-The MVP is complete. Future iterations could include:
+The MVP is complete. Phase 5 (technical indicators) is queued — see the phase plan above. Other future iterations:
 
-- **More signals**: the spec called for 放量突破20日高 / 跌破20日均线 / 北向加仓 — these need historical K-line data (an extra akshare call per code per cron tick). Add to `services/scraper.py` + `services/signals.py` when the appetite is there.
 - **Snapshot history UI**: snapshots are stored but not visible. A timeline view per stock would surface intra-day evolution. Spec was explicit about deferring this.
 - **第三层深度解析**: research-report-length analysis (~2000 words) on demand. Same pipeline, longer max_tokens, different prompt.
 - **Strategy authoring UI**: today strategies are code-defined. Adding a CRUD UI for strategy rules would let the user iterate without redeploys.
 - **北向资金 per-stock**: skipped in MVP for simplicity. `ak.stock_hsgt_hold_stock_em` is the entry point; integrate into `scraper.py`.
-- **Snapshot retention**: nothing prunes old rows. At 6 ticks/day × 100 stocks × 365 days = ~220k rows/yr — fine for years, but a cron-based pruner is one-day work when needed.
+- **Snapshot retention**: nothing prunes old rows. At 5min ticks during trading hours × 100 stocks × 365 days = ~870k rows/yr (with the new tier) — fine for years, but a cron-based pruner is one-day work when needed.
+- **LongBridge integration** (v3+): if any user has a LongBridge live account, their position data could auto-fill the `scenario_advice` 4-quadrant (未持/大赚/小赚亏/大亏) without the user self-reporting.

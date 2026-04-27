@@ -15,7 +15,11 @@ from typing import Any
 
 import akshare as ak
 
-from .realtime_quotes import fetch_quotes_sina
+from .realtime_quotes import fetch_quotes_sina, fetch_quotes_tencent
+
+# Fields beyond the basic quote — Tencent carries them, sina and akshare don't.
+# Listed here so the cascade and Snapshot insertion stay in sync.
+VALUATION_FIELDS = ("pe_ratio", "pb_ratio", "turnover_rate", "market_cap", "circ_market_cap")
 
 logger = logging.getLogger(__name__)
 
@@ -138,15 +142,18 @@ def _classify_notice(title: str) -> str | None:
     return None
 
 
-def collect_one(code: str, sina_spot: dict[str, Any] | None = None) -> dict[str, Any]:
+def collect_one(code: str, bulk_spot: dict[str, Any] | None = None) -> dict[str, Any]:
     """Collect a snapshot dict for one code. Never raises — fields are None on failure.
 
-    `sina_spot` lets callers pass a pre-fetched sina quote (one HTTP call
-    for the whole watchlist via fetch_quotes_sina). When provided we skip
-    the per-code akshare spot endpoint, which on Railway is unreachable
-    for both Xueqiu (`'data'` KeyError) and em bid_ask (empty body).
+    `bulk_spot` lets callers pass a pre-fetched quote from the bulk source
+    (Tencent or sina, fetched once for the whole watchlist). When provided
+    we skip the per-code akshare spot endpoint — on Railway Xueqiu and em
+    bid_ask are unreachable so this fallback is rarely needed. Tencent
+    bulk also carries valuation fields (PE/PB/换手率/市值) which sina and
+    akshare don't, so passing it through is how those land in the hourly
+    snapshot too.
     """
-    spot = sina_spot if sina_spot else _spot(code)
+    spot = bulk_spot if bulk_spot else _spot(code)
     fund = _fund_flow(code)
     news = _news(code)
     notices = _notices(code)
@@ -164,19 +171,32 @@ def collect_one(code: str, sina_spot: dict[str, Any] | None = None) -> dict[str,
 def collect_many(codes: list[str], max_workers: int = 10) -> list[dict[str, Any]]:
     """Collect snapshots for all codes in parallel.
 
-    Hits sina hq once for the whole batch (price/change/volume/turnover)
-    so the per-code workers only handle fund flow + news + notices. Codes
-    sina didn't cover (rare — usually delisted) fall back to akshare's
-    per-code spot endpoint inside collect_one.
+    Hits Tencent qt.gtimg.cn once for the whole batch (price/change/volume/
+    turnover + valuation). Codes Tencent didn't cover fall back to sina hq
+    in a second batch call. Per-code workers then handle fund flow + news +
+    notices. Anything still missing core spot data falls through to akshare
+    per-code inside collect_one.
     """
     if not codes:
         return []
-    sina = fetch_quotes_sina(codes)
-    if sina:
-        logger.info("collect_many: sina filled %d/%d codes", len(sina), len(codes))
+    bulk: dict[str, dict[str, Any]] = {}
+    tencent = fetch_quotes_tencent(codes)
+    if tencent:
+        bulk.update(tencent)
+        logger.info("collect_many: tencent filled %d/%d codes", len(tencent), len(codes))
+
+    needs_sina = [c for c in codes if c not in bulk]
+    if needs_sina:
+        sina = fetch_quotes_sina(needs_sina)
+        if sina:
+            for c, q in sina.items():
+                bulk.setdefault(c, {}).update(q)
+            logger.info("collect_many: sina filled %d/%d remaining codes",
+                        len(sina), len(needs_sina))
+
     results: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=min(max_workers, len(codes))) as pool:
-        futures = {pool.submit(collect_one, c, sina.get(c)): c for c in codes}
+        futures = {pool.submit(collect_one, c, bulk.get(c)): c for c in codes}
         for fut in as_completed(futures):
             try:
                 results.append(fut.result())
@@ -187,60 +207,67 @@ def collect_many(codes: list[str], max_workers: int = 10) -> list[dict[str, Any]
 
 
 def collect_quotes_bulk(codes: list[str]) -> dict[str, dict[str, Any]]:
-    """Pull price/change/volume/turnover + main fund flow for many codes.
+    """Pull price/change/volume/turnover + valuation + main fund flow for many codes.
 
-    Cascading source strategy, ordered by reliability on Railway today:
+    Cascading source strategy, ordered by reliability + richness on Railway:
 
-      1. **eastmoney bulk** (`stock_zh_a_spot_em` + `..._fund_flow_rank`).
-         One round-trip if it works — but push2.eastmoney.com is
-         consistently unreachable from Railway, so this almost always
-         falls through. Kept in case the host comes back or we move infra.
-      2. **sina hq direct** (hq.sinajs.cn). Single HTTP GET for the whole
-         batch, no token, no third-party lib. Carries price/change/volume
-         /turnover but not main_net_flow. This is the primary working
-         path right now.
-      3. **akshare per-code fan-out** (Xueqiu / em bid_ask + per-code
-         fund_flow). Slow, partially failing, but the only place we can
-         backfill main_net_flow.
+      1. **Tencent qt.gtimg.cn** (NEW). Single HTTP GET for the whole batch.
+         Carries everything sina has *plus* PE / PB / 换手率 / 总市值 / 流通市值
+         in the same payload. Promoted to primary because the extra fields
+         materially help the LLM analysis prompt.
+      2. **Sina hq direct** (hq.sinajs.cn). Same shape, basic fields only.
+         Falls in for codes Tencent didn't cover (rare) or as a backup if
+         Tencent is down.
+      3. **eastmoney bulk** (`stock_zh_a_spot_em` + `..._fund_flow_rank`).
+         push2.eastmoney.com is consistently unreachable from Railway, so
+         this almost always no-ops. Kept for the rank-based main_net_flow
+         in case the host comes back.
+      4. **akshare per-code fan-out** (Xueqiu / em bid_ask + per-code
+         fund_flow). Slow, partially failing, but the only path that
+         reliably backfills main_net_flow on Railway today.
 
-    Whatever each layer fills in carries forward; later layers only run
-    for codes still missing core data, and step 3 also runs for codes
-    that have price but lack main_net_flow.
+    Each layer fills only what's still missing; layer 4 also fills
+    main_net_flow for codes earlier layers covered without flow data.
 
-    Returns {code: {price, change_pct, volume, turnover, main_net_flow?}}
-    for codes we got data for. Missing codes should not be written as new
-    snapshot rows.
+    Returns {code: {price, change_pct, volume, turnover, main_net_flow?,
+    pe_ratio?, pb_ratio?, turnover_rate?, market_cap?, circ_market_cap?}}.
     """
     if not codes:
         return {}
 
     out: dict[str, dict[str, Any]] = {}
 
-    # 1. Eastmoney bulk (cheap when it works).
-    bulk = _try_bulk(codes)
-    if bulk:
-        out.update(bulk)
+    # 1. Tencent — primary because of the valuation fields.
+    tencent = fetch_quotes_tencent(codes)
+    if tencent:
+        out.update(tencent)
+        logger.info("quotes: tencent filled %d/%d codes", len(tencent), len(codes))
 
-    # 2. Sina direct for codes that bulk didn't cover with price.
+    # 2. Sina for codes Tencent didn't return.
     needs_spot = [c for c in codes if out.get(c, {}).get("price") is None]
     if needs_spot:
         sina = fetch_quotes_sina(needs_spot)
         if sina:
             for c, q in sina.items():
                 out.setdefault(c, {}).update(q)
-            logger.info("quotes: sina filled %d/%d codes", len(sina), len(needs_spot))
-        else:
-            logger.warning("quotes: sina returned nothing for %d codes", len(needs_spot))
+            logger.info("quotes: sina filled %d/%d remaining codes",
+                        len(sina), len(needs_spot))
 
-    # 3. akshare per-code fan-out: backfill anything still missing core
-    # fields, plus main_net_flow for codes sina covered.
+    # 3. eastmoney bulk — hopefully picks up main_net_flow if push2 is reachable.
+    bulk = _try_bulk(codes)
+    if bulk:
+        for c, q in bulk.items():
+            for k, v in q.items():
+                out.setdefault(c, {}).setdefault(k, v)
+
+    # 4. akshare per-code: anything still missing core fields, plus
+    # main_net_flow for codes that have a price but no flow.
     still_missing = [c for c in codes if out.get(c, {}).get("price") is None]
     needs_flow = [
         c for c in codes
         if c in out and out[c].get("main_net_flow") is None
     ]
     if still_missing or needs_flow:
-        # One thread pool for both — the work items are independent.
         per_code = _per_code_quotes(still_missing)
         for c, q in per_code.items():
             out.setdefault(c, {}).update(q)

@@ -1,14 +1,17 @@
-"""Realtime A-share quotes via sina hq direct HTTP.
+"""Realtime A-share quotes via direct HTTP — sina hq + Tencent qt.gtimg.cn.
 
 Why this exists: Railway egress (even from the Singapore region) can't
 reliably reach push2.eastmoney.com or xueqiu.com — both akshare paths
 that bulk_em / per-code spot rely on come back as RemoteDisconnected
-or 'data' KeyError. Sina's hq.sinajs.cn host has historically been more
-forgiving toward overseas IPs and returns plain CSV-ish text we can
-parse without any third-party library.
+or 'data' KeyError. Sina's hq.sinajs.cn and Tencent's qt.gtimg.cn are
+both forgiving toward overseas IPs and return plain CSV-ish text we
+can parse without any third-party library.
 
-Used as the primary path in services.scraper.collect_quotes_bulk; akshare
-stays as a fallback for the rare cases sina doesn't cover.
+Tencent is preferred when reachable because its payload carries
+valuation metrics (PE / PB / 换手率 / 总市值 / 流通市值) that sina doesn't.
+Sina remains a fallback for codes Tencent missed and as a backup if
+Tencent is down. Used together by services.scraper.collect_quotes_bulk;
+akshare stays as a deeper fallback.
 """
 from __future__ import annotations
 
@@ -109,4 +112,113 @@ def _parse_sina_row(payload: str) -> dict[str, Any] | None:
         "change_pct": change_pct,
         "volume": volume if volume > 0 else None,
         "turnover": turnover if turnover > 0 else None,
+    }
+
+
+# --- Tencent qt.gtimg.cn ---------------------------------------------------
+# Same one-HTTP-roundtrip-per-batch shape as sina, but the response carries
+# valuation metrics (PE/PB/换手率/总市值/流通市值) that sina doesn't.
+
+TENCENT_BASE = "https://qt.gtimg.cn/q="
+_TENCENT_LINE_RE = re.compile(r'v_(\w+)="([^"]*)"')
+
+
+def _tencent_symbol(code: str) -> str:
+    if code.startswith(("60", "68")):
+        return "sh" + code
+    if code.startswith(("00", "30")):
+        return "sz" + code
+    if code.startswith(("8", "4")):
+        return "bj" + code
+    return code
+
+
+def fetch_quotes_tencent(
+    codes: list[str], chunk: int = 50, timeout: int = 8
+) -> dict[str, dict[str, Any]]:
+    """Pull realtime quotes from Tencent's qt.gtimg.cn.
+
+    Returns {code: {price, change_pct, volume, turnover, turnover_rate,
+    pe_ratio, pb_ratio, market_cap, circ_market_cap}} for codes Tencent
+    returned a non-empty payload for. Codes Tencent didn't cover are absent;
+    caller should fall back to sina + akshare.
+    """
+    if not codes:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for i in range(0, len(codes), chunk):
+        batch = codes[i:i + chunk]
+        url = TENCENT_BASE + ",".join(_tencent_symbol(c) for c in batch)
+        try:
+            req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urlopen(req, timeout=timeout) as resp:
+                body = resp.read().decode("gbk", errors="replace")
+        except (URLError, TimeoutError) as e:
+            logger.warning("tencent quotes fetch failed for %d codes: %s", len(batch), e)
+            continue
+        for sym, payload in _TENCENT_LINE_RE.findall(body):
+            if not payload.strip():
+                continue
+            code = sym[2:] if sym[:2] in ("sh", "sz", "bj") else sym
+            parsed = _parse_tencent_row(payload)
+            if parsed is not None:
+                out[code] = parsed
+    return out
+
+
+def _parse_tencent_row(payload: str) -> dict[str, Any] | None:
+    """Tencent A-share row layout (tilde-separated). Field positions verified
+    against live qt.gtimg.cn responses (4/27):
+
+        3:  current price
+        4:  prev close
+        6:  volume (手 = lots of 100 shares)
+        32: change %
+        37: turnover (万元)
+        38: 换手率 (%)
+        39: 市盈率（动态）
+        44: 流通市值 (亿元)
+        45: 总市值 (亿元)
+        46: 市净率
+
+    Returns None if the row is unusable. Volume is normalized to *shares* to
+    align with the sina parser; turnover and market caps to *元*.
+    """
+    fields = payload.split("~")
+    if len(fields) < 47:
+        return None
+
+    def _f(idx: int) -> float | None:
+        try:
+            v = fields[idx].strip()
+            return float(v) if v else None
+        except (ValueError, IndexError):
+            return None
+
+    price = _f(3)
+    prev_close = _f(4)
+    if price is None or price <= 0:
+        return None
+
+    change_pct = _f(32)
+    if change_pct is None and prev_close and prev_close > 0:
+        change_pct = (price - prev_close) / prev_close * 100.0
+
+    volume_lots = _f(6)
+    turnover_wan = _f(37)
+    market_cap_yi = _f(45)
+    circ_cap_yi = _f(44)
+
+    return {
+        "price": price,
+        "change_pct": change_pct,
+        # Tencent reports volume in 手 (lots of 100); convert to 股 for parity
+        # with the sina path so downstream signals see a consistent unit.
+        "volume": volume_lots * 100 if volume_lots else None,
+        "turnover": turnover_wan * 10_000 if turnover_wan else None,
+        "turnover_rate": _f(38),
+        "pe_ratio": _f(39),
+        "pb_ratio": _f(46),
+        "market_cap": market_cap_yi * 1e8 if market_cap_yi else None,
+        "circ_market_cap": circ_cap_yi * 1e8 if circ_cap_yi else None,
     }
