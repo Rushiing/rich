@@ -16,8 +16,10 @@ LIMIT_UP_PCT_BY_PREFIX = {
     "4": 30.0,
 }
 
-# Threshold for "main-force big inflow" signal — ¥50,000,000.
-BIG_INFLOW_YUAN = 50_000_000.0
+# Threshold for "main-force big inflow" signal — ¥20,000,000.
+# Lowered from ¥50M after a 4/27 review: too many real mid-cap moves
+# (¥20–50M flow on a +3–7% day) were falling off the signal radar.
+BIG_INFLOW_YUAN = 20_000_000.0
 
 
 def _limit_pct(code: str) -> float:
