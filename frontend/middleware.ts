@@ -4,8 +4,15 @@ import { NextRequest, NextResponse } from "next/server";
 // is the actual auth gate (returns 401 if needed).
 const PUBLIC_PAGES = ["/login"];
 
+// Testing-window kill switch. When AUTH_DISABLED=true on the frontend
+// service we skip every redirect; backend reads the same env var and
+// short-circuits require_auth. Both sides default off so prod stays
+// gated unless this is explicitly flipped on Railway.
+const AUTH_DISABLED = process.env.AUTH_DISABLED === "true";
+
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
+  if (AUTH_DISABLED) return NextResponse.next();
   if (pathname.startsWith("/api/")) return NextResponse.next();
   if (PUBLIC_PAGES.some((p) => pathname.startsWith(p))) return NextResponse.next();
 

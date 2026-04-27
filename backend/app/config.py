@@ -22,5 +22,11 @@ class Settings(BaseSettings):
     # running multiple replicas (only one should schedule).
     SCHEDULER_ENABLED: bool = True
 
+    # Skip the password gate entirely. Intended ONLY for the testing window
+    # before the tool gets handed to its real audience — anyone with the URL
+    # gets full access while this is True. Default False so production stays
+    # locked unless this is explicitly flipped on Railway.
+    AUTH_DISABLED: bool = False
+
 
 settings = Settings()

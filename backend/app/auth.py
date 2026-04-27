@@ -35,5 +35,10 @@ def check_password(password: str) -> bool:
 
 
 def require_auth(rich_session: str | None = Cookie(default=None)) -> None:
+    # Bypass during the testing window — toggled via AUTH_DISABLED env var.
+    # Off by default so production routes stay locked unless explicitly
+    # opted out on Railway.
+    if settings.AUTH_DISABLED:
+        return
     if not rich_session or not verify_token(rich_session):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
