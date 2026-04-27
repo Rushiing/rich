@@ -138,9 +138,15 @@ def _classify_notice(title: str) -> str | None:
     return None
 
 
-def collect_one(code: str) -> dict[str, Any]:
-    """Collect a snapshot dict for one code. Never raises — fields are None on failure."""
-    spot = _spot(code)
+def collect_one(code: str, sina_spot: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Collect a snapshot dict for one code. Never raises — fields are None on failure.
+
+    `sina_spot` lets callers pass a pre-fetched sina quote (one HTTP call
+    for the whole watchlist via fetch_quotes_sina). When provided we skip
+    the per-code akshare spot endpoint, which on Railway is unreachable
+    for both Xueqiu (`'data'` KeyError) and em bid_ask (empty body).
+    """
+    spot = sina_spot if sina_spot else _spot(code)
     fund = _fund_flow(code)
     news = _news(code)
     notices = _notices(code)
@@ -156,12 +162,21 @@ def collect_one(code: str) -> dict[str, Any]:
 
 
 def collect_many(codes: list[str], max_workers: int = 10) -> list[dict[str, Any]]:
-    """Collect snapshots for all codes in parallel."""
+    """Collect snapshots for all codes in parallel.
+
+    Hits sina hq once for the whole batch (price/change/volume/turnover)
+    so the per-code workers only handle fund flow + news + notices. Codes
+    sina didn't cover (rare — usually delisted) fall back to akshare's
+    per-code spot endpoint inside collect_one.
+    """
     if not codes:
         return []
+    sina = fetch_quotes_sina(codes)
+    if sina:
+        logger.info("collect_many: sina filled %d/%d codes", len(sina), len(codes))
     results: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=min(max_workers, len(codes))) as pool:
-        futures = {pool.submit(collect_one, c): c for c in codes}
+        futures = {pool.submit(collect_one, c, sina.get(c)): c for c in codes}
         for fut in as_completed(futures):
             try:
                 results.append(fut.result())

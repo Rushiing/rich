@@ -101,6 +101,26 @@ def list_stocks(db: Session = Depends(get_db)):
 
     by_code = {s.code: s for s in snaps}
 
+    # Junk-row fallback: if the latest snapshot for a code has neither a
+    # price nor a main_net_flow (e.g., a 16:00 hourly job ran with all
+    # akshare endpoints failing and wrote a row of nulls), surface the
+    # most recent row that *does* have data so the 盯盘 list keeps
+    # showing yesterday's close instead of going blank.
+    for code in list(by_code.keys()):
+        s = by_code[code]
+        if s.price is None and s.main_net_flow is None:
+            good = (
+                db.query(Snapshot)
+                .filter(
+                    Snapshot.code == code,
+                    (Snapshot.price.isnot(None)) | (Snapshot.main_net_flow.isnot(None)),
+                )
+                .order_by(desc(Snapshot.id))
+                .first()
+            )
+            if good is not None:
+                by_code[code] = good
+
     # One-shot pull of every analysis row for the watched codes.
     analyses = {
         a.code: a
@@ -285,6 +305,20 @@ def stock_detail(code: str, db: Session = Depends(get_db)):
         .order_by(desc(Snapshot.id))
         .first()
     )
+    # Same junk-row fallback as list_stocks: if the latest snapshot is
+    # all-null on price+flow, walk back to the most recent good one.
+    if s is not None and s.price is None and s.main_net_flow is None:
+        good = (
+            db.query(Snapshot)
+            .filter(
+                Snapshot.code == code,
+                (Snapshot.price.isnot(None)) | (Snapshot.main_net_flow.isnot(None)),
+            )
+            .order_by(desc(Snapshot.id))
+            .first()
+        )
+        if good is not None:
+            s = good
     return StockDetail(
         code=code,
         name=w.name,
