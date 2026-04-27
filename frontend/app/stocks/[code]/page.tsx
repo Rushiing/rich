@@ -1,7 +1,20 @@
 "use client";
 
 import { use, useEffect, useState, type ReactNode } from "react";
-import { api, KeyTable, StockAnalysis } from "../../../lib/api";
+import {
+  api, KeyTable, RiskScores, ScenarioAdvice, StockAnalysis, StopLossLevel,
+} from "../../../lib/api";
+
+const RISK_DIM_LABEL: Record<keyof Omit<RiskScores, "overall">, string> = {
+  fundamentals: "基本面",
+  valuation: "估值",
+  earnings_momentum: "业绩兑现",
+  industry: "行业景气度",
+  governance: "公司治理",
+  price_action: "股价表现",
+  capital: "资金面",
+  thematic: "题材炒作",
+};
 
 export default function StockDetailPage({
   params,
@@ -129,26 +142,72 @@ function FreshnessBar({ analysis, generating, onRegenerate }: { analysis: StockA
 
 function KeyTableCard({ kt }: { kt: KeyTable }) {
   const actionableColor =
-    kt.actionable === "建议买入" ? "#22c55e" :
-    kt.actionable === "建议卖出" ? "#ef4444" :
-    kt.actionable === "不建议入手" ? "#888" : "#facc15";
+    kt.actionable === "建议买入" ? "#ef4444" :   // A股语境：红=买/涨
+    kt.actionable === "建议卖出" ? "#22c55e" :   // 绿=卖/跌
+    kt.actionable === "不建议入手" ? "#6b7280" :
+    "#9ca3af";                                   // 观望
 
   return (
-    <section style={{ marginTop: 16, border: "1px solid #2a2a2a", borderRadius: 8, overflow: "hidden" }}>
-      <div style={{ padding: 16, background: "#141414" }}>
-        <div style={{ fontSize: 22, fontWeight: 600, color: actionableColor }}>{kt.actionable}</div>
-        <div style={{ marginTop: 4, color: "#aaa", fontSize: 13 }}>{kt.one_line_reason}</div>
+    <section style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 12 }}>
+      {/* Header card: actionable verdict + company portrait + red flags */}
+      <div style={{ padding: 16, background: "#141414", border: "1px solid #2a2a2a", borderRadius: 8 }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
+          <div style={{ fontSize: 22, fontWeight: 600, color: actionableColor }}>{kt.actionable}</div>
+          {kt.company_tag && (
+            <div style={{ color: "#9ca3af", fontSize: 13 }}>{kt.company_tag}</div>
+          )}
+        </div>
+        {kt.one_line_reason && (
+          <div style={{ marginTop: 6, color: "#d4d4d4", fontSize: 14 }}>{kt.one_line_reason}</div>
+        )}
+        {kt.red_flags && kt.red_flags.length > 0 && (
+          <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {kt.red_flags.map((f, i) => (
+              <span
+                key={i}
+                style={{
+                  padding: "3px 8px",
+                  borderRadius: 4,
+                  background: "rgba(239, 68, 68, 0.15)",
+                  color: "#fca5a5",
+                  fontSize: 12,
+                  border: "1px solid rgba(239, 68, 68, 0.3)",
+                }}
+              >
+                🔴 {f}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
-      <table style={{ width: "100%", borderCollapse: "collapse" }}>
-        <tbody>
-          <KtRow label="合理买入价" value={`${kt.buy_price_low.toFixed(2)} – ${kt.buy_price_high.toFixed(2)}`} />
-          <KtRow label="合理卖出价" value={`${kt.sell_price_low.toFixed(2)} – ${kt.sell_price_high.toFixed(2)}`} />
-          <KtRow label="建议仓位" value={`${kt.position_pct.toFixed(0)}%`} />
-          <KtRow label="持有时间" value={kt.hold_period} />
-          <KtRow label="止损线" value={kt.stop_loss.toFixed(2)} />
-          <KtRow label="置信度" value={kt.confidence} />
-        </tbody>
-      </table>
+
+      {/* Two-column: key prices/positions on left, risk scorecard on right */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <div style={{ border: "1px solid #2a2a2a", borderRadius: 8, overflow: "hidden" }}>
+          <div style={{ padding: "10px 14px", background: "#0f0f0f", color: "#888", fontSize: 12 }}>关键数据</div>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <tbody>
+              <KtRow label="合理买入价" value={`${kt.buy_price_low.toFixed(2)} – ${kt.buy_price_high.toFixed(2)}`} />
+              <KtRow label="合理卖出价" value={`${kt.sell_price_low.toFixed(2)} – ${kt.sell_price_high.toFixed(2)}`} />
+              <KtRow label="建议仓位" value={`${kt.position_pct.toFixed(0)}%`} />
+              <KtRow label="持有时间" value={kt.hold_period} />
+              <KtRow label="置信度" value={kt.confidence} />
+              {kt.risk_scores?.overall && (
+                <KtRow label="综合评级" value={kt.risk_scores.overall} />
+              )}
+            </tbody>
+          </table>
+        </div>
+        {kt.risk_scores && <RiskScoreCard scores={kt.risk_scores} />}
+      </div>
+
+      {/* Stop-loss tiers — most important for high-risk picks */}
+      {kt.stop_loss_levels && kt.stop_loss_levels.length > 0 && (
+        <StopLossCard levels={kt.stop_loss_levels} />
+      )}
+
+      {/* Scenario-based advice — what to do based on current holding state */}
+      {kt.scenario_advice && <ScenarioAdviceCard advice={kt.scenario_advice} />}
     </section>
   );
 }
@@ -156,9 +215,93 @@ function KeyTableCard({ kt }: { kt: KeyTable }) {
 function KtRow({ label, value }: { label: string; value: string }) {
   return (
     <tr>
-      <td style={{ padding: "8px 16px", color: "#888", fontSize: 13, width: 110, borderBottom: "1px solid #1a1a1a" }}>{label}</td>
-      <td style={{ padding: "8px 16px", fontSize: 14, fontFamily: "monospace", borderBottom: "1px solid #1a1a1a" }}>{value}</td>
+      <td style={{ padding: "8px 14px", color: "#888", fontSize: 13, width: "45%", borderBottom: "1px solid #1a1a1a" }}>{label}</td>
+      <td style={{ padding: "8px 14px", fontSize: 14, fontFamily: "monospace", borderBottom: "1px solid #1a1a1a" }}>{value}</td>
     </tr>
+  );
+}
+
+function RiskScoreCard({ scores }: { scores: RiskScores }) {
+  const dims = Object.entries(RISK_DIM_LABEL) as [keyof typeof RISK_DIM_LABEL, string][];
+  return (
+    <div style={{ border: "1px solid #2a2a2a", borderRadius: 8, overflow: "hidden" }}>
+      <div style={{ padding: "10px 14px", background: "#0f0f0f", color: "#888", fontSize: 12 }}>风险评分</div>
+      <div style={{ padding: 4 }}>
+        {dims.map(([key, label]) => (
+          <div key={key} style={{ display: "flex", alignItems: "center", padding: "6px 10px" }}>
+            <span style={{ color: "#888", fontSize: 13, flex: 1 }}>{label}</span>
+            <span style={{ fontSize: 13, color: "#facc15", letterSpacing: 1 }}>
+              {"⭐".repeat(scores[key])}
+              <span style={{ color: "#333" }}>{"⭐".repeat(5 - scores[key])}</span>
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function StopLossCard({ levels }: { levels: StopLossLevel[] }) {
+  const colorOf = (label: string) =>
+    label === "紧急止损" ? "#ef4444" :
+    label === "中线止损" ? "#facc15" :
+    "#9ca3af";
+  return (
+    <div style={{ border: "1px solid #2a2a2a", borderRadius: 8, overflow: "hidden" }}>
+      <div style={{ padding: "10px 14px", background: "#0f0f0f", color: "#888", fontSize: 12 }}>止损线</div>
+      <div>
+        {levels.map((lv, i) => (
+          <div
+            key={i}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              padding: "10px 14px",
+              borderTop: i === 0 ? undefined : "1px solid #1a1a1a",
+              gap: 12,
+            }}
+          >
+            <span style={{ color: colorOf(lv.label), fontSize: 12, fontWeight: 600, minWidth: 60 }}>
+              🛡️ {lv.label}
+            </span>
+            <span style={{ fontFamily: "monospace", fontSize: 15, color: colorOf(lv.label), minWidth: 60 }}>
+              {lv.price.toFixed(2)}
+            </span>
+            <span style={{ color: "#aaa", fontSize: 13, lineHeight: 1.5 }}>{lv.reason}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ScenarioAdviceCard({ advice }: { advice: ScenarioAdvice }) {
+  const items: { label: string; text: string }[] = [
+    { label: "未持仓",       text: advice.not_holding },
+    { label: "已持仓 · 大幅浮盈", text: advice.holding_big_gain },
+    { label: "已持仓 · 小幅",     text: advice.holding_small },
+    { label: "已持仓 · 大幅浮亏", text: advice.holding_big_loss },
+  ];
+  return (
+    <div style={{ border: "1px solid #2a2a2a", borderRadius: 8, overflow: "hidden" }}>
+      <div style={{ padding: "10px 14px", background: "#0f0f0f", color: "#888", fontSize: 12 }}>按持仓情境</div>
+      <div>
+        {items.map((it, i) => (
+          <div
+            key={i}
+            style={{
+              display: "flex",
+              padding: "10px 14px",
+              borderTop: i === 0 ? undefined : "1px solid #1a1a1a",
+              gap: 12,
+            }}
+          >
+            <span style={{ color: "#888", fontSize: 13, minWidth: 130 }}>{it.label}</span>
+            <span style={{ color: "#d4d4d4", fontSize: 13, lineHeight: 1.5, flex: 1 }}>{it.text}</span>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 

@@ -40,9 +40,16 @@ router = APIRouter(prefix="/api/stocks", tags=["stocks"], dependencies=[Depends(
 
 
 class AnalysisBrief(BaseModel):
-    """Just the bits the 盯盘 list needs from the cached Analysis row."""
+    """Just the bits the 盯盘 list needs from the cached Analysis row.
+
+    Mirrors the v2 key_table schema (4/27): company_tag and red_flags are
+    surfaced inline in the table so a row screams '维权 + 业绩塌方' without
+    needing the user to drill into the detail page.
+    """
     actionable: str            # 建议买入 / 观望 / 建议卖出 / 不建议入手
     one_line_reason: str
+    company_tag: str           # one-line company portrait
+    red_flags: list[str]       # hard-detected risk markers
     created_at: str
     is_fresh: bool             # < 4h old
 
@@ -106,12 +113,19 @@ def list_stocks(db: Session = Depends(get_db)):
         if a is None:
             return None
         kt = a.key_table or {}
+        # Schema v2 invalidation: rows from the old schema (no company_tag)
+        # are treated as missing so batch_analysis re-generates them with
+        # the new structure. No DB cleanup needed.
+        if "company_tag" not in kt:
+            return None
         created = a.created_at
         if created and created.tzinfo is None:
             created = created.replace(tzinfo=timezone.utc)
         return AnalysisBrief(
             actionable=str(kt.get("actionable") or ""),
             one_line_reason=str(kt.get("one_line_reason") or ""),
+            company_tag=str(kt.get("company_tag") or ""),
+            red_flags=list(kt.get("red_flags") or []),
             created_at=created.isoformat() if created else "",
             is_fresh=bool(created and created >= fresh_cutoff),
         )

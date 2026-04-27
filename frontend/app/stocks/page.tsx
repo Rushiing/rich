@@ -371,9 +371,10 @@ function ActionableCell({ analysis }: { analysis: AnalysisBrief | null }) {
     color: "#9ca3af",
     label: analysis.actionable,
   };
+  const flagCount = analysis.red_flags?.length ?? 0;
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 140 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 180, maxWidth: 280 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
         <span
           style={{
             display: "inline-block",
@@ -387,12 +388,32 @@ function ActionableCell({ analysis }: { analysis: AnalysisBrief | null }) {
         >
           {style.label}
         </span>
+        {flagCount > 0 && (
+          <span
+            style={{
+              display: "inline-block",
+              padding: "1px 5px",
+              borderRadius: 3,
+              background: "rgba(239, 68, 68, 0.18)",
+              color: "#fca5a5",
+              fontSize: 10,
+            }}
+            title={analysis.red_flags.join(" / ")}
+          >
+            🔴 {flagCount}
+          </span>
+        )}
         {!analysis.is_fresh && (
           <span style={{ color: "#666", fontSize: 10 }} title="生成时间已超过 4 小时">已过期</span>
         )}
       </div>
+      {analysis.company_tag && (
+        <span style={{ color: "#9ca3af", fontSize: 11, lineHeight: 1.4 }}>
+          {analysis.company_tag}
+        </span>
+      )}
       {analysis.one_line_reason && (
-        <span style={{ color: "#888", fontSize: 11, lineHeight: 1.4 }}>
+        <span style={{ color: "#777", fontSize: 11, lineHeight: 1.4 }}>
           {analysis.one_line_reason}
         </span>
       )}

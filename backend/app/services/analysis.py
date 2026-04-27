@@ -30,8 +30,12 @@ logger = logging.getLogger(__name__)
 MODEL = "claude-sonnet-4-6"
 
 # Tool schema. Claude is forced to call this; we read the structured input
-# back as our analysis. The `additionalProperties: False` constraint and
-# enum lists keep the model from drifting out of contract.
+# back as our analysis. The `additionalProperties: False` constraint + enums
+# keep the model from drifting out of contract.
+#
+# v2 (4/27): expanded to match the editorial template the user shared
+# (益佰制药 example): structured red-flag detection, multi-tier stop-loss
+# levels, scenario-based action advice, 8-dimension risk scorecard.
 ANALYSIS_TOOL = {
     "name": "submit_analysis",
     "description": "提交对该 A 股标的的结构化投资建议。必须调用一次。",
@@ -44,43 +48,161 @@ ANALYSIS_TOOL = {
                 "type": "object",
                 "additionalProperties": False,
                 "required": [
-                    "actionable", "buy_price_low", "buy_price_high",
-                    "sell_price_low", "sell_price_high", "position_pct",
-                    "hold_period", "stop_loss", "confidence", "one_line_reason",
+                    "company_tag",
+                    "actionable", "one_line_reason",
+                    "red_flags",
+                    "buy_price_low", "buy_price_high",
+                    "sell_price_low", "sell_price_high",
+                    "position_pct", "hold_period",
+                    "stop_loss_levels",
+                    "scenario_advice",
+                    "risk_scores",
+                    "confidence",
                 ],
                 "properties": {
+                    "company_tag": {
+                        "type": "string",
+                        "description": (
+                            '一句话公司画像，30 字内。格式参考："贵州中药老字号 + '
+                            '业绩塌方 + 维权标记" 这种用 "+" 串起来的特征拼接。'
+                        ),
+                    },
                     "actionable": {
                         "type": "string",
                         "enum": ["建议买入", "观望", "建议卖出", "不建议入手"],
+                    },
+                    "one_line_reason": {
+                        "type": "string",
+                        "description": "一句话理由，不超过 40 字。直说，不要和稀泥。",
+                    },
+                    "red_flags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "硬标识检测，每条 ≤ 25 字。常见红旗：ST 标记 / 维权标记 / "
+                            "曾被监管处罚 / 异常波动公告但公司声明无信息 / 由盈转亏 / "
+                            "营收同比转负 / 三费占营收比 > 50% / 控股股东减持 / "
+                            "限售解禁压力。没有就空数组。"
+                        ),
                     },
                     "buy_price_low": {"type": "number", "description": "合理买入价区间下限"},
                     "buy_price_high": {"type": "number", "description": "合理买入价区间上限"},
                     "sell_price_low": {"type": "number", "description": "合理卖出价区间下限"},
                     "sell_price_high": {"type": "number", "description": "合理卖出价区间上限"},
                     "position_pct": {
-                        "type": "number",
-                        "minimum": 0,
-                        "maximum": 100,
+                        "type": "number", "minimum": 0, "maximum": 100,
                         "description": "建议仓位百分比 (0-100)",
                     },
                     "hold_period": {
                         "type": "string",
                         "enum": ["短线 1-2周", "中线 1-3月", "长线 6月+"],
                     },
-                    "stop_loss": {"type": "number", "description": "止损价"},
-                    "confidence": {"type": "string", "enum": ["高", "中", "低"]},
-                    "one_line_reason": {
-                        "type": "string",
-                        "description": "一句话理由（不超过 40 字）",
+                    "stop_loss_levels": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 3,
+                        "description": (
+                            "止损线分档。最少 1 档（紧急），最多 3 档（紧急/中线/深跌）。"
+                            "高危票应给齐 3 档，普通票 1-2 档即可。"
+                        ),
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["price", "label", "reason"],
+                            "properties": {
+                                "price": {"type": "number"},
+                                "label": {
+                                    "type": "string",
+                                    "enum": ["紧急止损", "中线止损", "深跌止损"],
+                                },
+                                "reason": {
+                                    "type": "string",
+                                    "description": "为什么是这个价 + 跌破后该做什么。≤ 50 字。",
+                                },
+                            },
+                        },
                     },
+                    "scenario_advice": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": [
+                            "not_holding",
+                            "holding_big_gain",
+                            "holding_small",
+                            "holding_big_loss",
+                        ],
+                        "description": "按持仓情境给的具体动作建议，每条 ≤ 40 字。",
+                        "properties": {
+                            "not_holding": {
+                                "type": "string",
+                                "description": "未持仓的人怎么做。",
+                            },
+                            "holding_big_gain": {
+                                "type": "string",
+                                "description": "已持仓且大幅浮盈怎么做。",
+                            },
+                            "holding_small": {
+                                "type": "string",
+                                "description": "已持仓且小幅浮盈/浮亏怎么做。",
+                            },
+                            "holding_big_loss": {
+                                "type": "string",
+                                "description": "已持仓且大幅浮亏怎么做。",
+                            },
+                        },
+                    },
+                    "risk_scores": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": [
+                            "fundamentals", "valuation", "earnings_momentum",
+                            "industry", "governance", "price_action",
+                            "capital", "thematic", "overall",
+                        ],
+                        "description": (
+                            "8 个维度评分（1-5 ⭐），加一个综合等级。"
+                            "评分时不要平均化，差就是差，好就是好。"
+                        ),
+                        "properties": {
+                            "fundamentals":     {"type": "integer", "minimum": 1, "maximum": 5, "description": "基本面"},
+                            "valuation":        {"type": "integer", "minimum": 1, "maximum": 5, "description": "估值"},
+                            "earnings_momentum":{"type": "integer", "minimum": 1, "maximum": 5, "description": "业绩兑现节奏"},
+                            "industry":         {"type": "integer", "minimum": 1, "maximum": 5, "description": "行业景气度"},
+                            "governance":       {"type": "integer", "minimum": 1, "maximum": 5, "description": "公司治理"},
+                            "price_action":     {"type": "integer", "minimum": 1, "maximum": 5, "description": "股价表现"},
+                            "capital":           {"type": "integer", "minimum": 1, "maximum": 5, "description": "资金面"},
+                            "thematic":         {"type": "integer", "minimum": 1, "maximum": 5, "description": "题材炒作"},
+                            "overall": {
+                                "type": "string",
+                                "enum": [
+                                    "⭐ 极差", "⭐⭐ 较差", "⭐⭐⭐ 一般",
+                                    "⭐⭐⭐⭐ 较好", "⭐⭐⭐⭐⭐ 极好",
+                                ],
+                                "description": "综合评级",
+                            },
+                        },
+                    },
+                    "confidence": {"type": "string", "enum": ["高", "中", "低"]},
                 },
             },
             "deep_analysis": {
                 "type": "string",
                 "description": (
-                    "约 500 字 markdown 深度分析，分四节："
-                    "## 基本面 / ## 技术面 / ## 消息面 / ## 风险点。"
-                    "不要超过 500 字。"
+                    "1500-2500 字 markdown 深度分析，按以下章节展开（每节用 ## 标题）：\n"
+                    "## 公司画像\n"
+                    "## 最新业绩\n"
+                    "## 股价剧情\n"
+                    "## 看多 vs 看空\n"
+                    "## 风险与止损\n"
+                    "## 操作建议\n"
+                    "## 一句话总结\n\n"
+                    "**风格要求（必须遵守）**：\n"
+                    "1. 大白话，第一人称对您说，像跟朋友聊天\n"
+                    "2. 直接表态：'清仓' / '不要补仓' / '别参与'，不写'谨慎' / '建议' / '可关注' 这类和稀泥的词\n"
+                    "3. 关键数字 **加粗**，关键风险用 ⚠️，硬红灯用 🔴\n"
+                    "4. 用有序列表 (1./2./3.) 拆步骤，无序列表 (-) 列要点\n"
+                    "5. 不堆术语：把 PE / MACD / 主力净流入 / 北向资金 这种翻译成人话\n"
+                    "6. 信息缺失就直说'信息不全，无法判断'，不要硬编"
                 ),
             },
         },
@@ -92,15 +214,38 @@ def _system_prompt(strategy: Strategy) -> list[dict[str, Any]]:
     """Returns Anthropic-format system blocks. The static parts use prompt
     caching so re-using the same strategy is cheap."""
     base = (
-        "你是一名审慎的 A 股投资分析助手，目标用户是一支 10 人的小型投资团队。\n"
-        "请完全基于提供的 snapshot 数据与新闻/公告做判断，不要编造未在输入中出现的信息。\n"
-        "如果某个维度信息缺失，明确说明并降低置信度。\n"
-        "始终调用 submit_analysis 工具一次，不要给出其他文本。\n"
+        "你是一位经验老到的 A 股投资顾问，目标用户是一支 10 人左右的小型投资团队。\n"
+        "你的任务是基于 snapshot 给出**结构化、可执行**的投资建议。\n"
+        "\n"
+        "# 风格（很重要，请严格遵守）\n"
+        "\n"
+        "1. **大白话**。把 'PE / MACD / 主力净流入 / 北向资金 / 三费' 这种术语翻译成人话再说。\n"
+        "2. **第一人称对话**。'我看下来这只票...'、'您如果已经持仓...'、'我建议您...'，像跟朋友聊天。\n"
+        "3. **直接表态，不和稀泥**。说 '清仓' / '不要补仓' / '别参与'，不要说 '谨慎' / '可关注' / '建议结合自身情况'。\n"
+        "4. **关键数字加粗**（**+8.13%**、**-2.7亿**），关键风险用 ⚠️，硬红灯用 🔴。\n"
+        "5. **有结构有层次**。用有序列表（1./2./3.）拆步骤，无序列表（-）列要点。\n"
+        "\n"
+        "# 必须做的红旗检查清单\n"
+        "\n"
+        "发起分析前，按这个清单逐条核对，命中的填进 red_flags（每条 ≤ 25 字）：\n"
+        "- 🔴 名称带 ST / 维权（'（维权）' 标记）\n"
+        "- 🔴 曾被监管处罚（信息中含 '立案' / '通知书' / '暂停' / '处罚' 等）\n"
+        "- 🔴 业绩由盈转亏 / 营收同比转负\n"
+        "- 🔴 异常波动公告但公司声明 '无重大信息'\n"
+        "- 🔴 三费占营收比 > 50%\n"
+        "- 🔴 控股股东减持 / 大额限售解禁\n"
+        "没命中就空数组，不要凑数。\n"
+        "\n"
+        "# 数据原则\n"
+        "\n"
+        "- 完全基于提供的 snapshot 与新闻 / 公告做判断，**不要编造**未在输入中的信息\n"
+        "- 信息缺失就直说 '信息不全，无法判断'，并把 confidence 降到 '低'\n"
+        "- 始终调用 submit_analysis 工具**一次**，不要给出其他文本\n"
     )
     rules_section = ""
     if strategy.rules:
         rules_section = (
-            "\n\n## 必须遵守的硬规则\n"
+            "\n\n# 必须遵守的硬规则（来自策略）\n"
             + "\n".join(f"- {r}" for r in strategy.rules)
             + "\n违反任何一条都应直接给出 actionable=不建议入手。"
         )
@@ -220,9 +365,13 @@ def generate(
 
 
 def get_cached(db: Session, code: str, max_age_hours: int = 4) -> Analysis | None:
-    """Return cached analysis if it's still fresh, else None."""
+    """Return cached analysis if it's still fresh AND on the v2 schema."""
     row = db.query(Analysis).filter(Analysis.code == code).first()
     if row is None:
+        return None
+    # Schema v2 invalidation: rows missing the new `company_tag` field were
+    # generated against the old key_table schema and need to be regenerated.
+    if not isinstance(row.key_table, dict) or "company_tag" not in row.key_table:
         return None
     cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
     created = row.created_at

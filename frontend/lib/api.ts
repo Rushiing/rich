@@ -16,10 +16,37 @@ export type ImportResult = {
 };
 
 export type AnalysisBrief = {
-  actionable: string;        // 建议买入 / 观望 / 建议卖出 / 不建议入手
+  actionable: string;          // 建议买入 / 观望 / 建议卖出 / 不建议入手
   one_line_reason: string;
+  company_tag: string;         // one-line portrait
+  red_flags: string[];         // hard-detected risk markers
   created_at: string;
-  is_fresh: boolean;         // < 4h
+  is_fresh: boolean;           // < 4h
+};
+
+export type StopLossLevel = {
+  price: number;
+  label: "紧急止损" | "中线止损" | "深跌止损";
+  reason: string;
+};
+
+export type ScenarioAdvice = {
+  not_holding: string;
+  holding_big_gain: string;
+  holding_small: string;
+  holding_big_loss: string;
+};
+
+export type RiskScores = {
+  fundamentals: number;
+  valuation: number;
+  earnings_momentum: number;
+  industry: number;
+  governance: number;
+  price_action: number;
+  capital: number;
+  thematic: number;
+  overall: string;             // e.g. "⭐⭐⭐⭐ 较好"
 };
 
 export type StockRow = {
@@ -56,16 +83,20 @@ export type AnalysisBatchResult = { started: boolean; already_running?: boolean 
 export type AnalysisBatchStatus = { running: boolean };
 
 export type KeyTable = {
+  company_tag: string;
   actionable: string;
+  one_line_reason: string;
+  red_flags: string[];
   buy_price_low: number;
   buy_price_high: number;
   sell_price_low: number;
   sell_price_high: number;
   position_pct: number;
   hold_period: string;
-  stop_loss: number;
+  stop_loss_levels: StopLossLevel[];
+  scenario_advice: ScenarioAdvice;
+  risk_scores: RiskScores;
   confidence: string;
-  one_line_reason: string;
 };
 
 export type StockAnalysis = {
