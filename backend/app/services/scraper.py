@@ -15,6 +15,8 @@ from typing import Any
 
 import akshare as ak
 
+from .realtime_quotes import fetch_quotes_sina
+
 logger = logging.getLogger(__name__)
 
 # Important notice keywords — used by the signals engine and as filter for the
@@ -172,27 +174,68 @@ def collect_many(codes: list[str], max_workers: int = 10) -> list[dict[str, Any]
 def collect_quotes_bulk(codes: list[str]) -> dict[str, dict[str, Any]]:
     """Pull price/change/volume/turnover + main fund flow for many codes.
 
-    Strategy: try the eastmoney bulk endpoints first (one round-trip for
-    the whole watchlist), fall back to per-code parallel calls when those
-    fail. Railway's egress can't reach push2.eastmoney.com — RemoteDisconnected
-    on every spot bulk call — but per-code eastmoney + Xueqiu endpoints sit
-    on different hosts that work fine. So the fallback is the load-bearing
-    path in production today; the bulk path stays in case the host comes
-    back or we move infra.
+    Cascading source strategy, ordered by reliability on Railway today:
 
-    Returns {code: {price, change_pct, volume, turnover, main_net_flow}}
-    only for codes we actually got data for. Codes missing from the result
-    should not have new snapshot rows written for them.
+      1. **eastmoney bulk** (`stock_zh_a_spot_em` + `..._fund_flow_rank`).
+         One round-trip if it works — but push2.eastmoney.com is
+         consistently unreachable from Railway, so this almost always
+         falls through. Kept in case the host comes back or we move infra.
+      2. **sina hq direct** (hq.sinajs.cn). Single HTTP GET for the whole
+         batch, no token, no third-party lib. Carries price/change/volume
+         /turnover but not main_net_flow. This is the primary working
+         path right now.
+      3. **akshare per-code fan-out** (Xueqiu / em bid_ask + per-code
+         fund_flow). Slow, partially failing, but the only place we can
+         backfill main_net_flow.
+
+    Whatever each layer fills in carries forward; later layers only run
+    for codes still missing core data, and step 3 also runs for codes
+    that have price but lack main_net_flow.
+
+    Returns {code: {price, change_pct, volume, turnover, main_net_flow?}}
+    for codes we got data for. Missing codes should not be written as new
+    snapshot rows.
     """
     if not codes:
         return {}
+
+    out: dict[str, dict[str, Any]] = {}
+
+    # 1. Eastmoney bulk (cheap when it works).
     bulk = _try_bulk(codes)
     if bulk:
-        return bulk
-    logger.warning(
-        "quotes bulk endpoints unreachable; falling back to per-code fan-out"
-    )
-    return _per_code_quotes(codes)
+        out.update(bulk)
+
+    # 2. Sina direct for codes that bulk didn't cover with price.
+    needs_spot = [c for c in codes if out.get(c, {}).get("price") is None]
+    if needs_spot:
+        sina = fetch_quotes_sina(needs_spot)
+        if sina:
+            for c, q in sina.items():
+                out.setdefault(c, {}).update(q)
+            logger.info("quotes: sina filled %d/%d codes", len(sina), len(needs_spot))
+        else:
+            logger.warning("quotes: sina returned nothing for %d codes", len(needs_spot))
+
+    # 3. akshare per-code fan-out: backfill anything still missing core
+    # fields, plus main_net_flow for codes sina covered.
+    still_missing = [c for c in codes if out.get(c, {}).get("price") is None]
+    needs_flow = [
+        c for c in codes
+        if c in out and out[c].get("main_net_flow") is None
+    ]
+    if still_missing or needs_flow:
+        # One thread pool for both — the work items are independent.
+        per_code = _per_code_quotes(still_missing)
+        for c, q in per_code.items():
+            out.setdefault(c, {}).update(q)
+        if needs_flow:
+            flows = _per_code_flow_only(needs_flow)
+            for c, flow in flows.items():
+                if c in out:
+                    out[c]["main_net_flow"] = flow
+
+    return out
 
 
 def _try_bulk(codes: list[str]) -> dict[str, dict[str, Any]]:
@@ -250,6 +293,26 @@ def _per_code_quotes(codes: list[str]) -> dict[str, dict[str, Any]]:
                 continue
             if any(v is not None for v in d.values()):
                 out[c] = d
+    return out
+
+
+def _per_code_flow_only(codes: list[str]) -> dict[str, float]:
+    """Lightweight version of _per_code_quotes that only fetches main fund
+    flow — used to backfill main_net_flow for codes whose price came from
+    sina (which doesn't carry flow)."""
+    if not codes:
+        return {}
+    out: dict[str, float] = {}
+    with ThreadPoolExecutor(max_workers=min(10, len(codes))) as pool:
+        futures = {pool.submit(_fund_flow, c): c for c in codes}
+        for fut in as_completed(futures):
+            c = futures[fut]
+            try:
+                flow = fut.result()
+            except Exception:
+                flow = None
+            if flow is not None:
+                out[c] = flow
     return out
 
 

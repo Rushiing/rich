@@ -113,18 +113,24 @@ def _is_trading_minute(now: datetime) -> bool:
 
 
 def _carry_forward(latest: Snapshot | None) -> dict:
-    """Pull news/notices/lhb from the most recent full snapshot for this code.
+    """Pull context fields (news/notices/lhb) AND the prior main_net_flow
+    from the most recent snapshot for this code.
 
-    The quotes-only tier doesn't refetch these heavy fields, but we still
-    want the *latest* snapshot row to carry them so the 盯盘 list and the
-    detail page see continuity. Empty dicts are fine when nothing's there.
+    Quotes ticks usually don't refetch news/notices/lhb at all (heavy
+    per-code fan-out), and main_net_flow is flaky (sina doesn't carry it
+    and the per-code akshare fund_flow fails intermittently on Railway).
+    Carrying the previous value forward keeps the 盯盘 list visually
+    stable instead of blinking to – every time one source is down.
     """
     if latest is None:
-        return {"news": [], "notices": [], "lhb": None}
+        return {
+            "news": [], "notices": [], "lhb": None, "prev_main_net_flow": None,
+        }
     return {
         "news": latest.news or [],
         "notices": latest.notices or [],
         "lhb": latest.lhb,
+        "prev_main_net_flow": latest.main_net_flow,
     }
 
 
@@ -184,13 +190,21 @@ def run_quotes_job() -> dict:
                 skipped += 1
                 continue
             carry = _carry_forward(latest_by_code.get(code))
+            # Use the freshly fetched main_net_flow if we got one; otherwise
+            # carry the previous tick's value forward so the UI doesn't
+            # flicker when fund-flow is the flaky source.
+            net_flow = quote.get("main_net_flow")
+            if net_flow is None:
+                net_flow = carry.pop("prev_main_net_flow")
+            else:
+                carry.pop("prev_main_net_flow", None)
             snap = {
                 "code": code,
                 "price": quote.get("price"),
                 "change_pct": quote.get("change_pct"),
                 "volume": quote.get("volume"),
                 "turnover": quote.get("turnover"),
-                "main_net_flow": quote.get("main_net_flow"),
+                "main_net_flow": net_flow,
                 "north_hold_change": None,
                 **carry,
             }
