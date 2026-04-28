@@ -69,6 +69,13 @@ def run_snapshot_job(post_close: bool = False) -> dict:
 
         lhb_map = collect_lhb_today() if post_close else {}
 
+        # Commit incrementally instead of one big commit at the end. The job
+        # runs in a daemon thread that takes 5+ minutes (akshare per-stock
+        # fan-out for news/notices); any container restart in that window
+        # (Railway redeploy / sleep / OOM) used to lose ALL 49 rows because
+        # nothing was persisted until the final commit. Per-row commit keeps
+        # whatever finished before the SIGTERM, so even a half-completed job
+        # advances last_ts for the codes that did make it.
         inserted = 0
         for s in snaps:
             if s["code"] in lhb_map:
@@ -91,9 +98,13 @@ def run_snapshot_job(post_close: bool = False) -> dict:
                 **{f: s.get(f) for f in VALUATION_FIELDS},
             )
             db.add(row)
-            inserted += 1
-        db.commit()
-        logger.info("snapshot job: inserted %d rows", inserted)
+            try:
+                db.commit()
+                inserted += 1
+            except Exception:
+                db.rollback()
+                logger.exception("snapshot job: failed to insert %s", s.get("code"))
+        logger.info("snapshot job: inserted %d/%d rows", inserted, len(snaps))
         return {"codes": len(codes), "inserted": inserted, "post_close": post_close}
     except Exception:
         db.rollback()
@@ -246,8 +257,12 @@ def run_quotes_job() -> dict:
                 **{f: snap[f] for f in VALUATION_FIELDS},
             )
             db.add(row)
-            inserted += 1
-        db.commit()
+            try:
+                db.commit()
+                inserted += 1
+            except Exception:
+                db.rollback()
+                logger.exception("quotes job: failed to insert %s", code)
         logger.info("quotes job: inserted %d rows, skipped %d", inserted, skipped)
         return {"codes": len(codes), "inserted": inserted, "skipped_codes": skipped,
                 "tier": "quotes"}
