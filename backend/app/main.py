@@ -1,5 +1,21 @@
 import logging
+import os
 from contextlib import asynccontextmanager
+
+# Silence akshare's per-call tqdm progress bars BEFORE akshare gets imported.
+# Without this, every `stock_news_em` / `stock_notice_report` / `stock_lhb_*`
+# call writes a multi-line progress bar to stderr; uvicorn tags everything on
+# stderr as `[err]`, so logs look like a fire even when the job is healthy.
+# Both the env var and the monkey-patch are belt-and-suspenders — different
+# tqdm versions honor different things, akshare uses its own bundled tqdm in
+# some places.
+os.environ.setdefault("TQDM_DISABLE", "1")
+try:
+    from functools import partialmethod
+    import tqdm as _tqdm
+    _tqdm.tqdm.__init__ = partialmethod(_tqdm.tqdm.__init__, disable=True)
+except Exception:  # pragma: no cover — defensive
+    pass
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
