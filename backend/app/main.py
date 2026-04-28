@@ -21,7 +21,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
-from .db import Base, engine, ensure_extra_columns
+from .db import Base, engine, ensure_extra_columns, snapshot_columns
 from .models import Analysis, Snapshot, Watchlist  # noqa: F401  (register tables with metadata)
 from .routes import auth as auth_routes
 from .routes import stocks as stocks_routes
@@ -59,6 +59,29 @@ app.add_middleware(
 app.include_router(auth_routes.router)
 app.include_router(watchlist_routes.router)
 app.include_router(stocks_routes.router)
+
+
+@app.get("/api/_diag/snapshot-schema")
+def diag_snapshot_schema():
+    """Surface the actual snapshots table column list. Public on purpose —
+    no secrets in column names, and AUTH_DISABLED is on anyway. Lets us
+    verify migrations from outside without Railway shell access.
+
+    Expected columns after the 4/27 schema bump: id, code, ts, price,
+    change_pct, volume, turnover, main_net_flow, north_hold_change,
+    signals, news, notices, lhb, pe_ratio, pb_ratio, turnover_rate,
+    market_cap, circ_market_cap.
+    """
+    cols = snapshot_columns()
+    expected_extras = ["pe_ratio", "pb_ratio", "turnover_rate", "market_cap", "circ_market_cap"]
+    missing = [c for c in expected_extras if c not in cols]
+    return {
+        "dialect": engine.dialect.name,
+        "columns": cols,
+        "expected_extras": expected_extras,
+        "missing_extras": missing,
+        "ok": len(missing) == 0,
+    }
 
 
 @app.get("/health")

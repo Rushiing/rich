@@ -41,15 +41,54 @@ def ensure_extra_columns() -> None:
 
     create_all only creates *missing tables*, never alters columns of an
     existing one — so when the model gains fields after a deploy, prod
-    Postgres doesn't pick them up. This helper closes that gap on startup.
+    Postgres doesn't pick them up. This helper closes that gap.
+
+    Logs each column individually at INFO so we can confirm in production
+    logs whether the migration actually ran. Uses a fresh transaction per
+    column so one failure can't poison the others.
     """
     if engine.dialect.name != "postgresql":
         return
+    added = 0
+    skipped = 0
+    failed = 0
+    for table, col, dtype in _POSTGRES_BACKFILL:
+        try:
+            with engine.begin() as conn:
+                # Detect first so we can log "added" vs "already there".
+                exists = conn.execute(text(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name = :t AND column_name = :c"
+                ), {"t": table, "c": col}).first() is not None
+                if exists:
+                    skipped += 1
+                    continue
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {dtype}"))
+                logger.info("ensure_extra_columns: added %s.%s (%s)", table, col, dtype)
+                added += 1
+        except Exception as e:
+            failed += 1
+            logger.error("ensure_extra_columns: %s.%s FAILED: %s", table, col, e)
+    logger.info(
+        "ensure_extra_columns: done — added=%d, already_there=%d, failed=%d",
+        added, skipped, failed,
+    )
+
+
+def snapshot_columns() -> list[str]:
+    """Return the actual column names of the snapshots table from pg_catalog.
+
+    Used by the /api/_diag/snapshot-schema route so we can verify from outside
+    whether the migration ran without needing Railway shell access.
+    """
+    if engine.dialect.name != "postgresql":
+        # SQLite (smoke tests): pull from PRAGMA
+        with engine.begin() as conn:
+            rows = conn.execute(text("PRAGMA table_info(snapshots)")).fetchall()
+        return [r[1] for r in rows]
     with engine.begin() as conn:
-        for table, col, dtype in _POSTGRES_BACKFILL:
-            try:
-                conn.execute(text(
-                    f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {dtype}"
-                ))
-            except Exception as e:
-                logger.warning("ensure_extra_columns: %s.%s failed: %s", table, col, e)
+        rows = conn.execute(text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'snapshots' ORDER BY ordinal_position"
+        )).fetchall()
+    return [r[0] for r in rows]

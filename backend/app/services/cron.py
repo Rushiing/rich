@@ -26,7 +26,7 @@ from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy.orm import Session
 
 from ..config import settings
-from ..db import SessionLocal
+from ..db import SessionLocal, ensure_extra_columns
 from ..models import Analysis, Snapshot, Watchlist
 from .analysis import generate as analysis_generate, get_cached as analysis_cached
 from .scraper import VALUATION_FIELDS, collect_lhb_today, collect_many, collect_quotes_bulk
@@ -53,6 +53,10 @@ def run_snapshot_job(post_close: bool = False) -> dict:
     Returns a small summary dict used by the manual-trigger endpoint.
     `post_close=True` additionally pulls today's 龙虎榜.
     """
+    # Self-heal: if the post-MVP columns weren't added at lifespan startup
+    # (silent migration failure on a redeploy), retry now. Idempotent —
+    # ensure_extra_columns checks information_schema before each ALTER.
+    ensure_extra_columns()
     db: Session = SessionLocal()
     try:
         codes = [w.code for w in db.query(Watchlist.code).all()]
@@ -152,6 +156,7 @@ def run_quotes_job() -> dict:
     the previous snapshot so signal detection and the detail view keep
     seeing the latest context fields without the heavy per-code fan-out.
     """
+    ensure_extra_columns()  # self-heal; same reasoning as run_snapshot_job
     db: Session = SessionLocal()
     try:
         codes = [w.code for w in db.query(Watchlist.code).all()]
