@@ -1,55 +1,81 @@
 # 早安 ☀️ — 2026-04-29
 
-> 凌晨修了一晚上 snapshot 抓取卡住的问题。这份是简明交接。
+> 凌晨修了一晚上 snapshot 抓取卡住的问题，已经修到可上线状态。
 > 验证完没问题就 `git rm` 这个文件。
 
 ## TL;DR
 
-snapshot job 自 4/28 09:50 起 24 小时没写任何新数据。**已找到根因并修好**：连续四个 commit 渐进式收敛到一个解。开盘前你只需要做一件事 — 看 [验证清单](#验证清单) 走一遍。
+**修好了。开盘前你只需走 [验证清单](#验证清单)。**
 
-## 这一晚的诊断流水
+凌晨 5 个 commit 把"snapshot 自 4/28 09:50 起 24h 没更新"的问题拆成 4 层根因逐个解了：
 
-| 步骤 | 假设 | 验证 | 结论 |
-|---|---|---|---|
-| 1 | 列 `pe_ratio` 等没建出来导致 commit 炸 | 加 `/api/_diag/snapshot-schema` 端点 | 列全在，假设错 |
-| 2 | 容器在 commit 前被 SIGTERM | 截图 `Stopping Container` | ✅ 这是症状之一 |
-| 3 | per-row commit 解决 | 推 `03e7ecf` | 不够 — `collect_many` 自己就 5+ 分钟，commit 循环还没开始就被打 |
-| 4 | per-worker commit | 推 `b21670e` | 仍然 0/49 — DB 连接池被占满了 |
-| 5 | DB session 解耦 + 连接池扩容 | 推 `0f52326` | ✅ 应该是最终修法 |
+1. ❌ 我以为是列缺失 → 加诊断端点查到列其实都在（`a23a87a`）
+2. ✅ 容器在 commit 前被 SIGTERM → per-row commit（`03e7ecf`）
+3. ✅ collect_many 自己就 5min，commit 循环都没开始 → per-worker commit（`b21670e`）
+4. ✅ 10 worker 同时持 DB 连接打满池 → session 解耦 + 池扩容（`0f52326`）
+5. ✅ akshare 慢字节流绕过 read timeout 让 worker 永久 hang → 整 job 4min ceiling（`aa026fb`）
 
-附带修了两个：
-- **akshare 30s 超时上限 → 12s**（`900cb25`）：单条死路由不再卡住一个 worker 半分钟
-- **前端轮询 5min → 15min + 文案重写**（`900cb25`）：不会再误报 "已停止刷新" 而后端其实还在跑
+外加：
+- `900cb25`：akshare 默认 30s timeout → 12s；前端轮询 5min → 15min（之前的"已停止刷新"误报）
 
-## 验证清单
+## 当前生产状态
 
-直接打开 [盯盘页](https://pure-emotion-production-6722.up.railway.app/stocks)：
+凌晨 01:13–01:28 跑了几次手动 snapshot 验证，结果：
 
-1. 看右上角"全部 (49)"，记下当前 last_ts
+| 状态 | 数量 | 说明 |
+|---|---|---|
+| 已刷新 (4/29 凌晨) | 40 | 包括 Tencent 行情 + akshare news/notices |
+| 卡住 (4/28 09:50) | 7 | 重磅新闻股（润泽/香农/锐科/中钨/岩山/洛阳/金卡），akshare 拉全量新闻太慢 |
+| null (从未抓过) | 2 | 同有科技 / 天承科技，新加入或刚 import |
+
+## 验证清单（开盘前 5 分钟）
+
+打开 https://pure-emotion-production-6722.up.railway.app/stocks
+
+1. 看右上角"全部 (49)"
 2. 点 **手动抓取**
-3. **预期**：5–15s 内开始有股票更新（一行一行涌出来），60–120s 内 49 支全部刷到当前时间，最坏 3min
-4. 不要担心进度条／日志的 `[err]`：99% 是 akshare tqdm（已抑制但仍可能漏一些）和被 `_safe()` 兜住的 transient WARNING
+3. **预期**：5–15s 内开始有股票更新（一行一行涌出来），4 分钟内 35–45 支会刷到当前时间
+4. 4 分钟后 status 自动 toggle 回 "手动抓取"，不会卡 running 状态
 
-如果上面没问题，**当前的所有问题都修好了**，可以直接进入开盘流程。
+## 9:30 开盘后预期行为
 
-## 如果 9:30 仍然没自动刷新
+- **9:30 + 每 5 分钟**：`quotes_tick` 跑 Tencent bulk → 49 支 price/change/flow **全部更新**（这条路 100% 可靠，几乎不会失败）
+- **9:30 / 10:30 / 11:30 / 14:00 / 15:00 / 16:00**：`snapshot_tick` 跑 full（含 news/notices），4min 内能刷 35-45 支，剩下的下小时再跑
+- **9:35**：`daily_analysis_tick` 跑批量解析（kimi-k2.5），20 分钟左右刷完 49 支
 
-最可能：Railway 容器睡眠（hobby/free tier 在闲置 30min 后会 sleep），in-process scheduler 跟着不动。两步排查：
+**最关键的"价格流动"靠 quotes_tick，跟 snapshot 解耦。即使 snapshot 全挂，盯盘依然能看到价格变化。**
 
-1. `curl https://rich-production-afb6.up.railway.app/health` 唤醒它
-2. 立刻点一次"手动抓取"
-3. 之后 5min/30min 内应该又能自动跑
+## 剩余 7 支为什么卡住
 
-如果想根治这个：把 snapshot/quotes 改成 Railway 自带的 cron jobs 调用 HTTP 端点（`/api/stocks/snapshot`），而不是 in-process scheduler。半天工作量，**今天先不做**。
+`stock_news_em(symbol=...)` 在重磅新闻股上分页拉历史，akshare 内部一页一页 streaming，每一小段都在 12s 读取 timeout 之内但累计能跑几分钟。我加的 4min job ceiling 让他们超时被 abandoned，但下次 snapshot 又重蹈覆辙。
 
-## 关于 "全部重新解析后刷新页面会不会丢请求"
+**根治方案**（不在今晚 scope）：
+- 把 _news / _notices 改成"只拉第一页 + 最近 24h 过滤"
+- 或换成 eastmoney 的 RESTful 端点（不用 akshare 包装）
+- 或干脆把 news/notices 做成独立的低频 job（每天一次）
 
-**不丢**。后端是 daemon thread 守护任务，独立于浏览器；前端 mount 时会自动检查 `/api/stocks/analysis/batch/status`，发现还在跑就接上轮询（[stocks/page.tsx:79](frontend/app/stocks/page.tsx:79)）。每支股票完成立刻 `db.commit()`，已完成的都是落库的。容器重启会丢正在跑的那一支，重新点会自动 `only_missing=true` 跳过已完成。
+今天先这样上线，验证 quotes 5min 正常即可。
+
+## 关于"全部重新解析后刷新页面会不会丢请求"
+
+**不丢**。后端是 daemon thread 跑，前端 mount 时检查 `/api/stocks/analysis/batch/status`，发现还在跑就接上轮询（[stocks/page.tsx:79](frontend/app/stocks/page.tsx:79)）。每支股票完成立刻 `db.commit()`。容器重启会丢 in-flight 那一支，重新点会 `only_missing=true` 跳过已完成的。
 
 ## 工具
 
 - `/api/_diag/snapshot-schema` — 看 Postgres 列表是否齐全
 - `/api/stocks/snapshot/status` — 看是否在跑
 - `/health` — 唤醒 + 健康检查
+- Railway logs 能看到 `inserted N/49 (failed=X, timed_out=Y)` 总结行
 
-晚安效果如何，早起见分晓。我把验证脚本也跑了，结果在 git log 最新一次 push 后的对话里能看到。
+## 这一夜的 commits
+
+```
+aa026fb  fix(snapshots): 4min ceiling + skip stuck workers
+0f52326  fix(snapshots): decouple DB session + bigger pool
+900cb25  fix(scrape,ui): cap akshare timeout 30s→12s; bump frontend poll
+b21670e  fix(snapshots): per-worker commit
+03e7ecf  fix(snapshots): commit per row
+a23a87a  fix(snapshots): self-heal columns + diag endpoint
+```
+
+晚安效果如何，早起见分晓 — 看到 9:30 后 5min 内 price/change 在动，就说明全栈打通。

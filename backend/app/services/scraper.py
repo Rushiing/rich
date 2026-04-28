@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -37,6 +37,32 @@ def _safe(fn, *args, **kwargs):
     except Exception as e:
         logger.warning("akshare call failed: %s(%s) → %s", fn.__name__, args, e)
         return None
+
+
+def _safe_with_timeout(fn, *args, _timeout: float = 8.0, **kwargs):
+    """Run `fn` with a hard wall-time cap.
+
+    Why we need this *on top of* requests.Session.send's 12s default:
+    akshare's news/notice helpers paginate internally, each page being a
+    fresh HTTP call within the 12s budget — so the read timer never trips
+    even though cumulative time can run minutes. Wrapping the whole helper
+    in a thread future lets us bail out at a true wall-clock deadline.
+
+    The inner thread leaks if it's stuck in I/O (Python can't kill it),
+    but it'll exit on its own when akshare eventually gives up. We don't
+    block on it.
+    """
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="akshare-bounded")
+    try:
+        fut = pool.submit(_safe, fn, *args, **kwargs)
+        try:
+            return fut.result(timeout=_timeout)
+        except FuturesTimeout:
+            logger.warning("akshare call %s exceeded %ss, abandoning",
+                           fn.__name__, _timeout)
+            return None
+    finally:
+        pool.shutdown(wait=False)
 
 
 def _spot(code: str) -> dict[str, float | None]:
@@ -98,7 +124,12 @@ def _fund_flow(code: str) -> float | None:
 
 
 def _news(code: str, limit: int = 5) -> list[dict[str, Any]]:
-    df = _safe(ak.stock_news_em, symbol=code)
+    # 8s wall-time cap: akshare's stock_news_em internally paginates the
+    # entire history of a stock; for heavy-news names (300442 润泽科技,
+    # 603993 洛阳钼业 etc.) that loops through tens of pages and never
+    # trips requests's 12s read timer. We just want the most recent few
+    # titles for the LLM prompt — if 8s isn't enough, treat as missing.
+    df = _safe_with_timeout(ak.stock_news_em, symbol=code, _timeout=8.0)
     if df is None or len(df) == 0:
         return []
     out = []
@@ -113,7 +144,11 @@ def _news(code: str, limit: int = 5) -> list[dict[str, Any]]:
 
 def _notices(code: str, limit: int = 5) -> list[dict[str, Any]]:
     today = datetime.now(timezone(timedelta(hours=8))).strftime("%Y%m%d")
-    df = _safe(ak.stock_notice_report, symbol="全部", date=today)
+    # Same wall-time cap reasoning as _news: stock_notice_report fetches
+    # all market announcements for the day with internal pagination.
+    df = _safe_with_timeout(
+        ak.stock_notice_report, symbol="全部", date=today, _timeout=8.0,
+    )
     if df is None or len(df) == 0:
         return []
     # Filter to this code
