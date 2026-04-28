@@ -27,7 +27,17 @@ from .strategy import Strategy, get as get_strategy
 
 logger = logging.getLogger(__name__)
 
-MODEL = "claude-sonnet-4-6"
+# Default analysis model. Overridable via ANALYSIS_MODEL env var without a
+# code change — useful when the upstream gateway shifts models or when we
+# want to A/B between providers (e.g. Sonnet vs kimi-k2.5).
+#
+# Why kimi-k2.5 (4/28): the Sonnet quota was exhausted; we benchmarked the
+# 5 viable dashscope models on 300638 (a hard case) and kimi was the best
+# trade-off — fastest reliable (~25s), most concise output, tied for most
+# thorough red_flags, and the only fast one that supports the *forced*
+# `tool_choice={"type":"tool", "name": ...}` shape so analysis.py needs
+# no protocol change. Tone matches the user's "克制研究员" preference.
+DEFAULT_MODEL = "kimi-k2.5"
 
 # Tool schema. Claude is forced to call this; we read the structured input
 # back as our analysis. The `additionalProperties: False` constraint + enums
@@ -338,18 +348,38 @@ def generate(
             kwargs["base_url"] = settings.ANTHROPIC_BASE_URL
         client = Anthropic(**kwargs)
 
-    msg = client.messages.create(
-        model=MODEL,
-        max_tokens=4096,
-        system=_system_prompt(strat),
-        tools=[ANALYSIS_TOOL],
-        tool_choice={"type": "tool", "name": "submit_analysis"},
-        messages=[{"role": "user", "content": _user_prompt(w, s)}],
-    )
+    model = settings.ANALYSIS_MODEL or DEFAULT_MODEL
+
+    # tool_choice negotiation: most providers accept the strict
+    # `{"type":"tool", "name":...}` shape, but some only support `any`/`auto`.
+    # We try strict first, fall back to `any` on a 400 — for our single-tool
+    # setup the two are functionally equivalent.
+    base_kwargs = {
+        "model": model,
+        "max_tokens": 8192,  # bumped from 4096 — kimi/glm/minimax outputs run
+                              # 1k–2k tokens; with thinking-style reasoners
+                              # (qwen3.6) we'd hit ceiling at 4096 mid-tool.
+        "system": _system_prompt(strat),
+        "tools": [ANALYSIS_TOOL],
+        "messages": [{"role": "user", "content": _user_prompt(w, s)}],
+    }
+    try:
+        msg = client.messages.create(
+            **base_kwargs,
+            tool_choice={"type": "tool", "name": "submit_analysis"},
+        )
+    except Exception as e:
+        # Cheap signature check — most "tool_choice not supported" errors come
+        # back as a 400 with a message mentioning tool_choice.
+        if "tool_choice" in str(e) or "400" in str(e):
+            logger.info("model %s rejected forced tool_choice; retrying with 'any'", model)
+            msg = client.messages.create(**base_kwargs, tool_choice={"type": "any"})
+        else:
+            raise
 
     tool_use = next((b for b in msg.content if getattr(b, "type", None) == "tool_use"), None)
     if tool_use is None:
-        raise RuntimeError("Claude did not return a tool_use block")
+        raise RuntimeError("model did not return a tool_use block")
 
     payload: dict[str, Any] = tool_use.input  # type: ignore[assignment]
     if "key_table" not in payload or "deep_analysis" not in payload:
@@ -360,7 +390,7 @@ def generate(
         existing.key_table = payload["key_table"]
         existing.deep_analysis = payload["deep_analysis"]
         existing.snapshot_id = s.id if s else None
-        existing.model = MODEL
+        existing.model = model
         existing.strategy = strat.name
         existing.created_at = datetime.now(timezone.utc)
         row = existing
@@ -370,7 +400,7 @@ def generate(
             key_table=payload["key_table"],
             deep_analysis=payload["deep_analysis"],
             snapshot_id=s.id if s else None,
-            model=MODEL,
+            model=model,
             strategy=strat.name,
         )
         db.add(row)

@@ -68,8 +68,9 @@ All shipped phases committed and pushed. See git log for atomic per-phase commit
 - `app/services/strategy.py`: pluggable Strategy registry. MVP ships only `DEFAULT` (no rules → free LLM judgment). To add a strategy: instantiate `Strategy(name=..., rules=["PE<20", ...])`, call `register(s)`, pass `strategy_name` into `generate()`. The prompt builder injects rules as a hard-rules section.
 - `app/services/analysis.py`: end-to-end pipeline. System prompt uses Anthropic prompt caching (ephemeral cache_control), so the static strategy block is cheap on subsequent calls. Single tool `submit_analysis` enforces the entire key-table schema + a `deep_analysis` markdown field — model has no choice but to fill the contract.
 - Routes: `GET /api/stocks/{code}/analysis` (cached or `null`), `POST` same path (force regen). 4h TTL drives the `is_fresh` flag in the response.
-- Default model: `claude-sonnet-4-6`. Override via the `MODEL` constant in `app/services/analysis.py`.
-- Anthropic SDK base URL is configurable via `ANTHROPIC_BASE_URL` env (the user routes through `https://zenmux.ai/api/anthropic`). Empty value = official endpoint.
+- Default model: `kimi-k2.5` via Aliyun dashscope's coding plan (free tier, see "Analysis model history" below for the why). Overridable via `ANALYSIS_MODEL` env without a code change. Default lives in `DEFAULT_MODEL` in `app/services/analysis.py`.
+- Anthropic SDK base URL is configurable via `ANTHROPIC_BASE_URL` env. Production currently points at `https://coding.dashscope.aliyuncs.com/apps/anthropic`; zenmux (`https://zenmux.ai/api/anthropic`) and the official endpoint also work as drop-ins.
+- The `tool_choice` call site uses a try/except cascade — strict `{"type":"tool","name":...}` first, falls back to `{"type":"any"}` on a 400. Most providers accept strict; some (MiniMax, GLM, qwen3.5-plus, qwen3.6-plus, DeepSeek-V4) only accept `any`/`auto`. With one tool the two are equivalent.
 - Frontend `/stocks/[code]`: empty state with "生成深度解析" CTA when no cache; freshness bar + "重新生成" when cached; key table card (color-coded actionable verdict + 6-row grid); markdown deep-analysis (inline minimal renderer — no markdown library needed for `## headings`, `- lists`, `**bold**`).
 
 ### Phase 4 — what landed
@@ -218,6 +219,23 @@ Notes:
 
 - **akshare + local HTTPS proxy**: some Mac users run Clash/V2Ray on `127.0.0.1:7897` for international traffic; that proxy can drop connections to `*.eastmoney.com` (Chinese host). On Railway (Linux container, no proxy), akshare works without issue. If you need to validate akshare locally, either disable the proxy for the eastmoney host or test through Railway.
 - **Python version**: backend requires Python 3.11+ (psycopg3 binary wheels start there). macOS system Python 3.9 will fail at `pip install`.
+
+## Analysis model history
+
+| Date | Default model | Gateway | Why switched |
+|---|---|---|---|
+| Phase 3 (~4/26) | `claude-sonnet-4-6` | zenmux | Initial choice — matched user's "克制研究员" tone preference. |
+| 4/27 | (evaluated DeepSeek V4-pro/flash) | zenmux | DeepSeek too slow (98s/call), no prompt cache, tool_choice rejected. Decided not to adopt. |
+| **4/28** | **`kimi-k2.5`** | **dashscope coding plan** | **Sonnet quota exhausted.** Benchmarked 7 dashscope models on 300638 (a hard case: 91% earnings drop + cash flow crisis). kimi-k2.5 won on speed (25s, fastest reliable), structured-output reliability (5 red_flags, most thorough), and was the only fast model that supports the strict `tool_choice={"type":"tool",...}` shape — zero protocol changes needed. |
+
+Other dashscope candidates from 4/28 testing, ordered by viability:
+- **MiniMax-M2.5** (25s, 4 red_flags) — tied for speed, but only `any`/`auto` tool_choice. Solid backup.
+- **glm-4.7** (28s, 4 red_flags) — slightly slower, also `auto` only.
+- **qwen3-max-2026-01-23** (41s, **2 red_flags — missed cash flow + insider trading**) — strong tool support but worst structured-output quality on this case.
+- **glm-5** (50s, 3 red_flags) — slow.
+- **qwen3.5-plus / qwen3.6-plus** (78s / 117s) — reasoners, way too slow for batch (47 stocks × 100s ≈ 78 min).
+
+Switching back to Sonnet (when quota restores) is one env-var change: `ANALYSIS_MODEL=claude-sonnet-4-6` and `ANTHROPIC_BASE_URL=https://zenmux.ai/api/anthropic`.
 
 ## Done — and what's next-level work
 
