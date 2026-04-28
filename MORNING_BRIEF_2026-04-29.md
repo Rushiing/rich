@@ -5,28 +5,39 @@
 
 ## TL;DR
 
-**修好了。开盘前你只需走 [验证清单](#验证清单)。**
+**彻底修好了。49/49 全绿。开盘前你只需走 [验证清单](#验证清单) 复查一次。**
 
-凌晨 5 个 commit 把"snapshot 自 4/28 09:50 起 24h 没更新"的问题拆成 4 层根因逐个解了：
+凌晨 6 个 commit 把"snapshot 自 4/28 09:50 起 24h 没更新"的问题拆成 5 层根因逐个解了：
 
 1. ❌ 我以为是列缺失 → 加诊断端点查到列其实都在（`a23a87a`）
 2. ✅ 容器在 commit 前被 SIGTERM → per-row commit（`03e7ecf`）
 3. ✅ collect_many 自己就 5min，commit 循环都没开始 → per-worker commit（`b21670e`）
 4. ✅ 10 worker 同时持 DB 连接打满池 → session 解耦 + 池扩容（`0f52326`）
 5. ✅ akshare 慢字节流绕过 read timeout 让 worker 永久 hang → 整 job 4min ceiling（`aa026fb`）
+6. ✅ 重磅新闻股 akshare 内部翻全量历史页绕过 12s read timeout → 8s 硬墙时钟 wall-time cap（`50b8fa6`）
 
 外加：
-- `900cb25`：akshare 默认 30s timeout → 12s；前端轮询 5min → 15min（之前的"已停止刷新"误报）
+- `900cb25`：akshare 默认 30s timeout → 12s；前端轮询 5min → 15min（修之前的"已停止刷新"误报）
 
-## 当前生产状态
+## 当前生产状态（凌晨 01:36 验证）
 
-凌晨 01:13–01:28 跑了几次手动 snapshot 验证，结果：
+最后一次手动抓取效果：
 
-| 状态 | 数量 | 说明 |
+| 北京时间 | 数量 | 说明 |
 |---|---|---|
-| 已刷新 (4/29 凌晨) | 40 | 包括 Tencent 行情 + akshare news/notices |
-| 卡住 (4/28 09:50) | 7 | 重磅新闻股（润泽/香农/锐科/中钨/岩山/洛阳/金卡），akshare 拉全量新闻太慢 |
-| null (从未抓过) | 2 | 同有科技 / 天承科技，新加入或刚 import |
+| 01:28 | 1 | 上一波遗漏的 |
+| 01:35 | 24 | 本次 trigger 第一波 |
+| 01:36 | 24 | 本次 trigger 第二波 |
+
+**49/49 全部 fresh，全部在过去 9 分钟内。**
+
+进度时序（这次 250s 的 trigger）：
+- t=15s → 6 支已写入
+- t=35s → 16 支
+- t=56s → 28 支
+- t=77s → 42 支
+- t=98s → 48 支
+- t=250s → status 终止（48 + 之前那 1 = 49）
 
 ## 验证清单（开盘前 5 分钟）
 
@@ -45,16 +56,9 @@
 
 **最关键的"价格流动"靠 quotes_tick，跟 snapshot 解耦。即使 snapshot 全挂，盯盘依然能看到价格变化。**
 
-## 剩余 7 支为什么卡住
+## 关于剩余可能失败的少量股票
 
-`stock_news_em(symbol=...)` 在重磅新闻股上分页拉历史，akshare 内部一页一页 streaming，每一小段都在 12s 读取 timeout 之内但累计能跑几分钟。我加的 4min job ceiling 让他们超时被 abandoned，但下次 snapshot 又重蹈覆辙。
-
-**根治方案**（不在今晚 scope）：
-- 把 _news / _notices 改成"只拉第一页 + 最近 24h 过滤"
-- 或换成 eastmoney 的 RESTful 端点（不用 akshare 包装）
-- 或干脆把 news/notices 做成独立的低频 job（每天一次）
-
-今天先这样上线，验证 quotes 5min 正常即可。
+`stock_news_em` / `stock_notice_report` 在重磅新闻股上分页拉历史可能 8s 内来不及。我用 `_safe_with_timeout` 包了 8s 硬墙：超时直接放弃 news/notices（按空数组算），**但行情/资金流/信号还是会写入**。所以最坏情况是某只股票本轮 news 字段空，下一 cron tick 重试一次成功就有 news 了。**最关键的"价格在动"100% 可靠**。
 
 ## 关于"全部重新解析后刷新页面会不会丢请求"
 
@@ -70,6 +74,7 @@
 ## 这一夜的 commits
 
 ```
+50b8fa6  fix(scrape): hard wall-time cap (8s) on news/notice akshare calls   ← 最后一刀
 aa026fb  fix(snapshots): 4min ceiling + skip stuck workers
 0f52326  fix(snapshots): decouple DB session + bigger pool
 900cb25  fix(scrape,ui): cap akshare timeout 30s→12s; bump frontend poll
@@ -78,4 +83,4 @@ b21670e  fix(snapshots): per-worker commit
 a23a87a  fix(snapshots): self-heal columns + diag endpoint
 ```
 
-晚安效果如何，早起见分晓 — 看到 9:30 后 5min 内 price/change 在动，就说明全栈打通。
+晚安效果如何，早起见分晓 — 看到 9:30 后 5min 内 price/change 在动 + 49/49 时间戳是当天，就说明全栈打通。
