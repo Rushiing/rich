@@ -7,10 +7,14 @@ import { api, AnalysisBrief, StockRow } from "../../lib/api";
 // rows surface as their data lands. 5s feels responsive without hammering.
 const POLL_INTERVAL_MS = 5000;
 // Hard cap so we eventually stop polling even if the status endpoint lies.
-const POLL_MAX_DURATION_MS = 5 * 60 * 1000;
-// LLM batch is much longer than a snapshot (~5-10s per code × ~25 codes),
-// so its polling deadline gets a wider window.
-const ANALYSIS_POLL_MAX_DURATION_MS = 10 * 60 * 1000;
+// Bumped from 5min → 15min: snapshot's per-stock akshare fan-out can hit
+// 30s timeouts on flaky days, pushing total wall time past 5 min even on a
+// 49-stock watchlist. With per-worker commit the user sees rows trickling
+// in the whole time anyway, so a longer poll window doesn't waste anything.
+const POLL_MAX_DURATION_MS = 15 * 60 * 1000;
+// LLM batch grows ~linearly with watchlist size (~10s/code × N codes; with
+// retries can be 2x). 20min covers ~100 codes worst case.
+const ANALYSIS_POLL_MAX_DURATION_MS = 20 * 60 * 1000;
 
 // Maps the LLM's structured `actionable` enum to a (color, short label) pair.
 // A股语境：红=买/涨，绿=卖/跌；中性观望灰色。
@@ -104,7 +108,7 @@ export default function StocksPage() {
       }
       if (Date.now() > pollDeadline.current) {
         stopPolling();
-        setMsg("抓取超过 5 分钟未结束，已停止刷新；可在 Railway logs 查看后端");
+        setMsg("抓取超过 15 分钟未结束，已停止前端轮询。已完成的股票仍会在 Railway 后端继续写入；刷新页面可查看最新数据。");
       }
     }, POLL_INTERVAL_MS);
   }
