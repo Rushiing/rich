@@ -29,7 +29,13 @@ from ..config import settings
 from ..db import SessionLocal, ensure_extra_columns
 from ..models import Analysis, Snapshot, Watchlist
 from .analysis import generate as analysis_generate, get_cached as analysis_cached
-from .scraper import VALUATION_FIELDS, collect_lhb_today, collect_many, collect_quotes_bulk
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from .scraper import (
+    VALUATION_FIELDS, collect_lhb_today, collect_many, collect_one,
+    collect_quotes_bulk,
+)
+from .realtime_quotes import fetch_quotes_sina, fetch_quotes_tencent
 from .signals import compute_signals
 
 logger = logging.getLogger(__name__)
@@ -47,71 +53,111 @@ CRON_TIMES = [
 scheduler: BackgroundScheduler | None = None
 
 
+def _snapshot_worker(code: str, bulk_spot: dict | None, lhb_map: dict) -> bool:
+    """Per-stock pipeline: collect remaining akshare fields + write own row.
+
+    Each worker has its own DB session so commits are independent. A row
+    that completed before SIGTERM stays in the DB even if its peers haven't
+    finished yet.
+
+    Returns True on persisted, False on collection or DB failure.
+    """
+    db: Session = SessionLocal()
+    try:
+        s = collect_one(code, bulk_spot=bulk_spot)
+        if code in lhb_map:
+            s["lhb"] = lhb_map[code]
+        s["signals"] = compute_signals(s)
+        row = Snapshot(
+            code=code,
+            price=s.get("price"),
+            change_pct=s.get("change_pct"),
+            volume=s.get("volume"),
+            turnover=s.get("turnover"),
+            main_net_flow=s.get("main_net_flow"),
+            north_hold_change=s.get("north_hold_change"),
+            signals=s.get("signals") or [],
+            news=s.get("news") or [],
+            notices=s.get("notices") or [],
+            lhb=s.get("lhb"),
+            **{f: s.get(f) for f in VALUATION_FIELDS},
+        )
+        db.add(row)
+        db.commit()
+        return True
+    except Exception:
+        db.rollback()
+        logger.exception("snapshot worker failed for %s", code)
+        return False
+    finally:
+        db.close()
+
+
 def run_snapshot_job(post_close: bool = False) -> dict:
     """Pull snapshots for every watched code; insert into DB.
 
-    Returns a small summary dict used by the manual-trigger endpoint.
+    Architecture: pre-fetch the cheap bulk sources (Tencent + sina + LHB)
+    on the main thread, then fan out 10 worker threads — each runs the
+    slow per-stock akshare calls (news / notices / fund_flow) AND commits
+    its own row immediately on success. Result: the user sees rows
+    appearing as each worker finishes, not a 5-minute stall followed by
+    a bulk commit. Equally important, a SIGTERM mid-job preserves every
+    row that managed to commit before the kill.
+
     `post_close=True` additionally pulls today's 龙虎榜.
     """
-    # Self-heal: if the post-MVP columns weren't added at lifespan startup
-    # (silent migration failure on a redeploy), retry now. Idempotent —
-    # ensure_extra_columns checks information_schema before each ALTER.
+    # Self-heal: if the post-MVP columns weren't added at lifespan startup,
+    # retry now. Idempotent — checks information_schema before each ALTER.
     ensure_extra_columns()
+
+    # Cheap upfront work: read watchlist (short tx), then the two bulk
+    # quote sources. Both are single HTTP round-trips, ~2s combined.
     db: Session = SessionLocal()
     try:
         codes = [w.code for w in db.query(Watchlist.code).all()]
-        if not codes:
-            logger.info("snapshot job: watchlist empty, skipping")
-            return {"codes": 0, "inserted": 0}
-
-        logger.info("snapshot job: collecting %d codes (post_close=%s)", len(codes), post_close)
-        snaps = collect_many(codes)
-
-        lhb_map = collect_lhb_today() if post_close else {}
-
-        # Commit incrementally instead of one big commit at the end. The job
-        # runs in a daemon thread that takes 5+ minutes (akshare per-stock
-        # fan-out for news/notices); any container restart in that window
-        # (Railway redeploy / sleep / OOM) used to lose ALL 49 rows because
-        # nothing was persisted until the final commit. Per-row commit keeps
-        # whatever finished before the SIGTERM, so even a half-completed job
-        # advances last_ts for the codes that did make it.
-        inserted = 0
-        for s in snaps:
-            if s["code"] in lhb_map:
-                s["lhb"] = lhb_map[s["code"]]
-            s["signals"] = compute_signals(s)
-            row = Snapshot(
-                code=s["code"],
-                price=s.get("price"),
-                change_pct=s.get("change_pct"),
-                volume=s.get("volume"),
-                turnover=s.get("turnover"),
-                main_net_flow=s.get("main_net_flow"),
-                north_hold_change=s.get("north_hold_change"),
-                signals=s.get("signals") or [],
-                news=s.get("news") or [],
-                notices=s.get("notices") or [],
-                lhb=s.get("lhb"),
-                # Valuation fields land here when Tencent answered inside
-                # collect_many; null otherwise (next 5min quotes tick refills).
-                **{f: s.get(f) for f in VALUATION_FIELDS},
-            )
-            db.add(row)
-            try:
-                db.commit()
-                inserted += 1
-            except Exception:
-                db.rollback()
-                logger.exception("snapshot job: failed to insert %s", s.get("code"))
-        logger.info("snapshot job: inserted %d/%d rows", inserted, len(snaps))
-        return {"codes": len(codes), "inserted": inserted, "post_close": post_close}
-    except Exception:
-        db.rollback()
-        logger.exception("snapshot job failed")
-        raise
     finally:
         db.close()
+
+    if not codes:
+        logger.info("snapshot job: watchlist empty, skipping")
+        return {"codes": 0, "inserted": 0}
+
+    logger.info("snapshot job: starting %d codes (post_close=%s)", len(codes), post_close)
+
+    bulk: dict[str, dict] = {}
+    tencent = fetch_quotes_tencent(codes)
+    if tencent:
+        bulk.update(tencent)
+        logger.info("snapshot job: tencent filled %d/%d", len(tencent), len(codes))
+    needs_sina = [c for c in codes if c not in bulk]
+    if needs_sina:
+        sina = fetch_quotes_sina(needs_sina)
+        for c, q in sina.items():
+            bulk.setdefault(c, {}).update(q)
+
+    lhb_map = collect_lhb_today() if post_close else {}
+
+    # Now spawn workers — each handles per-code akshare + writes its own row.
+    inserted = 0
+    failed = 0
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = {
+            pool.submit(_snapshot_worker, c, bulk.get(c), lhb_map): c
+            for c in codes
+        }
+        for fut in as_completed(futures):
+            if fut.result():
+                inserted += 1
+            else:
+                failed += 1
+
+    logger.info(
+        "snapshot job: inserted %d/%d (failed %d)", inserted, len(codes), failed,
+    )
+    return {
+        "codes": len(codes), "inserted": inserted,
+        "failed": failed, "post_close": post_close,
+    }
 
 
 def _scheduled_tick(post_close: bool):
