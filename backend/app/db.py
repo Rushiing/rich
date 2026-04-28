@@ -7,7 +7,17 @@ from .config import settings
 
 logger = logging.getLogger(__name__)
 
-engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True)
+# Pool sizing: snapshot_job runs 10 worker threads, each grabbing a DB
+# session at write time. Add room for frontend polling (~3 concurrent),
+# scheduler, lifespan, and analysis worker. 20 base + 20 overflow comfortably
+# absorbs a snapshot batch without anyone parking on connection acquisition.
+engine = create_engine(
+    settings.DATABASE_URL,
+    pool_pre_ping=True,
+    pool_size=20,
+    max_overflow=20,
+    pool_recycle=1800,  # recycle every 30min to dodge silent stale connections
+)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 

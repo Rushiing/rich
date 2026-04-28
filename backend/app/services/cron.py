@@ -56,18 +56,28 @@ scheduler: BackgroundScheduler | None = None
 def _snapshot_worker(code: str, bulk_spot: dict | None, lhb_map: dict) -> bool:
     """Per-stock pipeline: collect remaining akshare fields + write own row.
 
-    Each worker has its own DB session so commits are independent. A row
-    that completed before SIGTERM stays in the DB even if its peers haven't
-    finished yet.
+    Critical layout: the slow akshare fan-out (5-30s) runs WITHOUT a DB
+    connection held. The Session is opened only for the milliseconds-long
+    insert + commit. Otherwise 10 concurrent workers would each park a
+    connection for the full slow window, saturating the pool and silently
+    failing the whole batch (which is exactly what tonight's debugging
+    revealed before this fix landed).
 
     Returns True on persisted, False on collection or DB failure.
     """
-    db: Session = SessionLocal()
+    # --- slow phase: NO DB session held ---
     try:
         s = collect_one(code, bulk_spot=bulk_spot)
-        if code in lhb_map:
-            s["lhb"] = lhb_map[code]
-        s["signals"] = compute_signals(s)
+    except Exception:
+        logger.exception("snapshot worker: collect_one failed for %s", code)
+        return False
+    if code in lhb_map:
+        s["lhb"] = lhb_map[code]
+    s["signals"] = compute_signals(s)
+
+    # --- fast phase: hold a connection only for the write ---
+    db: Session = SessionLocal()
+    try:
         row = Snapshot(
             code=code,
             price=s.get("price"),
@@ -87,7 +97,7 @@ def _snapshot_worker(code: str, bulk_spot: dict | None, lhb_map: dict) -> bool:
         return True
     except Exception:
         db.rollback()
-        logger.exception("snapshot worker failed for %s", code)
+        logger.exception("snapshot worker: DB write failed for %s", code)
         return False
     finally:
         db.close()
