@@ -219,6 +219,11 @@ Notes:
 
 - **akshare + local HTTPS proxy**: some Mac users run Clash/V2Ray on `127.0.0.1:7897` for international traffic; that proxy can drop connections to `*.eastmoney.com` (Chinese host). On Railway (Linux container, no proxy), akshare works without issue. If you need to validate akshare locally, either disable the proxy for the eastmoney host or test through Railway.
 - **Python version**: backend requires Python 3.11+ (psycopg3 binary wheels start there). macOS system Python 3.9 will fail at `pip install`.
+- **Long jobs in daemon threads + Railway**: every push triggers a redeploy → SIGTERM to the running container → daemon threads die. snapshot/analysis jobs are designed to be SIGTERM-resilient via per-row commit, but historically had a bug where `collect_many` did all the slow work *before* the commit loop, so a SIGTERM during that phase lost everything. Fixed 4/29 by switching to per-worker commit (`_snapshot_worker` in cron.py) — each worker commits its own row immediately on success.
+- **DB pool sizing for parallel workers**: snapshot job runs 10 worker threads in parallel. Holding a DB session across the slow akshare phase saturated the default pool (5 + 10 overflow = 15 max), silently failing every commit. Fixed by (a) bumping pool_size to 20 + max_overflow=20, (b) opening Session AFTER the akshare phase so connections are held only for the millisecond-long write. See `_snapshot_worker` and `engine` config in db.py.
+- **akshare default timeout is 30s per call**: with N workers × 3 fan-out endpoints, a single bad eastmoney route parks a worker for 30s. We monkey-patch `requests.Session.send` in `services/__init__.py` to a 12s default. Caller-supplied timeouts still win.
+- **akshare tqdm noise**: akshare writes per-call progress bars to stderr. uvicorn tags everything on stderr as `[err]`, so a healthy job looks catastrophic. We disable tqdm globally in main.py before any akshare import (`TQDM_DISABLE=1` env + monkey-patch).
+- **Diagnostic endpoint**: `/api/_diag/snapshot-schema` returns the live snapshots table column list + which expected extras are missing. Auth-disabled for now; useful when debugging deploys without Railway shell access.
 
 ## Analysis model history
 

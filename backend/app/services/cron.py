@@ -29,7 +29,7 @@ from ..config import settings
 from ..db import SessionLocal, ensure_extra_columns
 from ..models import Analysis, Snapshot, Watchlist
 from .analysis import generate as analysis_generate, get_cached as analysis_cached
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout, as_completed
 
 from .scraper import (
     VALUATION_FIELDS, collect_lhb_today, collect_many, collect_one,
@@ -148,25 +148,49 @@ def run_snapshot_job(post_close: bool = False) -> dict:
     lhb_map = collect_lhb_today() if post_close else {}
 
     # Now spawn workers — each handles per-code akshare + writes its own row.
+    # Whole-phase ceiling protects against a worker that hangs past our
+    # request-level timeout (rare, but observed when eastmoney slow-streams
+    # bytes such that the per-call read timer keeps resetting). After the
+    # ceiling we count unfinished futures as timed_out and return; stuck
+    # threads keep running in the background until akshare itself gives up,
+    # then exit harmlessly without writing (their session is closed).
+    TOTAL_TIMEOUT = 240  # 4 min — covers normal day; bounds worst-case
     inserted = 0
     failed = 0
-    with ThreadPoolExecutor(max_workers=10) as pool:
-        futures = {
-            pool.submit(_snapshot_worker, c, bulk.get(c), lhb_map): c
-            for c in codes
-        }
-        for fut in as_completed(futures):
-            if fut.result():
-                inserted += 1
-            else:
+    timed_out = 0
+    pool = ThreadPoolExecutor(max_workers=10)
+    futures = {
+        pool.submit(_snapshot_worker, c, bulk.get(c), lhb_map): c
+        for c in codes
+    }
+    try:
+        for fut in as_completed(futures, timeout=TOTAL_TIMEOUT):
+            code = futures[fut]
+            try:
+                if fut.result():
+                    inserted += 1
+                else:
+                    failed += 1
+            except Exception:
                 failed += 1
+                logger.exception("snapshot worker for %s raised", code)
+    except FuturesTimeout:
+        # Anything still pending is the timed_out bucket.
+        timed_out = sum(1 for f in futures if not f.done())
+        for f, c in futures.items():
+            if not f.done():
+                logger.error("snapshot worker for %s exceeded %ds, abandoning",
+                             c, TOTAL_TIMEOUT)
+                f.cancel()  # best-effort; can't kill a thread mid-I/O
+    pool.shutdown(wait=False)  # don't block return on stuck workers
 
     logger.info(
-        "snapshot job: inserted %d/%d (failed %d)", inserted, len(codes), failed,
+        "snapshot job: inserted %d/%d (failed=%d, timed_out=%d)",
+        inserted, len(codes), failed, timed_out,
     )
     return {
         "codes": len(codes), "inserted": inserted,
-        "failed": failed, "post_close": post_close,
+        "failed": failed, "timed_out": timed_out, "post_close": post_close,
     }
 
 
