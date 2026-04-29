@@ -76,7 +76,12 @@ function groupOf(r: StockRow): GroupKey {
 }
 
 // A股 continuous-trading window check, locked to Asia/Shanghai regardless
-// of where the user's browser thinks it is.
+// of where the user's browser thinks it is. Padded ±5min around each
+// session edge so the post-9:30-open and post-15:00-close cron writes
+// (which can land a few seconds to a minute late) actually surface in
+// the UI before auto-refresh stops. So:
+//   morning:   09:25 – 11:35
+//   afternoon: 12:55 – 15:05
 function isTradingTimeShanghai(): boolean {
   const parts = Object.fromEntries(
     new Intl.DateTimeFormat("en-US", {
@@ -93,8 +98,8 @@ function isTradingTimeShanghai(): boolean {
   if (dow === "Sat" || dow === "Sun") return false;
   const h = parseInt(parts.hour, 10);
   const m = parseInt(parts.minute, 10);
-  const morning = (h === 9 && m >= 30) || h === 10 || (h === 11 && m <= 30);
-  const afternoon = h === 13 || h === 14 || (h === 15 && m === 0);
+  const morning   = (h === 9 && m >= 25) || h === 10 || (h === 11 && m <= 35);
+  const afternoon = (h === 12 && m >= 55) || h === 13 || h === 14 || (h === 15 && m <= 5);
   return morning || afternoon;
 }
 
