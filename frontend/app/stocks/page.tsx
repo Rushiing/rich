@@ -15,6 +15,12 @@ const POLL_MAX_DURATION_MS = 15 * 60 * 1000;
 // LLM batch grows ~linearly with watchlist size (~10s/code × N codes; with
 // retries can be 2x). 20min covers ~100 codes worst case.
 const ANALYSIS_POLL_MAX_DURATION_MS = 20 * 60 * 1000;
+// Background auto-refresh: re-pull /api/stocks every 30s during trading
+// hours so the user sees quotes_5min results without hitting reload.
+// 30s = quotes_5min × 1/10, so a fresh tick lands within 30s in the worst
+// case. Skipped when the tab is hidden, off-hours, or user-triggered
+// pollers are already in flight (avoids double-fetch).
+const AUTO_REFRESH_INTERVAL_MS = 30_000;
 
 // Maps the LLM's structured `actionable` enum to a (color, short label) pair.
 // A股语境：红=买/涨，绿=卖/跌；中性观望灰色。
@@ -67,6 +73,29 @@ function groupOf(r: StockRow): GroupKey {
   if (a === "建议卖出")    return "sell";
   if (a === "观望")        return "watch";
   return "other"; // 不建议入手 / 待生成 / 未知 actionable 都归这里
+}
+
+// A股 continuous-trading window check, locked to Asia/Shanghai regardless
+// of where the user's browser thinks it is.
+function isTradingTimeShanghai(): boolean {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Shanghai",
+      weekday: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    })
+      .formatToParts(new Date())
+      .map((p) => [p.type, p.value]),
+  );
+  const dow = parts.weekday;
+  if (dow === "Sat" || dow === "Sun") return false;
+  const h = parseInt(parts.hour, 10);
+  const m = parseInt(parts.minute, 10);
+  const morning = (h === 9 && m >= 30) || h === 10 || (h === 11 && m <= 30);
+  const afternoon = h === 13 || h === 14 || (h === 15 && m === 0);
+  return morning || afternoon;
 }
 
 export default function StocksPage() {
@@ -125,6 +154,25 @@ export default function StocksPage() {
       if (pollTimer.current) clearInterval(pollTimer.current);
       if (analysisPollTimer.current) clearInterval(analysisPollTimer.current);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Background auto-refresh during trading hours so quotes_5min results
+  // surface without manual reload. Guarded so it doesn't fire when:
+  //   - the tab is hidden (no point burning bandwidth in the background)
+  //   - we're outside the A股 continuous-trading window
+  //   - a user-triggered poller (snapshot or batch analysis) already runs
+  //     — those poll on a faster cadence and would otherwise double-fetch
+  useEffect(() => {
+    const tick = () => {
+      if (typeof document === "undefined") return;
+      if (document.visibilityState !== "visible") return;
+      if (!isTradingTimeShanghai()) return;
+      if (pollTimer.current || analysisPollTimer.current) return;
+      refresh({ silent: true }).catch(() => {});
+    };
+    const id = setInterval(tick, AUTO_REFRESH_INTERVAL_MS);
+    return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
