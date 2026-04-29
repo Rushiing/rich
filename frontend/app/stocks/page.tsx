@@ -266,6 +266,31 @@ export default function StocksPage() {
   // accidentally burning tokens on every code).
   const pendingCount = rows.filter((x) => !x.analysis).length;
   const strongCount = rows.filter((x) => x.has_strong_signal).length;
+  const starredCount = rows.filter((x) => x.starred).length;
+
+  // Optimistic toggle: flip locally first so the star reacts in <16ms,
+  // then call the API. If the call fails roll back. Background poller
+  // will eventually rectify any drift either way.
+  async function toggleStar(code: string) {
+    const before = rows.find((r) => r.code === code)?.starred ?? false;
+    setRows((prev) => prev.map((r) =>
+      r.code === code ? { ...r, starred: !before } : r,
+    ));
+    try {
+      const res = await api.toggleStar(code);
+      // Server is the truth — re-apply in case of races.
+      setRows((prev) => prev.map((r) =>
+        r.code === code ? { ...r, starred: res.starred } : r,
+      ));
+      // Re-pull list so server-side ordering (starred first) takes effect.
+      refresh({ silent: true }).catch(() => {});
+    } catch {
+      // Revert on failure
+      setRows((prev) => prev.map((r) =>
+        r.code === code ? { ...r, starred: before } : r,
+      ));
+    }
+  }
 
   // Bucket rows into the four groups while preserving server-side ordering
   // (strong-signal first, then |change_pct| desc).
@@ -326,6 +351,12 @@ export default function StocksPage() {
 
       <div style={{ marginTop: 8, color: "#888", fontSize: 13 }}>
         {filter === null ? `共 ${rows.length} 支` : `${visibleRows.length} / ${rows.length} 支`}
+        {starredCount > 0 && (
+          <span style={{ marginLeft: 12 }}>
+            <span style={{ color: "#facc15" }}>★ </span>
+            特别关注 {starredCount}
+          </span>
+        )}
         {strongCount > 0 && (
           <span style={{ marginLeft: 12 }}>
             <span style={{ color: "#ef4444" }}>● </span>
@@ -348,6 +379,7 @@ export default function StocksPage() {
       <table style={tableStyle}>
         <thead>
           <tr style={{ color: "#888", fontSize: 12 }}>
+            <th style={{ ...th, width: 28 }} aria-label="特别关注"></th>
             <th style={th}>代码</th>
             <th style={th}>名称</th>
             <th style={{ ...th, textAlign: "right" }}>价</th>
@@ -362,14 +394,14 @@ export default function StocksPage() {
         <tbody>
           {loading && (
             <tr>
-              <td colSpan={9} style={{ ...td, textAlign: "center", color: "#666" }}>
+              <td colSpan={10} style={{ ...td, textAlign: "center", color: "#666" }}>
                 加载中…
               </td>
             </tr>
           )}
           {!loading && rows.length === 0 && (
             <tr>
-              <td colSpan={9} style={{ ...td, textAlign: "center", color: "#666" }}>
+              <td colSpan={10} style={{ ...td, textAlign: "center", color: "#666" }}>
                 自选池为空，先去
                 <a href="/watchlist" style={{ color: "#3b82f6", marginLeft: 4 }}>
                   导入股票
@@ -380,13 +412,13 @@ export default function StocksPage() {
           )}
           {!loading && rows.length > 0 && filter !== null && visibleRows.length === 0 && (
             <tr>
-              <td colSpan={9} style={{ ...td, textAlign: "center", color: "#666" }}>
+              <td colSpan={10} style={{ ...td, textAlign: "center", color: "#666" }}>
                 当前筛选下没有股票
               </td>
             </tr>
           )}
           {/* Filter mode: flat list of whichever bucket is selected. */}
-          {!loading && filter !== null && visibleRows.map(stockRow)}
+          {!loading && filter !== null && visibleRows.map((r) => stockRow(r, toggleStar))}
           {/* Default mode: grouped, with collapsible non-act sections. */}
           {!loading && filter === null && GROUP_DEFS.map(({ key, label, color }) => {
             const groupRows = groupedRows[key];
@@ -398,7 +430,7 @@ export default function StocksPage() {
                   onClick={() => toggleGroup(key)}
                   style={{ cursor: "pointer", background: "#0a0a0a" }}
                 >
-                  <td colSpan={9} style={{
+                  <td colSpan={10} style={{
                     padding: "8px 10px",
                     borderTop: "1px solid #222",
                     borderBottom: "1px solid #222",
@@ -414,7 +446,7 @@ export default function StocksPage() {
                     <span style={{ color: "#888" }}>({groupRows.length})</span>
                   </td>
                 </tr>
-                {!isCollapsed && groupRows.map(stockRow)}
+                {!isCollapsed && groupRows.map((r) => stockRow(r, toggleStar))}
               </Fragment>
             );
           })}
@@ -552,10 +584,31 @@ function hexA(hex: string, a: number): string {
 }
 
 // Single-row renderer — extracted so both grouped and filter-flat modes
-// share one source of truth.
-function stockRow(r: StockRow) {
+// share one source of truth. `onToggleStar` is required because the star
+// toggle needs access to component state, but rest of the row is pure
+// data → JSX.
+function stockRow(r: StockRow, onToggleStar: (code: string) => void) {
   return (
     <tr key={r.code} style={r.has_strong_signal ? rowStrong : undefined}>
+      <td style={{ ...td, width: 28, padding: "10px 0 10px 6px" }}>
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onToggleStar(r.code); }}
+          aria-label={r.starred ? "取消星标" : "标为特别关注"}
+          title={r.starred ? "取消星标" : "标为特别关注"}
+          style={{
+            background: "transparent",
+            border: "none",
+            padding: 2,
+            fontSize: 14,
+            cursor: "pointer",
+            color: r.starred ? "#facc15" : "#3a3a3a",
+            lineHeight: 1,
+          }}
+        >
+          {r.starred ? "★" : "☆"}
+        </button>
+      </td>
       <td style={{ ...td, fontFamily: "monospace" }}>
         <span style={{ color: "#666", marginRight: 4 }}>{exchangeLabel[r.exchange] || ""}</span>
         {r.code}

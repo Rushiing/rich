@@ -43,6 +43,7 @@ _POSTGRES_BACKFILL = [
     ("snapshots", "turnover_rate",    "DOUBLE PRECISION"),
     ("snapshots", "market_cap",       "DOUBLE PRECISION"),
     ("snapshots", "circ_market_cap",  "DOUBLE PRECISION"),
+    ("watchlist", "starred",          "BOOLEAN NOT NULL DEFAULT FALSE"),
 ]
 
 

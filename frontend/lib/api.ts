@@ -6,6 +6,7 @@ export type WatchlistItem = {
   name: string;
   exchange: string;
   added_at: string;
+  starred: boolean;
 };
 
 export type ImportResult = {
@@ -60,8 +61,11 @@ export type StockRow = {
   signals: string[];
   has_strong_signal: boolean;
   on_lhb: boolean;
+  starred: boolean;
   analysis: AnalysisBrief | null;
 };
+
+export type StarToggleResult = { code: string; starred: boolean };
 
 export type StockDetail = {
   code: string;
@@ -138,6 +142,8 @@ export const api = {
     }),
   deleteCode: (code: string) =>
     request<{ ok: boolean }>(`/api/watchlist/${code}`, { method: "DELETE" }),
+  toggleStar: (code: string) =>
+    request<StarToggleResult>(`/api/watchlist/${code}/star`, { method: "POST" }),
   listStocks: () => request<StockRow[]>("/api/stocks"),
   stockDetail: (code: string) => request<StockDetail>(`/api/stocks/${code}`),
   triggerSnapshot: () =>

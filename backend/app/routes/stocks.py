@@ -65,6 +65,7 @@ class StockRow(BaseModel):
     signals: list[str]
     has_strong_signal: bool
     on_lhb: bool
+    starred: bool                     # user-marked "特别关注"
     analysis: AnalysisBrief | None  # null when never generated
 
 
@@ -165,10 +166,16 @@ def list_stocks(db: Session = Depends(get_db)):
             signals=signals,
             has_strong_signal=has_strong(signals),
             on_lhb=bool(s.lhb) if s else False,
+            starred=bool(getattr(w, "starred", False)),
             analysis=_brief(code),
         ))
-    # Strong-signal rows first, then by absolute change desc
+    # Order key, most-important first:
+    #   1. Starred rows (user said "watch this closely") — float to top of
+    #      whatever bucket the frontend groups them into
+    #   2. Strong-signal rows (limit_up/down, big notice, lhb)
+    #   3. Larger |change_pct| comes first
     rows.sort(key=lambda r: (
+        not r.starred,
         not r.has_strong_signal,
         -abs(r.change_pct or 0),
     ))

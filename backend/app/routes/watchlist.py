@@ -17,6 +17,7 @@ class WatchlistItem(BaseModel):
     name: str
     exchange: str
     added_at: str
+    starred: bool = False
 
     @classmethod
     def from_row(cls, row: Watchlist) -> "WatchlistItem":
@@ -25,6 +26,7 @@ class WatchlistItem(BaseModel):
             name=row.name,
             exchange=row.exchange,
             added_at=row.added_at.isoformat() if row.added_at else "",
+            starred=bool(getattr(row, "starred", False)),
         )
 
 
@@ -101,3 +103,21 @@ def delete_one(code: str, db: Session = Depends(get_db)):
     db.delete(row)
     db.commit()
     return {"ok": True}
+
+
+class StarToggleResult(BaseModel):
+    code: str
+    starred: bool
+
+
+@router.post("/{code}/star", response_model=StarToggleResult)
+def toggle_star(code: str, db: Session = Depends(get_db)):
+    """Flip the starred flag for one code. Idempotent target value is the
+    *opposite* of current — single endpoint covers both star and unstar
+    so the frontend doesn't need two methods. Returns the new state."""
+    row = db.query(Watchlist).filter(Watchlist.code == code).first()
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    row.starred = not bool(row.starred)
+    db.commit()
+    return StarToggleResult(code=code, starred=row.starred)

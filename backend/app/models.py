@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Float, Index, Integer, JSON, String, func
+from sqlalchemy import Boolean, DateTime, Float, Index, Integer, JSON, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -15,6 +15,12 @@ class Watchlist(Base):
     exchange: Mapped[str] = mapped_column(String(2), nullable=False)  # sh / sz / bj
     added_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    # User-marked "特别关注" — pinned to the top of its actionable bucket
+    # in the 盯盘 list. Default False so existing rows don't suddenly all
+    # float up on rollout.
+    starred: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
     )
 
 
