@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { api, AnalysisBrief, StockRow } from "../../lib/api";
 
 // While a snapshot job is running we re-pull /api/stocks at this cadence so
@@ -41,6 +41,34 @@ const exchangeLabel: Record<string, string> = {
   unknown: "?",
 };
 
+// Grouped view: split watchlist into act / wait / discard buckets so the
+// user's eyes land on "what should I actually do today" first. Buy and
+// sell live in their own groups (opposite intents — flattening into one
+// "actionable" pile makes the user re-classify by hand). Watch and the
+// 不入手+待生成 bucket together usually account for ~80% of a 50-stock
+// list, so they default to collapsed.
+type GroupKey = "buy" | "sell" | "watch" | "other";
+
+const GROUP_DEFS: {
+  key: GroupKey;
+  label: string;
+  color: string;
+  defaultCollapsed: boolean;
+}[] = [
+  { key: "buy",   label: "建议买入",       color: "#ef4444", defaultCollapsed: false },
+  { key: "sell",  label: "建议卖出",       color: "#22c55e", defaultCollapsed: false },
+  { key: "watch", label: "观望",           color: "#9ca3af", defaultCollapsed: true  },
+  { key: "other", label: "不入手 + 待生成", color: "#6b7280", defaultCollapsed: true  },
+];
+
+function groupOf(r: StockRow): GroupKey {
+  const a = r.analysis?.actionable;
+  if (a === "建议买入")    return "buy";
+  if (a === "建议卖出")    return "sell";
+  if (a === "观望")        return "watch";
+  return "other"; // 不建议入手 / 待生成 / 未知 actionable 都归这里
+}
+
 export default function StocksPage() {
   const [rows, setRows] = useState<StockRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -50,6 +78,16 @@ export default function StocksPage() {
   // null = show all rows; otherwise exact match against StockRow.analysis.actionable
   // (or "__pending" for rows that don't have a cached analysis yet).
   const [filter, setFilter] = useState<string | null>(null);
+  // Per-group fold state. Initialized from GROUP_DEFS' defaults; only
+  // applies when filter === null (the grouped view). Filter mode flattens.
+  const [collapsed, setCollapsed] = useState<Record<GroupKey, boolean>>(
+    () => Object.fromEntries(
+      GROUP_DEFS.map((g) => [g.key, g.defaultCollapsed]),
+    ) as Record<GroupKey, boolean>,
+  );
+  function toggleGroup(k: GroupKey) {
+    setCollapsed((c) => ({ ...c, [k]: !c[k] }));
+  }
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollDeadline = useRef<number>(0);
   // Analysis batch polling is independent from snapshot polling — user may
@@ -174,6 +212,14 @@ export default function StocksPage() {
   // otherwise fall through to "全部重新解析" (with a confirm to avoid
   // accidentally burning tokens on every code).
   const pendingCount = rows.filter((x) => !x.analysis).length;
+  const strongCount = rows.filter((x) => x.has_strong_signal).length;
+
+  // Bucket rows into the four groups while preserving server-side ordering
+  // (strong-signal first, then |change_pct| desc).
+  const groupedRows: Record<GroupKey, StockRow[]> = {
+    buy: [], sell: [], watch: [], other: [],
+  };
+  for (const r of rows) groupedRows[groupOf(r)].push(r);
 
   async function batchAnalyze() {
     setMsg(null);
@@ -227,7 +273,22 @@ export default function StocksPage() {
 
       <div style={{ marginTop: 8, color: "#888", fontSize: 13 }}>
         {filter === null ? `共 ${rows.length} 支` : `${visibleRows.length} / ${rows.length} 支`}
-        <span style={{ marginLeft: 12 }}>红色 = 强信号</span>
+        {strongCount > 0 && (
+          <span style={{ marginLeft: 12 }}>
+            <span style={{ color: "#ef4444" }}>● </span>
+            强信号 {strongCount}
+          </span>
+        )}
+        {pendingCount > 0 && (
+          <span style={{ marginLeft: 12, color: "#facc15" }}>
+            待解析 {pendingCount}
+          </span>
+        )}
+        {filter === null && (
+          <span style={{ marginLeft: 12, color: "#666" }}>
+            点分组标题可折叠
+          </span>
+        )}
       </div>
 
       <div className="table-scroll">
@@ -264,58 +325,46 @@ export default function StocksPage() {
               </td>
             </tr>
           )}
-          {!loading && rows.length > 0 && visibleRows.length === 0 && (
+          {!loading && rows.length > 0 && filter !== null && visibleRows.length === 0 && (
             <tr>
               <td colSpan={9} style={{ ...td, textAlign: "center", color: "#666" }}>
                 当前筛选下没有股票
               </td>
             </tr>
           )}
-          {visibleRows.map((r) => (
-            <tr key={r.code} style={r.has_strong_signal ? rowStrong : undefined}>
-              <td style={{ ...td, fontFamily: "monospace" }}>
-                <span style={{ color: "#666", marginRight: 4 }}>{exchangeLabel[r.exchange] || ""}</span>
-                {r.code}
-              </td>
-              <td style={td}>{r.name}</td>
-              <td style={{ ...td, textAlign: "right", fontFamily: "monospace" }}>
-                {r.price != null ? r.price.toFixed(2) : "-"}
-              </td>
-              <td style={{
-                ...td,
-                textAlign: "right",
-                fontFamily: "monospace",
-                color: r.change_pct == null ? "#888" : r.change_pct >= 0 ? "#ef4444" : "#22c55e",
-              }}>
-                {r.change_pct != null ? `${r.change_pct >= 0 ? "+" : ""}${r.change_pct.toFixed(2)}%` : "-"}
-              </td>
-              <td style={{ ...td, textAlign: "right", fontFamily: "monospace", color: "#aaa" }}>
-                {fmtFlow(r.main_net_flow)}
-              </td>
-              <td style={td}>
-                {r.signals.length === 0 ? (
-                  <span style={{ color: "#444" }}>–</span>
-                ) : (
-                  r.signals.map((s) => (
-                    <span key={s} style={signalChip(r.has_strong_signal && (s === "limit_up" || s === "limit_down" || s === "important_notice" || s === "lhb"))}>
-                      {SIGNAL_LABEL[s] || s}
+          {/* Filter mode: flat list of whichever bucket is selected. */}
+          {!loading && filter !== null && visibleRows.map(stockRow)}
+          {/* Default mode: grouped, with collapsible non-act sections. */}
+          {!loading && filter === null && GROUP_DEFS.map(({ key, label, color }) => {
+            const groupRows = groupedRows[key];
+            if (groupRows.length === 0) return null;
+            const isCollapsed = collapsed[key];
+            return (
+              <Fragment key={key}>
+                <tr
+                  onClick={() => toggleGroup(key)}
+                  style={{ cursor: "pointer", background: "#0a0a0a" }}
+                >
+                  <td colSpan={9} style={{
+                    padding: "8px 10px",
+                    borderTop: "1px solid #222",
+                    borderBottom: "1px solid #222",
+                    fontSize: 12,
+                    userSelect: "none",
+                  }}>
+                    <span style={{ display: "inline-block", width: 14, color: "#666" }}>
+                      {isCollapsed ? "▸" : "▾"}
                     </span>
-                  ))
-                )}
-              </td>
-              <td style={td}>
-                <ActionableCell analysis={r.analysis} />
-              </td>
-              <td style={{ ...td, color: "#666", fontSize: 12 }}>
-                {r.last_ts ? new Date(r.last_ts).toLocaleString("zh-CN", { hour: "2-digit", minute: "2-digit", month: "numeric", day: "numeric" }) : "未抓取"}
-              </td>
-              <td style={{ ...td, textAlign: "right" }}>
-                <a href={`/stocks/${r.code}`} style={{ color: "#3b82f6", fontSize: 12, textDecoration: "none" }}>
-                  解析 →
-                </a>
-              </td>
-            </tr>
-          ))}
+                    <span style={{ color, fontWeight: 600, marginRight: 8 }}>
+                      {label}
+                    </span>
+                    <span style={{ color: "#888" }}>({groupRows.length})</span>
+                  </td>
+                </tr>
+                {!isCollapsed && groupRows.map(stockRow)}
+              </Fragment>
+            );
+          })}
         </tbody>
       </table>
       </div>
@@ -447,6 +496,56 @@ function hexA(hex: string, a: number): string {
   if (!m) return hex;
   const n = parseInt(m[1], 16);
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+}
+
+// Single-row renderer — extracted so both grouped and filter-flat modes
+// share one source of truth.
+function stockRow(r: StockRow) {
+  return (
+    <tr key={r.code} style={r.has_strong_signal ? rowStrong : undefined}>
+      <td style={{ ...td, fontFamily: "monospace" }}>
+        <span style={{ color: "#666", marginRight: 4 }}>{exchangeLabel[r.exchange] || ""}</span>
+        {r.code}
+      </td>
+      <td style={td}>{r.name}</td>
+      <td style={{ ...td, textAlign: "right", fontFamily: "monospace" }}>
+        {r.price != null ? r.price.toFixed(2) : "-"}
+      </td>
+      <td style={{
+        ...td,
+        textAlign: "right",
+        fontFamily: "monospace",
+        color: r.change_pct == null ? "#888" : r.change_pct >= 0 ? "#ef4444" : "#22c55e",
+      }}>
+        {r.change_pct != null ? `${r.change_pct >= 0 ? "+" : ""}${r.change_pct.toFixed(2)}%` : "-"}
+      </td>
+      <td style={{ ...td, textAlign: "right", fontFamily: "monospace", color: "#aaa" }}>
+        {fmtFlow(r.main_net_flow)}
+      </td>
+      <td style={td}>
+        {r.signals.length === 0 ? (
+          <span style={{ color: "#444" }}>–</span>
+        ) : (
+          r.signals.map((s) => (
+            <span key={s} style={signalChip(r.has_strong_signal && (s === "limit_up" || s === "limit_down" || s === "important_notice" || s === "lhb"))}>
+              {SIGNAL_LABEL[s] || s}
+            </span>
+          ))
+        )}
+      </td>
+      <td style={td}>
+        <ActionableCell analysis={r.analysis} />
+      </td>
+      <td style={{ ...td, color: "#666", fontSize: 12 }}>
+        {r.last_ts ? new Date(r.last_ts).toLocaleString("zh-CN", { hour: "2-digit", minute: "2-digit", month: "numeric", day: "numeric" }) : "未抓取"}
+      </td>
+      <td style={{ ...td, textAlign: "right" }}>
+        <a href={`/stocks/${r.code}`} style={{ color: "#3b82f6", fontSize: 12, textDecoration: "none" }}>
+          解析 →
+        </a>
+      </td>
+    </tr>
+  );
 }
 
 function fmtFlow(yuan: number | null): string {
