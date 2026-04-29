@@ -353,43 +353,71 @@ def _quotes_one(code: str) -> dict[str, Any]:
     return {**spot, "main_net_flow": _fund_flow(code)}
 
 
-def _per_code_quotes(codes: list[str]) -> dict[str, dict[str, Any]]:
+def _per_code_quotes(codes: list[str], total_timeout: float = 60.0) -> dict[str, dict[str, Any]]:
     """Concurrent per-code fallback. Drops codes whose spot AND fund-flow
-    both came back None — caller treats them as 'no data this tick'."""
+    both came back None — caller treats them as 'no data this tick'.
+
+    A wall-time ceiling is critical here: this used to be `with
+    ThreadPoolExecutor + as_completed(no timeout)`, which would deadlock
+    forever if a single akshare call escaped its 12s read timer (e.g.,
+    a slow byte-stream that keeps resetting the timer). When that
+    happened the entire quotes_tick hung, APScheduler refused all
+    subsequent quotes ticks with "max running instances reached", and
+    the 盯盘 list went stale until next deploy.
+    """
     if not codes:
         return {}
-    out: dict[str, dict[str, Any]] = {}
-    with ThreadPoolExecutor(max_workers=min(10, len(codes))) as pool:
-        futures = {pool.submit(_quotes_one, c): c for c in codes}
-        for fut in as_completed(futures):
+    return _bounded_pool(_quotes_one, codes, total_timeout, _quotes_accepts)
+
+
+def _per_code_flow_only(codes: list[str], total_timeout: float = 60.0) -> dict[str, float]:
+    """Lightweight version of _per_code_quotes — only main fund flow.
+    Same wall-time guard reasoning as `_per_code_quotes`."""
+    if not codes:
+        return {}
+    return _bounded_pool(_fund_flow, codes, total_timeout, _flow_accepts)
+
+
+def _quotes_accepts(d: Any) -> bool:
+    return isinstance(d, dict) and any(v is not None for v in d.values())
+
+
+def _flow_accepts(v: Any) -> bool:
+    return v is not None
+
+
+def _bounded_pool(fn, codes: list[str], total_timeout: float, accepts) -> dict[str, Any]:
+    """Run `fn(code)` for each code in a bounded thread pool with a
+    wall-time deadline. Returns whatever finished by the deadline; codes
+    still in flight are abandoned (their threads keep running until akshare
+    eventually gives up, but the caller doesn't wait).
+    """
+    out: dict[str, Any] = {}
+    pool = ThreadPoolExecutor(
+        max_workers=min(10, len(codes)), thread_name_prefix="quotes-bounded",
+    )
+    futures = {pool.submit(fn, c): c for c in codes}
+    try:
+        for fut in as_completed(futures, timeout=total_timeout):
             c = futures[fut]
             try:
-                d = fut.result()
+                v = fut.result()
             except Exception as e:
-                logger.warning("per-code quotes(%s) failed: %s", c, e)
+                logger.warning("%s(%s) failed: %s", fn.__name__, c, e)
                 continue
-            if any(v is not None for v in d.values()):
-                out[c] = d
-    return out
-
-
-def _per_code_flow_only(codes: list[str]) -> dict[str, float]:
-    """Lightweight version of _per_code_quotes that only fetches main fund
-    flow — used to backfill main_net_flow for codes whose price came from
-    sina (which doesn't carry flow)."""
-    if not codes:
-        return {}
-    out: dict[str, float] = {}
-    with ThreadPoolExecutor(max_workers=min(10, len(codes))) as pool:
-        futures = {pool.submit(_fund_flow, c): c for c in codes}
-        for fut in as_completed(futures):
-            c = futures[fut]
-            try:
-                flow = fut.result()
-            except Exception:
-                flow = None
-            if flow is not None:
-                out[c] = flow
+            if accepts(v):
+                out[c] = v
+    except FuturesTimeout:
+        unfinished = sum(1 for f in futures if not f.done())
+        logger.warning(
+            "%s: %d/%d codes still in flight after %ss; abandoning so the "
+            "next tick can run",
+            fn.__name__, unfinished, len(codes), total_timeout,
+        )
+        for f in futures:
+            if not f.done():
+                f.cancel()  # best-effort; can't kill a thread mid-I/O
+    pool.shutdown(wait=False)  # don't block return on stuck workers
     return out
 
 
