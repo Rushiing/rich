@@ -293,11 +293,22 @@ export default function StocksPage() {
   }
 
   // Bucket rows into the four groups while preserving server-side ordering
-  // (strong-signal first, then |change_pct| desc).
+  // (strong-signal first, then |change_pct| desc). Then locally float
+  // starred rows to the top of each group — this guarantees the optimistic
+  // toggle reorders rows immediately, instead of waiting for the silent
+  // refresh round-trip. Array.sort in modern JS is stable, so non-starred
+  // rows keep their server-given relative order.
   const groupedRows: Record<GroupKey, StockRow[]> = {
     buy: [], sell: [], watch: [], other: [],
   };
   for (const r of rows) groupedRows[groupOf(r)].push(r);
+  for (const k of Object.keys(groupedRows) as GroupKey[]) {
+    groupedRows[k].sort((a, b) => Number(b.starred) - Number(a.starred));
+  }
+  // Filter mode: same starred-first treatment so the flat list also reacts.
+  const visibleRowsSorted = filter === null
+    ? visibleRows
+    : [...visibleRows].sort((a, b) => Number(b.starred) - Number(a.starred));
 
   async function batchAnalyze() {
     setMsg(null);
@@ -418,7 +429,7 @@ export default function StocksPage() {
             </tr>
           )}
           {/* Filter mode: flat list of whichever bucket is selected. */}
-          {!loading && filter !== null && visibleRows.map((r) => stockRow(r, toggleStar))}
+          {!loading && filter !== null && visibleRowsSorted.map((r) => stockRow(r, toggleStar))}
           {/* Default mode: grouped, with collapsible non-act sections. */}
           {!loading && filter === null && GROUP_DEFS.map(({ key, label, color }) => {
             const groupRows = groupedRows[key];
