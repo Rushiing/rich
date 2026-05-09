@@ -69,6 +69,16 @@ app.include_router(stocks_routes.router)
 app.include_router(sectors_routes.router)
 
 
+@app.post("/api/_diag/refresh-industry-meta")
+def diag_refresh_industry_meta():
+    """One-shot industry mapping pull. Phase 7 stores per-stock 行业 in
+    the industry_meta table; without this, the snapshot job has no map
+    to compute industry percentiles + averages from. Call once after
+    deploy (or after adding new stocks)."""
+    from .services import industry as industry_svc
+    return industry_svc.refresh_industry_meta()
+
+
 @app.post("/api/_diag/refresh-klines")
 def diag_refresh_klines():
     """One-shot K-line bootstrap. Phase 9's _kline_tick fires at 16:30 BJT
