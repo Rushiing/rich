@@ -143,6 +143,52 @@ def delete_one(
     return {"ok": True}
 
 
+class BulkDeleteRequest(BaseModel):
+    codes: list[str] = Field(default_factory=list)
+    raw: str | None = None  # accept paste-style input like /import
+
+
+class BulkDeleteResult(BaseModel):
+    deleted: list[str]
+    not_found: list[str]
+
+
+@router.post("/bulk-delete", response_model=BulkDeleteResult)
+def bulk_delete(
+    body: BulkDeleteRequest,
+    db: Session = Depends(get_db),
+    user_id: int | None = Depends(require_auth),
+):
+    """Delete multiple codes at once. Mirrors /import's input shape so
+    the frontend can reuse the paste textarea + Excel/CSV parsing.
+
+    Codes not in the user's watchlist quietly land in `not_found` instead
+    of failing the whole batch — same forgiving behaviour as /import."""
+    owner = resolve_owner(user_id, db)
+    incoming: list[str] = []
+    if body.raw:
+        incoming.extend(normalize_codes(body.raw))
+    incoming.extend(normalize_codes(" ".join(body.codes)))
+    seen: set[str] = set()
+    deduped = [c for c in incoming if not (c in seen or seen.add(c))]
+    if not deduped:
+        return BulkDeleteResult(deleted=[], not_found=[])
+
+    rows = (
+        _scoped_query(db, owner)
+        .filter(Watchlist.code.in_(deduped))
+        .all()
+    )
+    found = {r.code for r in rows}
+    for r in rows:
+        db.delete(r)
+    db.commit()
+    return BulkDeleteResult(
+        deleted=sorted(found),
+        not_found=sorted(c for c in deduped if c not in found),
+    )
+
+
 class StarToggleResult(BaseModel):
     code: str
     starred: bool

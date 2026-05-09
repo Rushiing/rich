@@ -64,23 +64,33 @@ def check_password(password: str) -> bool:
 
 def require_auth(rich_session: str | None = Cookie(default=None)) -> int | None:
     """Gate for protected routes. Returns the authenticated user_id (int)
-    or None when running with AUTH_DISABLED.
+    or None for legacy/anonymous sessions.
 
-    - AUTH_DISABLED=True → returns None (caller decides whether to apply
-      a default user_id; today most routes treat None as "all users".
-      That's the legacy behaviour and still wanted in dev/test mode.)
-    - Cookie missing or unsigned → 401
-    - Cookie v1 (no uid) → returns None; user-scoped routes will treat
-      the request as if AUTH_DISABLED. Phase 6 forces real users to log
-      out + log back in via SMS to upgrade their cookie to v2.
-    - Cookie v2 → returns the embedded uid as int.
+    Resolution order matters — a valid cookie ALWAYS beats AUTH_DISABLED:
+    - Cookie v2 (has uid) → returns the uid. This is the SMS-authed path
+      and must take precedence over AUTH_DISABLED so users B/C don't get
+      bucketed back to the admin's watchlist when AUTH_DISABLED is on.
+    - Cookie v1 (no uid) → None. Routes treat this as anonymous; combined
+      with ADMIN_PHONE set, resolve_owner() folds it into the admin user.
+    - No cookie + AUTH_DISABLED → None (bypass). Same anonymous path as v1.
+    - No cookie + AUTH_DISABLED off → 401.
+    - Cookie present but unsigned/tampered → 401.
     """
+    if rich_session:
+        payload = decode_token(rich_session)
+        if payload is None:
+            # Cookie present but tampered with — fail closed even when
+            # AUTH_DISABLED. Real users with broken cookies should re-login.
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+        uid = payload.get("uid")
+        if isinstance(uid, int):
+            return int(uid)
+        # v1 payload (no uid) — fall through to anonymous handling below.
     if settings.AUTH_DISABLED:
         return None
     if not rich_session:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
-    payload = decode_token(rich_session)
-    if payload is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
-    uid = payload.get("uid")
-    return int(uid) if isinstance(uid, int) else None
+    # Cookie present but v1-shaped while AUTH_DISABLED is off: treat as
+    # anonymous (legacy single-password sessions had no uid). Routes will
+    # 401 on user-scoped paths via resolve_owner returning admin-or-None.
+    return None

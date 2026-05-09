@@ -150,6 +150,11 @@ export const api = {
     }),
   deleteCode: (code: string) =>
     request<{ ok: boolean }>(`/api/watchlist/${code}`, { method: "DELETE" }),
+  bulkDelete: (raw: string) =>
+    request<{ deleted: string[]; not_found: string[] }>(
+      "/api/watchlist/bulk-delete",
+      { method: "POST", body: JSON.stringify({ raw }) },
+    ),
   toggleStar: (code: string) =>
     request<StarToggleResult>(`/api/watchlist/${code}/star`, { method: "POST" }),
   listStocks: () => request<StockRow[]>("/api/stocks"),

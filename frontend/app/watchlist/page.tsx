@@ -16,6 +16,7 @@ export default function WatchlistPage() {
   const [items, setItems] = useState<WatchlistItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [showImport, setShowImport] = useState(false);
+  const [showBulkDelete, setShowBulkDelete] = useState(false);
 
   async function refresh() {
     setLoading(true);
@@ -43,6 +44,13 @@ export default function WatchlistPage() {
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <UserChip />
           <a href="/stocks" style={linkStyle}>盯盘</a>
+          <button
+            onClick={() => setShowBulkDelete(true)}
+            disabled={items.length === 0}
+            style={items.length === 0 ? { ...ghostBtn, opacity: 0.5, cursor: "not-allowed" } : ghostBtn}
+          >
+            批量删除
+          </button>
           <button onClick={() => setShowImport(true)} style={primaryBtn}>导入</button>
         </div>
       </header>
@@ -101,7 +109,132 @@ export default function WatchlistPage() {
           }}
         />
       )}
+      {showBulkDelete && (
+        <BulkDeleteDialog
+          currentCount={items.length}
+          onClose={() => setShowBulkDelete(false)}
+          onDone={async () => {
+            setShowBulkDelete(false);
+            await refresh();
+          }}
+        />
+      )}
     </main>
+  );
+}
+
+
+function BulkDeleteDialog({
+  currentCount, onClose, onDone,
+}: {
+  currentCount: number;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ deleted: string[]; not_found: string[] } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  async function onPickFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError(null);
+    try {
+      if (file.name.toLowerCase().endsWith(".csv")) {
+        const csv = await file.text();
+        const codes = csv
+          .split(/\r?\n/)
+          .map((line) => line.split(/[,;\t]/)[0]?.trim() || "")
+          .filter(Boolean)
+          .join("\n");
+        setText((prev) => (prev ? prev + "\n" + codes : codes));
+      } else {
+        const rows = await readXlsxFile(file);
+        const codes = rows
+          .map((r) => (r[0] == null ? "" : String(r[0]).trim()))
+          .filter(Boolean)
+          .join("\n");
+        setText((prev) => (prev ? prev + "\n" + codes : codes));
+      }
+    } catch (err) {
+      setError(`文件解析失败: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }
+
+  async function onSubmit() {
+    if (!confirm("确认批量删除？此操作无法撤销")) return;
+    setBusy(true);
+    setError(null);
+    try {
+      setResult(await api.bulkDelete(text));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={modalBackdrop} onClick={onClose}>
+      <div style={modalBox} onClick={(e) => e.stopPropagation()}>
+        <h2 style={{ fontSize: 16, margin: 0 }}>批量删除股票</h2>
+        <p style={{ color: "#888", fontSize: 12, margin: 0 }}>
+          粘贴一列 6 位代码（一行一个或用空格/逗号分隔），或上传 Excel/CSV（识别第一列）。
+          只会删除当前自选池里命中的代码（共 {currentCount} 支），其他忽略。
+        </p>
+
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder={"600519\n000001\n300750"}
+          rows={8}
+          style={textareaStyle}
+        />
+
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".xlsx,.csv"
+            onChange={onPickFile}
+            style={{ fontSize: 12, color: "#aaa" }}
+          />
+        </div>
+
+        {error && <div style={{ color: "#ff6b6b", fontSize: 13 }}>{error}</div>}
+
+        {result && (
+          <div style={resultBox}>
+            <div>已删除 <b style={{ color: "#4ade80" }}>{result.deleted.length}</b>{result.deleted.length > 0 ? `: ${result.deleted.join(", ")}` : ""}</div>
+            {result.not_found.length > 0 && (
+              <div>不在自选池中（已忽略） <b style={{ color: "#facc15" }}>{result.not_found.length}</b>: {result.not_found.join(", ")}</div>
+            )}
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button onClick={result ? onDone : onClose} style={ghostBtn}>
+            {result ? "完成" : "取消"}
+          </button>
+          {!result && (
+            <button
+              onClick={onSubmit}
+              disabled={busy || !text.trim()}
+              style={{
+                ...primaryBtn,
+                background: busy || !text.trim() ? "#444" : "#dc2626",
+              }}
+            >
+              {busy ? "删除中..." : "确认删除"}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
