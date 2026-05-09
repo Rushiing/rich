@@ -32,6 +32,27 @@ REFRESH_AGE_DAYS = 7  # consider rows older than this stale + worth re-pulling
 
 
 def _fetch_industry(code: str) -> str | None:
+    """Resolve a code's 所属行业.
+
+    Two sources tried in order:
+    1. CNINFO `stock_profile_cninfo` — reachable from Railway (vs. the
+       eastmoney-backed stock_individual_info_em which gets blocked at
+       push2.eastmoney.com). Provides a coarser-grained 国民经济行业分类
+       (e.g., '酒、饮料和精制茶制造业') but stable and complete.
+    2. eastmoney fallback — only fires when CNINFO returns nothing.
+
+    Returned name is the canonical key downstream code groups by.
+    """
+    # Primary: CNINFO
+    df = _safe_with_timeout(ak.stock_profile_cninfo, symbol=code, _timeout=8.0)
+    if df is not None and len(df) > 0:
+        try:
+            v = str(df.iloc[0].get("所属行业") or "").strip()
+            if v:
+                return v
+        except Exception:
+            pass
+    # Fallback: eastmoney (most likely fails on Railway, kept for dev/local)
     df = _safe_with_timeout(ak.stock_individual_info_em, symbol=code, _timeout=8.0)
     if df is None or len(df) == 0:
         return None
