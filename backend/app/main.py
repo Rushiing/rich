@@ -22,11 +22,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .db import Base, engine, ensure_extra_columns, snapshot_columns
-from .models import Analysis, Snapshot, Watchlist  # noqa: F401  (register tables with metadata)
+from .models import Analysis, Snapshot, User, Watchlist  # noqa: F401  (register tables with metadata)
 from .routes import auth as auth_routes
 from .routes import stocks as stocks_routes
 from .routes import watchlist as watchlist_routes
 from .services.cron import start_scheduler, stop_scheduler
+from .services.users import migrate_admin_watchlist
 
 # Default Python logging swallows INFO; that hid `snapshot job: ...` and
 # `scheduler started: ...` from Railway logs and made cron health hard to
@@ -40,6 +41,9 @@ async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
     # create_all doesn't add columns to existing tables; close that gap.
     ensure_extra_columns()
+    # Phase 6: backfill watchlist.user_id for existing rows (idempotent).
+    # Skipped silently when ADMIN_PHONE is empty.
+    migrate_admin_watchlist()
     if settings.SCHEDULER_ENABLED:
         start_scheduler()
     yield

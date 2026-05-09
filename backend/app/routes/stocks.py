@@ -22,6 +22,7 @@ from ..models import Analysis, Snapshot, Watchlist
 from ..services.analysis import generate as analysis_generate, get_cached as analysis_cached
 from ..services.cron import run_daily_analysis_job, run_snapshot_job
 from ..services.signals import has_strong
+from ..services.users import resolve_owner
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,17 @@ _analysis_lock = threading.Lock()
 _analysis_running = False
 
 router = APIRouter(prefix="/api/stocks", tags=["stocks"], dependencies=[Depends(require_auth)])
+
+
+def _user_watchlist(db: Session, owner: int | None):
+    """Watchlist query scoped to the current request's owner. Mirrors
+    routes.watchlist._scoped_query — when owner is None (legacy /
+    AUTH_DISABLED with no admin set), returns the unscoped query so the
+    pre-account-system behaviour still works."""
+    q = db.query(Watchlist)
+    if owner is not None:
+        q = q.filter(Watchlist.user_id == owner)
+    return q
 
 
 class AnalysisBrief(BaseModel):
@@ -70,9 +82,15 @@ class StockRow(BaseModel):
 
 
 @router.get("", response_model=list[StockRow])
-def list_stocks(db: Session = Depends(get_db)):
-    """Latest snapshot per watched code, joined with watchlist + cached analysis."""
-    watch = {w.code: w for w in db.query(Watchlist).all()}
+def list_stocks(
+    db: Session = Depends(get_db),
+    user_id: int | None = Depends(require_auth),
+):
+    """Latest snapshot per watched code, joined with watchlist + cached
+    analysis. Watchlist is scoped to the authenticated user; snapshots and
+    analyses are shared market-level state so we just join through."""
+    owner = resolve_owner(user_id, db)
+    watch = {w.code: w for w in _user_watchlist(db, owner).all()}
     if not watch:
         return []
 
@@ -306,9 +324,16 @@ class StockDetail(BaseModel):
 
 
 @router.get("/{code}", response_model=StockDetail)
-def stock_detail(code: str, db: Session = Depends(get_db)):
-    """Latest snapshot detail for one stock (used by Phase 3 deep-analysis page header)."""
-    w = db.query(Watchlist).filter(Watchlist.code == code).first()
+def stock_detail(
+    code: str,
+    db: Session = Depends(get_db),
+    user_id: int | None = Depends(require_auth),
+):
+    """Latest snapshot detail for one stock. 404 if the code isn't in the
+    current user's watchlist — keeps user A from poking at codes only user
+    B watches just because they happen to share market data."""
+    owner = resolve_owner(user_id, db)
+    w = _user_watchlist(db, owner).filter(Watchlist.code == code).first()
     if not w:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not in watchlist")
     s = (
@@ -374,11 +399,18 @@ class AnalysisOut(BaseModel):
 
 
 @router.get("/{code}/analysis", response_model=AnalysisOut | None)
-def get_analysis(code: str, db: Session = Depends(get_db)):
-    """Return cached analysis if it exists and is < 4h old. Returns null otherwise.
-
-    Frontend reads this on page load; if null it shows a "生成" CTA.
-    """
+def get_analysis(
+    code: str,
+    db: Session = Depends(get_db),
+    user_id: int | None = Depends(require_auth),
+):
+    """Return cached analysis (shared across users — see plan: "Analysis
+    缓存：全局共享") if the code is in the current user's watchlist. Codes
+    they don't watch get a 404 to avoid leaking which stocks others care
+    about."""
+    owner = resolve_owner(user_id, db)
+    if not _user_watchlist(db, owner).filter(Watchlist.code == code).first():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not in watchlist")
     row = db.query(Analysis).filter(Analysis.code == code).first()
     if row is None:
         return None
@@ -387,9 +419,15 @@ def get_analysis(code: str, db: Session = Depends(get_db)):
 
 
 @router.post("/{code}/analysis", response_model=AnalysisOut)
-def generate_analysis(code: str, db: Session = Depends(get_db)):
-    """Force regenerate. Returns the new row."""
-    if not db.query(Watchlist).filter(Watchlist.code == code).first():
+def generate_analysis(
+    code: str,
+    db: Session = Depends(get_db),
+    user_id: int | None = Depends(require_auth),
+):
+    """Force regenerate. Scoped to the user's watchlist (404 if not theirs)
+    so users can't burn LLM tokens for codes they don't follow."""
+    owner = resolve_owner(user_id, db)
+    if not _user_watchlist(db, owner).filter(Watchlist.code == code).first():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not in watchlist")
     try:
         row = analysis_generate(db, code)

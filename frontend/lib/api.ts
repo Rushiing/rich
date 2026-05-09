@@ -133,7 +133,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+export type Me =
+  | { ok: true; user_id: number; phone: string }
+  | { ok: true; anonymous: true };
+
 export const api = {
+  // ---- auth ----
+  me: () => request<Me>("/api/auth/me"),
+  logout: () => request<{ ok: boolean }>("/api/auth/logout", { method: "POST" }),
+  // ---- watchlist + stocks ----
   listWatchlist: () => request<WatchlistItem[]>("/api/watchlist"),
   importCodes: (raw: string) =>
     request<ImportResult>("/api/watchlist/import", {

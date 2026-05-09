@@ -44,6 +44,9 @@ _POSTGRES_BACKFILL = [
     ("snapshots", "market_cap",       "DOUBLE PRECISION"),
     ("snapshots", "circ_market_cap",  "DOUBLE PRECISION"),
     ("watchlist", "starred",          "BOOLEAN NOT NULL DEFAULT FALSE"),
+    # Phase 6: user system. Nullable on rollout; admin migration backfills
+    # NULL rows to ADMIN_PHONE's user.id on the next lifespan startup.
+    ("watchlist", "user_id",          "INTEGER"),
 ]
 
 

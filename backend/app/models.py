@@ -1,16 +1,54 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, Float, Index, Integer, JSON, String, func
+from sqlalchemy import (
+    BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, JSON,
+    String, UniqueConstraint, func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
 
 
+class User(Base):
+    """SMS-verified end user.
+
+    `phone` is the canonical identity (11-digit Chinese mobile). We don't
+    store passwords — every login goes through SMS verification, and
+    persistence relies on the signed cookie carrying user_id (see
+    auth.issue_token / verify_token). Phone is unique; a new login on the
+    same number just re-signs a new cookie for the existing row.
+    """
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    phone: Mapped[str] = mapped_column(String(11), unique=True, nullable=False, index=True)
+    phone_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+    last_login_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+
+
 class Watchlist(Base):
     __tablename__ = "watchlist"
 
+    # Note on PK choice: `code` was the original PK back when there was a
+    # single shared watchlist. Phase 6 layers `user_id` on top but keeps
+    # code-as-PK for the rollout — the admin user owns all 61 existing
+    # rows, no second user owns the same code yet. The first time a second
+    # user wants to add a code the admin already has, we'll need to flip
+    # the PK to a synthetic id with UNIQUE(user_id, code). That's a
+    # 1-commit follow-up before public multi-user signup.
     code: Mapped[str] = mapped_column(String(6), primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=True, index=True,
+    )
     name: Mapped[str] = mapped_column(String(50), nullable=False)
     exchange: Mapped[str] = mapped_column(String(2), nullable=False)  # sh / sz / bj
     added_at: Mapped[datetime] = mapped_column(

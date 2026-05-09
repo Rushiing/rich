@@ -2,6 +2,7 @@
 
 import { Fragment, useEffect, useRef, useState } from "react";
 import { api, AnalysisBrief, StockRow } from "../../lib/api";
+import UserChip from "../_components/UserChip";
 
 // While a snapshot job is running we re-pull /api/stocks at this cadence so
 // rows surface as their data lands. 5s feels responsive without hammering.
@@ -340,6 +341,7 @@ export default function StocksPage() {
       <header style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
         <h1 style={{ fontSize: 18, margin: 0 }}>盯盘</h1>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <UserChip />
           <a href="/watchlist" style={primaryLinkBtn}>自选池</a>
           <button onClick={batchAnalyze} disabled={analyzing} style={ghostBtn}>
             {analyzing

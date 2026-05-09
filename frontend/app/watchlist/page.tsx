@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import readXlsxFile from "read-excel-file";
 import { api, WatchlistItem, ImportResult } from "../../lib/api";
+import UserChip from "../_components/UserChip";
 
 const exchangeLabel: Record<string, string> = {
   sh: "上交",
@@ -39,7 +40,8 @@ export default function WatchlistPage() {
     <main style={{ padding: 20, maxWidth: 880, margin: "0 auto" }}>
       <header style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
         <h1 style={{ fontSize: 18, margin: 0 }}>自选池</h1>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <UserChip />
           <a href="/stocks" style={linkStyle}>盯盘</a>
           <button onClick={() => setShowImport(true)} style={primaryBtn}>导入</button>
         </div>

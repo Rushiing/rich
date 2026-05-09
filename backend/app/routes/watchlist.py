@@ -8,8 +8,9 @@ from ..auth import require_auth
 from ..db import get_db
 from ..models import Watchlist
 from ..services.stocks import lookup_codes, normalize_codes
+from ..services.users import resolve_owner
 
-router = APIRouter(prefix="/api/watchlist", tags=["watchlist"], dependencies=[Depends(require_auth)])
+router = APIRouter(prefix="/api/watchlist", tags=["watchlist"])
 
 
 class WatchlistItem(BaseModel):
@@ -42,20 +43,39 @@ class ImportResult(BaseModel):
     lookup_failed: list[str]   # format ok but akshare returned no name — retryable
 
 
+def _scoped_query(db: Session, owner: int | None):
+    """Apply user-scope filter to a Watchlist query. None means
+    'pre-account-system mode' — return all rows so legacy single-password
+    sessions and AUTH_DISABLED with no admin still see the data."""
+    q = db.query(Watchlist)
+    if owner is not None:
+        q = q.filter(Watchlist.user_id == owner)
+    return q
+
+
 @router.get("", response_model=list[WatchlistItem])
-def list_watchlist(db: Session = Depends(get_db)):
-    rows = db.query(Watchlist).order_by(Watchlist.added_at.desc()).all()
+def list_watchlist(
+    db: Session = Depends(get_db),
+    user_id: int | None = Depends(require_auth),
+):
+    owner = resolve_owner(user_id, db)
+    rows = _scoped_query(db, owner).order_by(Watchlist.added_at.desc()).all()
     return [WatchlistItem.from_row(r) for r in rows]
 
 
 @router.post("/import", response_model=ImportResult)
-def import_codes(body: ImportRequest, db: Session = Depends(get_db)):
+def import_codes(
+    body: ImportRequest,
+    db: Session = Depends(get_db),
+    user_id: int | None = Depends(require_auth),
+):
+    owner = resolve_owner(user_id, db)
+
     # Normalize inputs from either explicit list or free-form blob
     incoming: list[str] = []
     if body.raw:
         incoming.extend(normalize_codes(body.raw))
     incoming.extend(normalize_codes(" ".join(body.codes)))
-    # dedupe preserving order
     seen: set[str] = set()
     deduped = []
     for c in incoming:
@@ -72,16 +92,29 @@ def import_codes(body: ImportRequest, db: Session = Depends(get_db)):
     lookup_failed = [c for c, v in resolved.items() if v == "lookup_failed"]
     valid = {c: v for c, v in resolved.items() if isinstance(v, dict)}
 
+    # "Already in this user's watchlist" check — scoped to the current
+    # owner. A different user owning the same code should not block.
     existing_codes = {
         r.code
-        for r in db.query(Watchlist.code).filter(Watchlist.code.in_(list(valid.keys()))).all()
+        for r in _scoped_query(db, owner)
+                  .with_entities(Watchlist.code)
+                  .filter(Watchlist.code.in_(list(valid.keys())))
+                  .all()
     }
 
     added: list[WatchlistItem] = []
     for code, info in valid.items():
         if code in existing_codes:
             continue
-        row = Watchlist(code=info["code"], name=info["name"], exchange=info["exchange"])
+        # NOTE: with `code` still as PK (rollout phase) we cannot insert
+        # the same code twice across users. Once a second user starts
+        # adding existing codes we'll need the PK swap follow-up. For now
+        # this branch is unreachable for non-admin users since admin
+        # already owns all 61 historical rows.
+        row = Watchlist(
+            code=info["code"], name=info["name"], exchange=info["exchange"],
+            user_id=owner,
+        )
         db.add(row)
         db.flush()
         added.append(WatchlistItem.from_row(row))
@@ -96,8 +129,13 @@ def import_codes(body: ImportRequest, db: Session = Depends(get_db)):
 
 
 @router.delete("/{code}")
-def delete_one(code: str, db: Session = Depends(get_db)):
-    row = db.query(Watchlist).filter(Watchlist.code == code).first()
+def delete_one(
+    code: str,
+    db: Session = Depends(get_db),
+    user_id: int | None = Depends(require_auth),
+):
+    owner = resolve_owner(user_id, db)
+    row = _scoped_query(db, owner).filter(Watchlist.code == code).first()
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     db.delete(row)
@@ -111,11 +149,15 @@ class StarToggleResult(BaseModel):
 
 
 @router.post("/{code}/star", response_model=StarToggleResult)
-def toggle_star(code: str, db: Session = Depends(get_db)):
-    """Flip the starred flag for one code. Idempotent target value is the
-    *opposite* of current — single endpoint covers both star and unstar
-    so the frontend doesn't need two methods. Returns the new state."""
-    row = db.query(Watchlist).filter(Watchlist.code == code).first()
+def toggle_star(
+    code: str,
+    db: Session = Depends(get_db),
+    user_id: int | None = Depends(require_auth),
+):
+    """Flip the starred flag for one code, scoped to the current owner so
+    user A can't star user B's row. Returns the new state."""
+    owner = resolve_owner(user_id, db)
+    row = _scoped_query(db, owner).filter(Watchlist.code == code).first()
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     row.starred = not bool(row.starred)

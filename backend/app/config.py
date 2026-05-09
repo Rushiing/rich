@@ -34,5 +34,23 @@ class Settings(BaseSettings):
     # locked unless this is explicitly flipped on Railway.
     AUTH_DISABLED: bool = False
 
+    # --- Phase 6: SMS auth + admin migration -------------------------------
+    # Aliyun SMS credentials. When ALIYUN_SMS_ACCESS_KEY_ID is empty we run
+    # in dev mode: the verification code is fixed at SMS_DEV_CODE and only
+    # phone numbers in SMS_DEV_WHITELIST receive a "200 sent" response.
+    # On Railway, set the four ALIYUN_* values + leave SMS_DEV_* empty.
+    ALIYUN_SMS_ACCESS_KEY_ID: str = ""
+    ALIYUN_SMS_ACCESS_KEY_SECRET: str = ""
+    ALIYUN_SMS_SIGN_NAME: str = ""        # 已审批的签名，例如 "rich"
+    ALIYUN_SMS_TEMPLATE_CODE: str = ""    # 已审批的模板，例如 "SMS_xxxxxxxx"
+    SMS_DEV_CODE: str = "8888"            # dev-mode universal code
+    SMS_DEV_WHITELIST: str = ""           # comma-separated 11-digit phones
+
+    # Admin user setup — used by the one-shot startup migration in
+    # services/users.py. When set, lifespan ensures a User row with this
+    # phone exists and assigns ALL watchlist rows with NULL user_id to it.
+    # Re-running with the same value is idempotent.
+    ADMIN_PHONE: str = ""
+
 
 settings = Settings()
