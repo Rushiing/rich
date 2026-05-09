@@ -2,7 +2,7 @@
 
 import { use, useEffect, useState, type ReactNode } from "react";
 import {
-  api, KeyTable, RiskScores, ScenarioAdvice, StockAnalysis, StopLossLevel,
+  api, KeyTable, RiskScores, ScenarioAdvice, StockAnalysis, StockDetail, StopLossLevel,
 } from "../../../lib/api";
 
 const RISK_DIM_LABEL: Record<keyof Omit<RiskScores, "overall">, string> = {
@@ -23,6 +23,10 @@ export default function StockDetailPage({
 }) {
   const { code } = use(params);
   const [analysis, setAnalysis] = useState<StockAnalysis | null>(null);
+  // Detail (latest snapshot) carries industry context + 3-day metrics, fetched
+  // independently from the cached LLM analysis so a code with no analysis
+  // yet still shows industry chips.
+  const [detail, setDetail] = useState<StockDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -30,8 +34,12 @@ export default function StockDetailPage({
   async function loadCached() {
     setLoading(true);
     try {
-      const a = await api.getAnalysis(code);
+      const [a, d] = await Promise.all([
+        api.getAnalysis(code),
+        api.stockDetail(code).catch(() => null),
+      ]);
       setAnalysis(a);
+      setDetail(d);
     } finally {
       setLoading(false);
     }
@@ -66,24 +74,102 @@ export default function StockDetailPage({
 
       {loading ? (
         <p style={{ color: "#666", marginTop: 24 }}>加载中…</p>
-      ) : !analysis ? (
-        <EmptyState onGenerate={regenerate} generating={generating} err={err} />
       ) : (
         <>
-          <FreshnessBar
-            analysis={analysis}
-            generating={generating}
-            onRegenerate={regenerate}
-          />
-          {err && <div style={{ color: "#ef4444", marginTop: 8, fontSize: 13 }}>{err}</div>}
-          <KeyTableCard kt={analysis.key_table} />
-          <DeepAnalysis md={analysis.deep_analysis} />
-          <Footnote analysis={analysis} />
+          {detail && <IndustryContextCard detail={detail} />}
+          {!analysis ? (
+            <EmptyState onGenerate={regenerate} generating={generating} err={err} />
+          ) : (
+            <>
+              <FreshnessBar
+                analysis={analysis}
+                generating={generating}
+                onRegenerate={regenerate}
+              />
+              {err && <div style={{ color: "#ef4444", marginTop: 8, fontSize: 13 }}>{err}</div>}
+              <KeyTableCard kt={analysis.key_table} />
+              <DeepAnalysis md={analysis.deep_analysis} />
+              <Footnote analysis={analysis} />
+            </>
+          )}
         </>
       )}
     </main>
   );
 }
+
+function IndustryContextCard({ detail }: { detail: StockDetail }) {
+  // Skip rendering if there's literally nothing to show — happens for codes
+  // whose snapshot row hasn't been written yet (cold start) or that fall
+  // outside any industry mapping in our DB.
+  const hasAny =
+    detail.industry_name ||
+    detail.industry_pe_pctile != null ||
+    detail.industry_change_3d_pctile != null ||
+    detail.industry_flow_3d_pctile != null ||
+    detail.change_pct_3d != null ||
+    detail.industry_pe_avg != null;
+  if (!hasAny) return null;
+
+  function fmtPct(v: number | null, suffix = "%") {
+    return v == null ? "—" : `${v.toFixed(1)}${suffix}`;
+  }
+  function fmtFlow(yuan: number | null) {
+    if (yuan == null) return "—";
+    const abs = Math.abs(yuan);
+    const sign = yuan >= 0 ? "+" : "-";
+    if (abs >= 1e8) return `${sign}${(abs / 1e8).toFixed(2)}亿`;
+    if (abs >= 1e4) return `${sign}${(abs / 1e4).toFixed(0)}万`;
+    return `${sign}${abs.toFixed(0)}`;
+  }
+  function pctChip(label: string, v: number | null, hint: string) {
+    if (v == null) {
+      return (
+        <span title={hint} style={{
+          padding: "2px 8px", borderRadius: 4, fontSize: 11,
+          background: "#1a1a1a", color: "#444",
+        }}>{label}: —</span>
+      );
+    }
+    const x = Math.max(0, Math.min(100, v));
+    const color = x >= 70 ? "#fca5a5" : x <= 30 ? "#86efac" : "#9ca3af";
+    const bg = x >= 70 ? "rgba(239,68,68,0.18)" : x <= 30 ? "rgba(34,197,94,0.15)" : "rgba(255,255,255,0.05)";
+    return (
+      <span title={hint} style={{
+        padding: "2px 8px", borderRadius: 4, fontSize: 11,
+        background: bg, color,
+      }}>{label}: {x.toFixed(0)}%</span>
+    );
+  }
+
+  return (
+    <section style={{
+      marginTop: 16, padding: 14, border: "1px solid #2a2a2a",
+      borderRadius: 8, background: "#0f0f0f",
+    }}>
+      <div style={{ display: "flex", gap: 12, alignItems: "baseline", flexWrap: "wrap" }}>
+        <span style={{ fontSize: 13, color: "#888" }}>所属行业</span>
+        <span style={{ fontSize: 14, color: "#e5e5e5" }}>
+          {detail.industry_name ?? "未知"}
+        </span>
+      </div>
+      <div style={{ marginTop: 10, display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {pctChip("PE 分位", detail.industry_pe_pctile, "本股 PE 在所属行业中的百分位排名（高=贵）")}
+        {pctChip("3 日涨幅 分位", detail.industry_change_3d_pctile, "本股近 3 日涨幅在行业中的百分位（高=领跑）")}
+        {pctChip("3 日资金 分位", detail.industry_flow_3d_pctile, "近 3 日主力净流入在行业中的百分位（高=被资金抢筹）")}
+      </div>
+      <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "4px 16px", fontSize: 12, color: "#aaa" }}>
+        <div>3 日涨幅: <b style={{ color: "#e5e5e5", fontFamily: "monospace" }}>{fmtPct(detail.change_pct_3d)}</b></div>
+        <div>3 日换手: <b style={{ color: "#e5e5e5", fontFamily: "monospace" }}>{fmtPct(detail.turnover_rate_3d)}</b></div>
+        <div>3 日主力净流入: <b style={{ color: "#e5e5e5", fontFamily: "monospace" }}>{fmtFlow(detail.net_flow_3d)}</b></div>
+        <div>本股 PE / PB: <b style={{ color: "#e5e5e5", fontFamily: "monospace" }}>{detail.pe_ratio?.toFixed(1) ?? "—"} / {detail.pb_ratio?.toFixed(2) ?? "—"}</b></div>
+        <div>行业平均 PE: <b style={{ color: "#e5e5e5", fontFamily: "monospace" }}>{detail.industry_pe_avg?.toFixed(1) ?? "—"}</b></div>
+        <div>行业平均 PB: <b style={{ color: "#e5e5e5", fontFamily: "monospace" }}>{detail.industry_pb_avg?.toFixed(2) ?? "—"}</b></div>
+      </div>
+    </section>
+  );
+}
+
 
 function EmptyState({ onGenerate, generating, err }: { onGenerate: () => void; generating: boolean; err: string | null }) {
   return (

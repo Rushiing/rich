@@ -47,6 +47,16 @@ _POSTGRES_BACKFILL = [
     # Phase 6: user system. Nullable on rollout; admin migration backfills
     # NULL rows to ADMIN_PHONE's user.id on the next lifespan startup.
     ("watchlist", "user_id",          "INTEGER"),
+    # Phase 7: 3-day rolling metrics + industry context on each snapshot.
+    ("snapshots", "change_pct_3d",            "DOUBLE PRECISION"),
+    ("snapshots", "turnover_rate_3d",         "DOUBLE PRECISION"),
+    ("snapshots", "net_flow_3d",              "DOUBLE PRECISION"),
+    ("snapshots", "industry_name",            "VARCHAR(40)"),
+    ("snapshots", "industry_pe_pctile",       "DOUBLE PRECISION"),
+    ("snapshots", "industry_change_3d_pctile","DOUBLE PRECISION"),
+    ("snapshots", "industry_flow_3d_pctile",  "DOUBLE PRECISION"),
+    ("snapshots", "industry_pe_avg",          "DOUBLE PRECISION"),
+    ("snapshots", "industry_pb_avg",          "DOUBLE PRECISION"),
 ]
 
 

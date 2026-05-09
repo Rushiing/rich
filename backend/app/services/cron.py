@@ -37,6 +37,15 @@ from .scraper import (
 )
 from .realtime_quotes import fetch_quotes_sina, fetch_quotes_tencent
 from .signals import compute_signals
+from . import three_day, industry as industry_svc
+
+# Phase 7: extra fields the snapshot row carries beyond the legacy set.
+# Listed here so worker / row builders / carry-forward stay in sync.
+THREE_DAY_FIELDS = ("change_pct_3d", "turnover_rate_3d", "net_flow_3d")
+INDUSTRY_FIELDS = (
+    "industry_name", "industry_pe_pctile", "industry_change_3d_pctile",
+    "industry_flow_3d_pctile", "industry_pe_avg", "industry_pb_avg",
+)
 
 logger = logging.getLogger(__name__)
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -59,9 +68,11 @@ def _snapshot_worker(code: str, bulk_spot: dict | None, lhb_map: dict) -> bool:
     Critical layout: the slow akshare fan-out (5-30s) runs WITHOUT a DB
     connection held. The Session is opened only for the milliseconds-long
     insert + commit. Otherwise 10 concurrent workers would each park a
-    connection for the full slow window, saturating the pool and silently
-    failing the whole batch (which is exactly what tonight's debugging
-    revealed before this fix landed).
+    connection for the full slow window, saturating the pool.
+
+    `bulk_spot` carries the pre-fetched fields the worker doesn't need to
+    refetch — Tencent quote, 3-day metrics, industry context. The slow
+    phase only runs news / notices / fund_flow per code.
 
     Returns True on persisted, False on collection or DB failure.
     """
@@ -91,6 +102,8 @@ def _snapshot_worker(code: str, bulk_spot: dict | None, lhb_map: dict) -> bool:
             notices=s.get("notices") or [],
             lhb=s.get("lhb"),
             **{f: s.get(f) for f in VALUATION_FIELDS},
+            **{f: s.get(f) for f in THREE_DAY_FIELDS},
+            **{f: s.get(f) for f in INDUSTRY_FIELDS},
         )
         db.add(row)
         db.commit()
@@ -101,6 +114,48 @@ def _snapshot_worker(code: str, bulk_spot: dict | None, lhb_map: dict) -> bool:
         return False
     finally:
         db.close()
+
+
+def _enrich_with_three_day_and_industry(
+    codes: list[str], bulk: dict[str, dict],
+) -> dict[str, dict]:
+    """Layer the cheap-to-fetch context fields onto the bulk-quote dicts:
+    3-day rolling metrics + industry name + per-industry percentiles +
+    per-industry averages. Returns the enriched bulk in place (also
+    returns it for chaining).
+
+    This runs once per job on the main thread BEFORE workers fan out so
+    each worker just spreads it into its row constructor. Percentiles
+    require seeing the whole watchlist pool, so it must be a single pass.
+    """
+    # 3-day metrics (cached, ~30min TTL inside three_day module)
+    metrics_3d = three_day.get_metrics(codes)
+    for code, m in metrics_3d.items():
+        bulk.setdefault(code, {}).update(m)
+
+    # Industry names from our cached industry_meta table
+    industry_map = industry_svc.get_industry_map(codes)
+
+    # Build a lightweight snap-list view for percentile compute. We need
+    # pe_ratio (already in bulk from Tencent) + change_pct_3d / net_flow_3d
+    # / pb_ratio. industry_svc.compute_industry_context mutates this list
+    # adding the 6 industry_* fields.
+    pool = [
+        {
+            "code": c,
+            "pe_ratio": bulk.get(c, {}).get("pe_ratio"),
+            "pb_ratio": bulk.get(c, {}).get("pb_ratio"),
+            "change_pct_3d": bulk.get(c, {}).get("change_pct_3d"),
+            "net_flow_3d": bulk.get(c, {}).get("net_flow_3d"),
+        }
+        for c in codes
+    ]
+    industry_svc.compute_industry_context(pool, industry_map)
+    for entry in pool:
+        for f in INDUSTRY_FIELDS:
+            bulk.setdefault(entry["code"], {})[f] = entry.get(f)
+
+    return bulk
 
 
 def run_snapshot_job(post_close: bool = False) -> dict:
@@ -144,6 +199,11 @@ def run_snapshot_job(post_close: bool = False) -> dict:
         sina = fetch_quotes_sina(needs_sina)
         for c, q in sina.items():
             bulk.setdefault(c, {}).update(q)
+
+    # Phase 7: layer 3-day metrics + industry context on top of the bulk
+    # quote dicts so each worker can write a fully-enriched row without
+    # any extra network or DB queries inside the per-code phase.
+    _enrich_with_three_day_and_industry(codes, bulk)
 
     lhb_map = collect_lhb_today() if post_close else {}
 
@@ -230,6 +290,8 @@ def _carry_forward(latest: Snapshot | None) -> dict:
             "news": [], "notices": [], "lhb": None,
             "prev_main_net_flow": None,
             **{f"prev_{f}": None for f in VALUATION_FIELDS},
+            **{f"prev_{f}": None for f in THREE_DAY_FIELDS},
+            **{f"prev_{f}": None for f in INDUSTRY_FIELDS},
         }
     return {
         "news": latest.news or [],
@@ -237,6 +299,8 @@ def _carry_forward(latest: Snapshot | None) -> dict:
         "lhb": latest.lhb,
         "prev_main_net_flow": latest.main_net_flow,
         **{f"prev_{f}": getattr(latest, f, None) for f in VALUATION_FIELDS},
+        **{f"prev_{f}": getattr(latest, f, None) for f in THREE_DAY_FIELDS},
+        **{f"prev_{f}": getattr(latest, f, None) for f in INDUSTRY_FIELDS},
     }
 
 
@@ -256,6 +320,10 @@ def run_quotes_job() -> dict:
 
         logger.info("quotes job: bulk pulling %d codes", len(codes))
         bulk = collect_quotes_bulk(codes)
+        # Phase 7: layer 3-day metrics + industry context (cheap, cached)
+        # so each row written this tick carries the full set of fields,
+        # not just price/flow.
+        _enrich_with_three_day_and_industry(codes, bulk)
 
         # If the bulk endpoints handed back nothing at all, abort instead of
         # writing 22 empty rows that would shadow the last good snapshot in
@@ -310,6 +378,20 @@ def run_quotes_job() -> dict:
             }
             for f in VALUATION_FIELDS:
                 carry.pop(f"prev_{f}", None)
+            three_day_vals = {
+                f: (quote.get(f) if quote.get(f) is not None
+                    else carry.pop(f"prev_{f}", None))
+                for f in THREE_DAY_FIELDS
+            }
+            for f in THREE_DAY_FIELDS:
+                carry.pop(f"prev_{f}", None)
+            industry_vals = {
+                f: (quote.get(f) if quote.get(f) is not None
+                    else carry.pop(f"prev_{f}", None))
+                for f in INDUSTRY_FIELDS
+            }
+            for f in INDUSTRY_FIELDS:
+                carry.pop(f"prev_{f}", None)
             snap = {
                 "code": code,
                 "price": quote.get("price"),
@@ -319,6 +401,8 @@ def run_quotes_job() -> dict:
                 "main_net_flow": net_flow,
                 "north_hold_change": None,
                 **valuation,
+                **three_day_vals,
+                **industry_vals,
                 **carry,
             }
             snap["signals"] = compute_signals(snap)
@@ -335,6 +419,8 @@ def run_quotes_job() -> dict:
                 notices=snap["notices"],
                 lhb=snap["lhb"],
                 **{f: snap[f] for f in VALUATION_FIELDS},
+                **{f: snap[f] for f in THREE_DAY_FIELDS},
+                **{f: snap[f] for f in INDUSTRY_FIELDS},
             )
             db.add(row)
             try:

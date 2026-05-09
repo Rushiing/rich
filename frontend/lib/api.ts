@@ -55,9 +55,17 @@ export type StockRow = {
   name: string;
   exchange: string;
   last_ts: string | null;
-  price: number | null;
+  // 今日涨跌 — kept on the row even though the redesign hides "价格"
   change_pct: number | null;
-  main_net_flow: number | null;
+  // Phase 7: 3-day rolling
+  change_pct_3d: number | null;
+  turnover_rate_3d: number | null;
+  net_flow_3d: number | null;
+  // Phase 7: industry context
+  industry_name: string | null;
+  industry_pe_pctile: number | null;
+  industry_change_3d_pctile: number | null;
+  industry_flow_3d_pctile: number | null;
   signals: string[];
   has_strong_signal: boolean;
   on_lhb: boolean;
@@ -75,6 +83,17 @@ export type StockDetail = {
   price: number | null;
   change_pct: number | null;
   main_net_flow: number | null;
+  change_pct_3d: number | null;
+  turnover_rate_3d: number | null;
+  net_flow_3d: number | null;
+  pe_ratio: number | null;
+  pb_ratio: number | null;
+  industry_name: string | null;
+  industry_pe_pctile: number | null;
+  industry_change_3d_pctile: number | null;
+  industry_flow_3d_pctile: number | null;
+  industry_pe_avg: number | null;
+  industry_pb_avg: number | null;
   signals: string[];
   news: { title: string; url: string; ts: string }[];
   notices: { title: string; url: string; ts: string; type?: string | null }[];

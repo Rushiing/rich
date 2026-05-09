@@ -395,10 +395,11 @@ export default function StocksPage() {
             <th style={{ ...th, width: 28 }} aria-label="特别关注"></th>
             <th style={th}>代码</th>
             <th style={th}>名称</th>
-            <th style={{ ...th, textAlign: "right" }}>价</th>
-            <th style={{ ...th, textAlign: "right" }}>涨跌</th>
-            <th style={{ ...th, textAlign: "right" }}>主力净流入</th>
-            <th style={th}>信号</th>
+            <th style={{ ...th, textAlign: "right" }}>今日</th>
+            <th style={{ ...th, textAlign: "right" }}>3日涨幅</th>
+            <th style={{ ...th, textAlign: "right" }}>3日换手</th>
+            <th style={{ ...th, textAlign: "right" }}>3日净流入</th>
+            <th style={th}>行业 / 水位</th>
             <th style={th}>操作建议</th>
             <th style={th}>更新</th>
             <th style={{ ...th, textAlign: "right" }}>详情</th>
@@ -407,14 +408,14 @@ export default function StocksPage() {
         <tbody>
           {loading && (
             <tr>
-              <td colSpan={10} style={{ ...td, textAlign: "center", color: "#666" }}>
+              <td colSpan={11} style={{ ...td, textAlign: "center", color: "#666" }}>
                 加载中…
               </td>
             </tr>
           )}
           {!loading && rows.length === 0 && (
             <tr>
-              <td colSpan={10} style={{ ...td, textAlign: "center", color: "#666" }}>
+              <td colSpan={11} style={{ ...td, textAlign: "center", color: "#666" }}>
                 自选池为空，先去
                 <a href="/watchlist" style={{ color: "#3b82f6", marginLeft: 4 }}>
                   导入股票
@@ -425,7 +426,7 @@ export default function StocksPage() {
           )}
           {!loading && rows.length > 0 && filter !== null && visibleRows.length === 0 && (
             <tr>
-              <td colSpan={10} style={{ ...td, textAlign: "center", color: "#666" }}>
+              <td colSpan={11} style={{ ...td, textAlign: "center", color: "#666" }}>
                 当前筛选下没有股票
               </td>
             </tr>
@@ -443,7 +444,7 @@ export default function StocksPage() {
                   onClick={() => toggleGroup(key)}
                   style={{ cursor: "pointer", background: "#0a0a0a" }}
                 >
-                  <td colSpan={10} style={{
+                  <td colSpan={11} style={{
                     padding: "8px 10px",
                     borderTop: "1px solid #222",
                     borderBottom: "1px solid #222",
@@ -627,9 +628,6 @@ function stockRow(r: StockRow, onToggleStar: (code: string) => void) {
         {r.code}
       </td>
       <td style={td}>{r.name}</td>
-      <td style={{ ...td, textAlign: "right", fontFamily: "monospace" }}>
-        {r.price != null ? r.price.toFixed(2) : "-"}
-      </td>
       <td style={{
         ...td,
         textAlign: "right",
@@ -638,19 +636,22 @@ function stockRow(r: StockRow, onToggleStar: (code: string) => void) {
       }}>
         {r.change_pct != null ? `${r.change_pct >= 0 ? "+" : ""}${r.change_pct.toFixed(2)}%` : "-"}
       </td>
+      <td style={{
+        ...td,
+        textAlign: "right",
+        fontFamily: "monospace",
+        color: r.change_pct_3d == null ? "#888" : r.change_pct_3d >= 0 ? "#ef4444" : "#22c55e",
+      }}>
+        {r.change_pct_3d != null ? `${r.change_pct_3d >= 0 ? "+" : ""}${r.change_pct_3d.toFixed(2)}%` : "-"}
+      </td>
       <td style={{ ...td, textAlign: "right", fontFamily: "monospace", color: "#aaa" }}>
-        {fmtFlow(r.main_net_flow)}
+        {r.turnover_rate_3d != null ? `${r.turnover_rate_3d.toFixed(1)}%` : "-"}
+      </td>
+      <td style={{ ...td, textAlign: "right", fontFamily: "monospace", color: "#aaa" }}>
+        {fmtFlow(r.net_flow_3d)}
       </td>
       <td style={td}>
-        {r.signals.length === 0 ? (
-          <span style={{ color: "#444" }}>–</span>
-        ) : (
-          r.signals.map((s) => (
-            <span key={s} style={signalChip(r.has_strong_signal && (s === "limit_up" || s === "limit_down" || s === "important_notice" || s === "lhb"))}>
-              {SIGNAL_LABEL[s] || s}
-            </span>
-          ))
-        )}
+        <IndustryWaterCell row={r} />
       </td>
       <td style={td}>
         <ActionableCell analysis={r.analysis} />
@@ -664,6 +665,52 @@ function stockRow(r: StockRow, onToggleStar: (code: string) => void) {
         </a>
       </td>
     </tr>
+  );
+}
+
+function IndustryWaterCell({ row }: { row: StockRow }) {
+  // Compact "industry name + 3 percentile chips" cell. Each chip uses a
+  // color stop so the user reads it at a glance:
+  //   estimation chip (PE percentile): higher = redder (over-valued vs peers)
+  //   trend chip (3-day change pctile): higher = redder (lead the pack)
+  //   capital chip (3-day flow pctile): higher = redder (money piling in)
+  // None of the three having a value (cold start) → just industry name.
+  if (!row.industry_name && row.industry_pe_pctile == null
+      && row.industry_change_3d_pctile == null && row.industry_flow_3d_pctile == null) {
+    return <span style={{ color: "#444" }}>–</span>;
+  }
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+      {row.industry_name && (
+        <span style={{ color: "#aaa", fontSize: 11 }}>{row.industry_name}</span>
+      )}
+      <div style={{ display: "flex", gap: 3 }}>
+        <PctChip label="估" value={row.industry_pe_pctile} hint="PE 行业分位" />
+        <PctChip label="势" value={row.industry_change_3d_pctile} hint="3日涨幅 行业分位" />
+        <PctChip label="金" value={row.industry_flow_3d_pctile} hint="3日资金 行业分位" />
+      </div>
+    </div>
+  );
+}
+
+function PctChip({ label, value, hint }: { label: string; value: number | null; hint: string }) {
+  if (value == null) {
+    return (
+      <span title={hint} style={{
+        padding: "1px 5px", borderRadius: 3, fontSize: 10,
+        background: "#1a1a1a", color: "#444", letterSpacing: 0.5,
+      }}>{label}–</span>
+    );
+  }
+  // Linear color ramp from green (low) → grey (mid) → red (high)
+  const v = Math.max(0, Math.min(100, value));
+  const color = v >= 70 ? "#fca5a5" : v <= 30 ? "#86efac" : "#9ca3af";
+  const bg = v >= 70 ? "rgba(239,68,68,0.18)" : v <= 30 ? "rgba(34,197,94,0.15)" : "rgba(255,255,255,0.05)";
+  return (
+    <span title={`${hint}: ${v.toFixed(0)}%`} style={{
+      padding: "1px 5px", borderRadius: 3, fontSize: 10,
+      background: bg, color, letterSpacing: 0.5,
+    }}>{label}{v.toFixed(0)}</span>
   );
 }
 

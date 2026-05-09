@@ -92,6 +92,26 @@ class Snapshot(Base):
     market_cap: Mapped[float | None] = mapped_column(Float, nullable=True)  # 总市值 (元)
     circ_market_cap: Mapped[float | None] = mapped_column(Float, nullable=True)  # 流通市值 (元)
 
+    # Phase 7: 3-day rolling metrics. Pulled from akshare's
+    # stock_fund_flow_individual('3日排行') (THS via Tencent) when the code
+    # ranks; for codes outside the rank list we aggregate from our own
+    # snapshot history (services/aggregates.py). Both paths are best-effort
+    # and may leave any of these None.
+    change_pct_3d: Mapped[float | None] = mapped_column(Float, nullable=True)    # 3日涨幅 (%)
+    turnover_rate_3d: Mapped[float | None] = mapped_column(Float, nullable=True) # 3日换手率 累计 (%)
+    net_flow_3d: Mapped[float | None] = mapped_column(Float, nullable=True)      # 3日主力净流入 (元)
+
+    # Phase 7: industry context. industry_name is the canonical Sina/CNINFO
+    # name (e.g., "酿酒行业"); the *_pctile fields are 0-100 percentiles of
+    # this code WITHIN its industry across the latest snapshot pool. _avg
+    # fields are industry-level averages, exposed for the LLM prompt.
+    industry_name: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    industry_pe_pctile: Mapped[float | None] = mapped_column(Float, nullable=True)
+    industry_change_3d_pctile: Mapped[float | None] = mapped_column(Float, nullable=True)
+    industry_flow_3d_pctile: Mapped[float | None] = mapped_column(Float, nullable=True)
+    industry_pe_avg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    industry_pb_avg: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     # Signals: list[str] of signal codes (e.g. ["limit_up", "lhb"])
     signals: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
 
@@ -105,6 +125,21 @@ class Snapshot(Base):
     __table_args__ = (
         Index("ix_snapshots_code_ts", "code", "ts"),
         Index("ix_snapshots_ts", "ts"),
+    )
+
+
+class IndustryMeta(Base):
+    """Stock-code → industry mapping. Refreshed weekly from
+    akshare.stock_industry_category_cninfo() (CNINFO taxonomy). One row per
+    code; industry name is the canonical Sina/CNINFO name we then group by
+    when computing per-industry percentiles + averages."""
+    __tablename__ = "industry_meta"
+
+    code: Mapped[str] = mapped_column(String(6), primary_key=True)
+    industry_name: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    industry_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
     )
 
 

@@ -289,21 +289,50 @@ def _user_prompt(w: Watchlist, s: Snapshot | None) -> str:
             return f"{v / 1e8:.1f} 亿"
 
         valuation_section = (
-            f"市盈率(PE,动态): {s.pe_ratio if s.pe_ratio is not None else '未知'}\n"
-            f"市净率(PB): {s.pb_ratio if s.pb_ratio is not None else '未知'}\n"
-            f"换手率: {f'{s.turnover_rate:.2f}%' if s.turnover_rate is not None else '未知'}\n"
-            f"总市值: {_yi(s.market_cap)}\n"
-            f"流通市值: {_yi(s.circ_market_cap)}\n"
+            f"市盈率(PE,动态): {s.pe_ratio if s.pe_ratio is not None else '未知'}"
+            + (f"  (行业均值 {s.industry_pe_avg:.1f}, 本股分位 {s.industry_pe_pctile:.0f}%)"
+               if s.industry_pe_avg is not None and s.industry_pe_pctile is not None else "")
+            + "\n"
+            + f"市净率(PB): {s.pb_ratio if s.pb_ratio is not None else '未知'}"
+            + (f"  (行业均值 {s.industry_pb_avg:.2f})"
+               if s.industry_pb_avg is not None else "")
+            + "\n"
+            + f"换手率: {f'{s.turnover_rate:.2f}%' if s.turnover_rate is not None else '未知'}\n"
+            + f"总市值: {_yi(s.market_cap)}\n"
+            + f"流通市值: {_yi(s.circ_market_cap)}\n"
+        )
+        # Phase 7: 3-day rolling metrics, used by the LLM to spot trends
+        # the daily snapshot misses. Rendered only when at least one field
+        # is present so the prompt doesn't grow noise on cold-start codes.
+        three_day_section = ""
+        if (s.change_pct_3d is not None or s.turnover_rate_3d is not None or
+                s.net_flow_3d is not None):
+            three_day_section = (
+                f"\n## 近3日表现\n"
+                + f"3日涨幅: {f'{s.change_pct_3d:+.2f}%' if s.change_pct_3d is not None else '未知'}"
+                + (f"  (行业分位 {s.industry_change_3d_pctile:.0f}%)"
+                   if s.industry_change_3d_pctile is not None else "")
+                + "\n"
+                + f"3日累计换手率: {f'{s.turnover_rate_3d:.2f}%' if s.turnover_rate_3d is not None else '未知'}\n"
+                + f"3日主力净流入: {_yi(s.net_flow_3d) if s.net_flow_3d is not None else '未知'}"
+                + (f"  (行业分位 {s.industry_flow_3d_pctile:.0f}%)"
+                   if s.industry_flow_3d_pctile is not None else "")
+                + "\n"
+            )
+        industry_line = (
+            f"所属行业: {s.industry_name}\n" if s.industry_name else ""
         )
         snap_section = (
             f"快照时间: {s.ts.isoformat()}\n"
+            f"{industry_line}"
             f"最新价: {s.price}\n"
             f"涨跌幅: {s.change_pct}%\n"
             f"成交量: {s.volume}\n"
             f"成交额: {s.turnover} 元\n"
-            f"主力净流入: {s.main_net_flow} 元\n"
+            f"主力净流入(当日): {s.main_net_flow} 元\n"
             f"命中信号: {', '.join(s.signals or []) or '（无）'}\n\n"
-            f"## 估值与活跃度\n{valuation_section}\n"
+            f"## 估值与活跃度\n{valuation_section}"
+            f"{three_day_section}\n"
             f"## 最近新闻\n{news_lines}\n\n"
             f"## 最近公告\n{notice_lines}\n\n"
             f"## 龙虎榜\n{lhb}\n"

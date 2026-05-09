@@ -71,9 +71,21 @@ class StockRow(BaseModel):
     name: str
     exchange: str
     last_ts: str | None
-    price: float | None
+    # 今日 columns kept (the Phase 7 ask removed "价格" + "信号" from the
+    # list display, but the data stays — UI just doesn't render those
+    # columns anymore. change_pct labels as "今日涨跌" on frontend.)
     change_pct: float | None
-    main_net_flow: float | None
+    # Phase 7 new columns: 3-day rolling metrics
+    change_pct_3d: float | None       # 3日涨幅 %
+    turnover_rate_3d: float | None    # 3日累计换手率 %
+    net_flow_3d: float | None         # 3日主力净流入 元
+    # Industry context (top-of-row chips on detail page; condensed name in list)
+    industry_name: str | None
+    industry_pe_pctile: float | None
+    industry_change_3d_pctile: float | None
+    industry_flow_3d_pctile: float | None
+    # Signals stay in the response so the frontend can keep tinting strong
+    # signal rows red even after dropping the dedicated 信号 column.
     signals: list[str]
     has_strong_signal: bool
     on_lhb: bool
@@ -178,9 +190,14 @@ def list_stocks(
             name=w.name,
             exchange=w.exchange,
             last_ts=s.ts.isoformat() if s else None,
-            price=(s.price if s else None),
             change_pct=(s.change_pct if s else None),
-            main_net_flow=(s.main_net_flow if s else None),
+            change_pct_3d=(s.change_pct_3d if s else None),
+            turnover_rate_3d=(s.turnover_rate_3d if s else None),
+            net_flow_3d=(s.net_flow_3d if s else None),
+            industry_name=(s.industry_name if s else None),
+            industry_pe_pctile=(s.industry_pe_pctile if s else None),
+            industry_change_3d_pctile=(s.industry_change_3d_pctile if s else None),
+            industry_flow_3d_pctile=(s.industry_flow_3d_pctile if s else None),
             signals=signals,
             has_strong_signal=has_strong(signals),
             on_lhb=bool(s.lhb) if s else False,
@@ -317,6 +334,19 @@ class StockDetail(BaseModel):
     price: float | None
     change_pct: float | None
     main_net_flow: float | None
+    # Phase 7: surface 3-day + industry context on the detail page so the
+    # KeyTableCard can show "行业平均 PE / 行业 PE 分位 / 3 日资金分位" chips.
+    change_pct_3d: float | None
+    turnover_rate_3d: float | None
+    net_flow_3d: float | None
+    pe_ratio: float | None
+    pb_ratio: float | None
+    industry_name: str | None
+    industry_pe_pctile: float | None
+    industry_change_3d_pctile: float | None
+    industry_flow_3d_pctile: float | None
+    industry_pe_avg: float | None
+    industry_pb_avg: float | None
     signals: list[str]
     news: list[dict[str, Any]]
     notices: list[dict[str, Any]]
@@ -364,6 +394,17 @@ def stock_detail(
         price=(s.price if s else None),
         change_pct=(s.change_pct if s else None),
         main_net_flow=(s.main_net_flow if s else None),
+        change_pct_3d=(s.change_pct_3d if s else None),
+        turnover_rate_3d=(s.turnover_rate_3d if s else None),
+        net_flow_3d=(s.net_flow_3d if s else None),
+        pe_ratio=(s.pe_ratio if s else None),
+        pb_ratio=(s.pb_ratio if s else None),
+        industry_name=(s.industry_name if s else None),
+        industry_pe_pctile=(s.industry_pe_pctile if s else None),
+        industry_change_3d_pctile=(s.industry_change_3d_pctile if s else None),
+        industry_flow_3d_pctile=(s.industry_flow_3d_pctile if s else None),
+        industry_pe_avg=(s.industry_pe_avg if s else None),
+        industry_pb_avg=(s.industry_pb_avg if s else None),
         signals=(s.signals if s else None) or [],
         news=(s.news if s else None) or [],
         notices=(s.notices if s else None) or [],
