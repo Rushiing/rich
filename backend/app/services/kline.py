@@ -4,16 +4,25 @@ Per stock we keep 60 daily candles (covers MA60 / RSI / etc.) refreshed
 once a day at 16:30 BJT. Hand-rolled indicator formulas — pandas-ta isn't
 on PyPI for Python 3.11 + arm64 right now, and these are <30 lines each.
 
-Data source: akshare.stock_zh_a_hist(symbol=code, period='daily',
-adjust='qfq') — 5000+ rows of historical daily K-lines (we slice the tail).
+Data source: Tencent qt.gtimg.cn's `web.ifzq.gtimg.cn/appstock/app/fqkline/get`
+endpoint. We tried akshare's stock_zh_a_hist first; it hits push2his.
+eastmoney.com which is blocked from Railway egress (95%+ failure rate),
+so we switched to the Tencent variant (same vendor that powers our
+realtime quote pulls and also reachable on Railway).
+
+Tencent JSON shape: {data: {sh600519: {qfqday: [[date, open, close, high,
+low, volume], ...]}}}. We pull `qfq` (前复权) for indicator continuity
+across stock-split events.
 """
 from __future__ import annotations
 
+import json
 import logging
+import urllib.request
 from datetime import datetime, timezone
 from typing import Iterable
+from urllib.error import URLError
 
-import akshare as ak
 import pandas as pd
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -21,11 +30,60 @@ from sqlalchemy.orm import Session
 
 from ..db import SessionLocal, engine
 from ..models import Kline, Watchlist
-from .scraper import _safe_with_timeout
 
 logger = logging.getLogger(__name__)
 
 KLINE_WINDOW_DAYS = 90  # pull a bit more than 60 so MA60's first row is valid
+TENCENT_KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+
+
+def _tencent_symbol(code: str) -> str:
+    if code.startswith(("60", "68")):
+        return f"sh{code}"
+    if code.startswith(("00", "30")):
+        return f"sz{code}"
+    if code.startswith(("8", "4")):
+        return f"bj{code}"
+    return code
+
+
+def _fetch_tencent_kline(code: str, count: int = KLINE_WINDOW_DAYS) -> pd.DataFrame | None:
+    """Pull qfq daily K-line from Tencent. Returns DataFrame with columns
+    date / open / close / high / low / volume (no change_pct or
+    turnover_rate — Tencent's daily-K endpoint doesn't expose them; we
+    leave those columns null in the DB row)."""
+    sym = _tencent_symbol(code)
+    url = f"{TENCENT_KLINE_URL}?param={sym},day,,,{count},qfq"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except (URLError, TimeoutError, json.JSONDecodeError) as e:
+        logger.warning("kline tencent fetch failed for %s: %s", code, e)
+        return None
+
+    inner = payload.get("data", {}).get(sym, {})
+    rows = inner.get("qfqday") or inner.get("day")
+    if not rows:
+        return None
+    parsed = []
+    for r in rows:
+        if len(r) < 6:
+            continue
+        try:
+            parsed.append({
+                "date": str(r[0]),
+                "open": float(r[1]),
+                "close": float(r[2]),
+                "high": float(r[3]),
+                "low": float(r[4]),
+                "volume": float(r[5]),
+            })
+        except (ValueError, TypeError):
+            continue
+    if not parsed:
+        return None
+    return pd.DataFrame(parsed)
 
 
 # --- indicator formulas -----------------------------------------------------
@@ -112,24 +170,13 @@ def pull_one(code: str) -> int:
     """Pull recent K-line for `code`, compute indicators, upsert into DB.
     Returns count of rows touched. Best-effort — failures are logged, not
     raised, so a flaky single code can't sink the daily batch."""
-    df = _safe_with_timeout(
-        ak.stock_zh_a_hist, symbol=code, period="daily", adjust="qfq",
-        _timeout=10.0,
-    )
+    df = _fetch_tencent_kline(code, count=KLINE_WINDOW_DAYS)
     if df is None or len(df) == 0:
         logger.warning("kline: no data for %s", code)
         return 0
 
-    # akshare returns Chinese column names — rename to ours.
-    df = df.rename(columns={
-        "日期": "date", "开盘": "open", "收盘": "close",
-        "最高": "high", "最低": "low", "成交量": "volume",
-        "涨跌幅": "change_pct", "换手率": "turnover_rate",
-    })
     df = df.tail(KLINE_WINDOW_DAYS).reset_index(drop=True)
     df = compute_indicators(df)
-
-    # date column may be a Timestamp or string depending on akshare version
     df["date"] = df["date"].astype(str).str[:10]
 
     db: Session = SessionLocal()
