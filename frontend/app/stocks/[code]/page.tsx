@@ -2,8 +2,16 @@
 
 import { use, useEffect, useState, type ReactNode } from "react";
 import {
-  api, KeyTable, RiskScores, ScenarioAdvice, StockAnalysis, StockDetail, StopLossLevel,
+  api, ActionableTier, ActionableTiers, KeyTable, RiskScores, ScenarioAdvice,
+  StockAnalysis, StockDetail, StopLossLevel,
 } from "../../../lib/api";
+
+type TierKey = "aggressive" | "neutral" | "conservative";
+const TIER_DEFS: { key: TierKey; label: string; color: string }[] = [
+  { key: "aggressive",   label: "激进", color: "#ef4444" },
+  { key: "neutral",      label: "中立", color: "#9ca3af" },
+  { key: "conservative", label: "保守", color: "#22c55e" },
+];
 
 const RISK_DIM_LABEL: Record<keyof Omit<RiskScores, "overall">, string> = {
   fundamentals: "基本面",
@@ -227,24 +235,48 @@ function FreshnessBar({ analysis, generating, onRegenerate }: { analysis: StockA
 }
 
 function KeyTableCard({ kt }: { kt: KeyTable }) {
+  // Three-tier toggle state. Default to "neutral" — that's the LLM's
+  // top-level actionable + position_pct, so the card initially shows what
+  // it always showed pre-Phase-8.
+  const [tier, setTier] = useState<TierKey>("neutral");
+  const tiers = kt.actionable_tiers;
+
+  // Pick the active tier's view-model. When actionable_tiers is missing
+  // (legacy cached row), synthesize from the top-level fields so the rest
+  // of the card renders normally.
+  const view: ActionableTier = tiers
+    ? tiers[tier]
+    : {
+        action: kt.actionable,
+        position_pct: kt.position_pct,
+        buy_price_low: kt.buy_price_low,
+        buy_price_high: kt.buy_price_high,
+        hold_period: kt.hold_period,
+        reason: "",
+      };
+
   const actionableColor =
-    kt.actionable === "建议买入" ? "#ef4444" :   // A股语境：红=买/涨
-    kt.actionable === "建议卖出" ? "#22c55e" :   // 绿=卖/跌
-    kt.actionable === "不建议入手" ? "#6b7280" :
-    "#9ca3af";                                   // 观望
+    view.action === "建议买入" ? "#ef4444" :   // A股语境：红=买/涨
+    view.action === "建议卖出" ? "#22c55e" :   // 绿=卖/跌
+    view.action === "不建议入手" ? "#6b7280" :
+    "#9ca3af";                                  // 观望
 
   return (
     <section style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 12 }}>
       {/* Header card: actionable verdict + company portrait + red flags */}
       <div style={{ padding: 16, background: "#141414", border: "1px solid #2a2a2a", borderRadius: 8 }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
-          <div style={{ fontSize: 22, fontWeight: 600, color: actionableColor }}>{kt.actionable}</div>
+          <div style={{ fontSize: 22, fontWeight: 600, color: actionableColor }}>{view.action}</div>
           {kt.company_tag && (
             <div style={{ color: "#9ca3af", fontSize: 13 }}>{kt.company_tag}</div>
           )}
         </div>
-        {kt.one_line_reason && (
-          <div style={{ marginTop: 6, color: "#d4d4d4", fontSize: 14 }}>{kt.one_line_reason}</div>
+        {/* Show the per-tier reason when the tier toggle exists; otherwise
+            fall back to the global one_line_reason. */}
+        {(tiers ? view.reason : kt.one_line_reason) && (
+          <div style={{ marginTop: 6, color: "#d4d4d4", fontSize: 14 }}>
+            {tiers ? view.reason : kt.one_line_reason}
+          </div>
         )}
         {kt.red_flags && kt.red_flags.length > 0 && (
           <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 6 }}>
@@ -267,16 +299,56 @@ function KeyTableCard({ kt }: { kt: KeyTable }) {
         )}
       </div>
 
+      {/* Tier toggle — only renders when the model actually emitted three
+          tiers. Legacy rows (no actionable_tiers) skip the segmented
+          control entirely so the layout stays the same. */}
+      {tiers && (
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <span style={{ color: "#888", fontSize: 12 }}>风险偏好：</span>
+          <div style={{
+            display: "inline-flex",
+            border: "1px solid #2a2a2a",
+            borderRadius: 6,
+            overflow: "hidden",
+          }}>
+            {TIER_DEFS.map(({ key, label, color }) => {
+              const active = tier === key;
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setTier(key)}
+                  style={{
+                    padding: "5px 14px",
+                    background: active ? color : "transparent",
+                    color: active ? "#0a0a0a" : "#aaa",
+                    border: "none",
+                    fontSize: 12,
+                    fontWeight: active ? 600 : 400,
+                    cursor: "pointer",
+                  }}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          <span style={{ color: "#666", fontSize: 11 }}>
+            （表里"建议仓位 / 合理买入价 / 持有时间"会跟着切）
+          </span>
+        </div>
+      )}
+
       {/* Two-column: key prices/positions on left, risk scorecard on right */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <div style={{ border: "1px solid #2a2a2a", borderRadius: 8, overflow: "hidden" }}>
           <div style={{ padding: "10px 14px", background: "#0f0f0f", color: "#888", fontSize: 12 }}>关键数据</div>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <tbody>
-              <KtRow label="合理买入价" value={`${kt.buy_price_low.toFixed(2)} – ${kt.buy_price_high.toFixed(2)}`} />
+              <KtRow label="合理买入价" value={`${view.buy_price_low.toFixed(2)} – ${view.buy_price_high.toFixed(2)}`} />
               <KtRow label="合理卖出价" value={`${kt.sell_price_low.toFixed(2)} – ${kt.sell_price_high.toFixed(2)}`} />
-              <KtRow label="建议仓位" value={`${kt.position_pct.toFixed(0)}%`} />
-              <KtRow label="持有时间" value={kt.hold_period} />
+              <KtRow label="建议仓位" value={`${view.position_pct.toFixed(0)}%`} />
+              <KtRow label="持有时间" value={view.hold_period} />
               <KtRow label="置信度" value={kt.confidence} />
               {kt.risk_scores?.overall && (
                 <KtRow label="综合评级" value={kt.risk_scores.overall} />

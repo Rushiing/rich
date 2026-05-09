@@ -342,6 +342,7 @@ export default function StocksPage() {
         <h1 style={{ fontSize: 18, margin: 0 }}>盯盘</h1>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <UserChip />
+          <a href="/sectors" style={primaryLinkBtn}>板块</a>
           <a href="/watchlist" style={primaryLinkBtn}>自选池</a>
           <button onClick={batchAnalyze} disabled={analyzing} style={ghostBtn}>
             {analyzing

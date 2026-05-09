@@ -24,6 +24,7 @@ from .config import settings
 from .db import Base, engine, ensure_extra_columns, snapshot_columns
 from .models import Analysis, Snapshot, User, Watchlist  # noqa: F401  (register tables with metadata)
 from .routes import auth as auth_routes
+from .routes import sectors as sectors_routes
 from .routes import stocks as stocks_routes
 from .routes import watchlist as watchlist_routes
 from .services.cron import start_scheduler, stop_scheduler
@@ -63,6 +64,7 @@ app.add_middleware(
 app.include_router(auth_routes.router)
 app.include_router(watchlist_routes.router)
 app.include_router(stocks_routes.router)
+app.include_router(sectors_routes.router)
 
 
 @app.get("/api/_diag/snapshot-schema")

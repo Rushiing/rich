@@ -66,6 +66,7 @@ ANALYSIS_TOOL = {
                     "position_pct", "hold_period",
                     "stop_loss_levels",
                     "scenario_advice",
+                    "actionable_tiers",
                     "risk_scores",
                     "confidence",
                 ],
@@ -161,6 +162,46 @@ ANALYSIS_TOOL = {
                             },
                         },
                     },
+                    "actionable_tiers": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["aggressive", "neutral", "conservative"],
+                        "description": (
+                            "三档操作建议——同一股、不同风险偏好。每档给出独立的"
+                            "action / position / 价格区间 / reason。aggressive 比 neutral "
+                            "更敢，conservative 更保守。三档之间的 position_pct 应递减"
+                            "（aggressive ≥ neutral ≥ conservative），不应该出现 conservative "
+                            "比 aggressive 还重仓的情况。reason ≤ 30 字。"
+                        ),
+                        "properties": {
+                            f: {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "required": [
+                                    "action", "position_pct",
+                                    "buy_price_low", "buy_price_high",
+                                    "hold_period", "reason",
+                                ],
+                                "properties": {
+                                    "action": {
+                                        "type": "string",
+                                        "enum": ["建议买入", "观望", "建议卖出", "不建议入手"],
+                                    },
+                                    "position_pct": {
+                                        "type": "number", "minimum": 0, "maximum": 100,
+                                    },
+                                    "buy_price_low": {"type": "number"},
+                                    "buy_price_high": {"type": "number"},
+                                    "hold_period": {
+                                        "type": "string",
+                                        "enum": ["短线 1-2周", "中线 1-3月", "长线 6月+"],
+                                    },
+                                    "reason": {"type": "string", "description": "≤ 30 字"},
+                                },
+                            }
+                            for f in ("aggressive", "neutral", "conservative")
+                        },
+                    },
                     "risk_scores": {
                         "type": "object",
                         "additionalProperties": False,
@@ -251,6 +292,18 @@ def _system_prompt(strategy: Strategy) -> list[dict[str, Any]]:
         "- 完全基于提供的 snapshot 与新闻 / 公告做判断，**不要编造**未在输入中的信息\n"
         "- 信息缺失就直说 '信息不全，无法判断'，并把 confidence 降到 '低'\n"
         "- 始终调用 submit_analysis 工具**一次**，不要给出其他文本\n"
+        "\n"
+        "# 三档建议（actionable_tiers）\n"
+        "\n"
+        "同一支票，不同人风险偏好不同。除了顶部的 actionable / position_pct 给"
+        "中立读者，还要分别给出三档操作：\n"
+        "- **aggressive**：愿意承担更大波动换收益，仓位更重、买入区间可上探\n"
+        "- **neutral**：标准用户，应与顶部 actionable + position_pct 一致\n"
+        "- **conservative**：风险厌恶，仓位更轻、买入区间更低或建议观望\n"
+        "\n"
+        "**硬约束**：position_pct 必须 aggressive ≥ neutral ≥ conservative。同一票"
+        "在三档之间应该是连续的——不要 aggressive=买入 50%、conservative=买入 80%"
+        "这种自相矛盾。每档 reason ≤ 30 字。\n"
     )
     rules_section = ""
     if strategy.rules:

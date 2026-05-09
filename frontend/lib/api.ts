@@ -105,6 +105,21 @@ export type SnapshotStatus = { running: boolean };
 export type AnalysisBatchResult = { started: boolean; already_running?: boolean };
 export type AnalysisBatchStatus = { running: boolean };
 
+export type ActionableTier = {
+  action: string;
+  position_pct: number;
+  buy_price_low: number;
+  buy_price_high: number;
+  hold_period: string;
+  reason: string;
+};
+
+export type ActionableTiers = {
+  aggressive: ActionableTier;
+  neutral: ActionableTier;
+  conservative: ActionableTier;
+};
+
 export type KeyTable = {
   company_tag: string;
   actionable: string;
@@ -118,6 +133,9 @@ export type KeyTable = {
   hold_period: string;
   stop_loss_levels: StopLossLevel[];
   scenario_advice: ScenarioAdvice;
+  // Phase 8: optional because legacy cached rows from before this schema
+  // bump won't have it. UI gracefully degrades.
+  actionable_tiers?: ActionableTiers;
   risk_scores: RiskScores;
   confidence: string;
 };
@@ -156,9 +174,27 @@ export type Me =
   | { ok: true; user_id: number; phone: string }
   | { ok: true; anonymous: true };
 
+export type Sector = {
+  name: string;
+  code: string;
+  company_count: number;
+  avg_price: number | null;
+  change_pct: number;
+  total_volume: number | null;
+  total_turnover: number | null;
+  leader: {
+    code: string;
+    name: string;
+    change_pct: number;
+    price: number | null;
+  };
+};
+
 export const api = {
   // ---- auth ----
   me: () => request<Me>("/api/auth/me"),
+  // ---- sectors ----
+  listSectors: () => request<Sector[]>("/api/sectors"),
   logout: () => request<{ ok: boolean }>("/api/auth/logout", { method: "POST" }),
   // ---- watchlist + stocks ----
   listWatchlist: () => request<WatchlistItem[]>("/api/watchlist"),
