@@ -37,11 +37,11 @@ This is an MVP for a small trusted group. **Do not over-engineer.** No multi-ten
 - [x] **Phase 2** — APScheduler + akshare scrapers + signals engine + 盯盘 view
 - [x] **Phase 3** — Strategy-slot prompt + Claude tool-use key table + 500-word markdown + 4h cache
 - [x] **Phase 4** — Mobile responsive pass + PWA polish (manifest + icon + install meta)
-- [ ] **Phase 5** — Folded into Phase 9 (K-line + 次日预判). See `~/.claude/plans/structured-knitting-sutton.md`.
-- [ ] **Phase 6** — Account system + SMS login (in progress 5/9–5/10). User table + per-user watchlist; cookie payload v2 carries `uid`. Aliyun SMS prod path stubbed; dev mode (whitelist + 8888) unblocks development. ADMIN_PHONE migration backfills the legacy 61 watchlist rows on lifespan startup.
-- [ ] **Phase 7** — Field reshuffle + industry context (3-day flow/turnover/change, 行业水位, 行业 PE). Depends on Phase 6.
-- [ ] **Phase 8** — `/sectors` page + 三档建议 (actionable_tiers in key_table). Depends on Phase 7.
-- [ ] **Phase 9** — K-line + technical indicators + 次日预判 (was Phase 5).
+- [x] **Phase 5** — Folded into Phase 9.
+- [x] **Phase 6** — Account system + SMS login (5/9–5/10). User table + per-user watchlist; cookie v2 with `uid`; Aliyun SMS stubbed (prod uses dev whitelist + 8888 until Aliyun template approved); ADMIN_PHONE migration backfills legacy rows.
+- [x] **Phase 7** — Field reshuffle (`change_pct_3d` / `turnover_rate_3d` / `net_flow_3d`) + industry context (`industry_name` + 3 percentile chips + `industry_pe_avg/pb_avg`). 3-day data via THS `stock_fund_flow_individual('3日排行')` (~30min cache); industry mapping via CNINFO `stock_profile_cninfo` (eastmoney's individual-info endpoint blocked on Railway).
+- [x] **Phase 8** — `/sectors` page (Sina sector spot, 49 industries sorted by today's change) + `actionable_tiers` (激进/中立/保守 同 prompt 一次输出，frontend toggle 即时切换).
+- [x] **Phase 9** — K-line + technical indicators + 次日预判. Source switched to Tencent qt.gtimg.cn after akshare's `stock_zh_a_hist` (push2his.eastmoney) hit Railway block. Hand-rolled MA/MACD/BOLL/KDJ/RSI (pandas-ta unavailable on the wheel). New strong signals: `breakout_20d`, `below_ma60`. Soft signals: `macd_golden_cross`, `macd_death_cross`. `next_day_outlook` (trend / target_low/high / reasoning / confidence) lands in `key_table`.
 
 All shipped phases committed and pushed. See git log for atomic per-phase commits. Active plan: `~/.claude/plans/structured-knitting-sutton.md`.
 
