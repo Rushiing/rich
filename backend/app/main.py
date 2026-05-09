@@ -22,7 +22,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .db import Base, engine, ensure_extra_columns, snapshot_columns
-from .models import Analysis, Snapshot, User, Watchlist  # noqa: F401  (register tables with metadata)
+from .models import (  # noqa: F401  (register tables with metadata)
+    Analysis, IndustryMeta, Kline, Snapshot, User, Watchlist,
+)
 from .routes import auth as auth_routes
 from .routes import sectors as sectors_routes
 from .routes import stocks as stocks_routes
@@ -65,6 +67,16 @@ app.include_router(auth_routes.router)
 app.include_router(watchlist_routes.router)
 app.include_router(stocks_routes.router)
 app.include_router(sectors_routes.router)
+
+
+@app.post("/api/_diag/refresh-klines")
+def diag_refresh_klines():
+    """One-shot K-line bootstrap. Phase 9's _kline_tick fires at 16:30 BJT
+    only — if the user wants technical面 data before the first scheduled
+    tick (e.g., this Sunday before Monday open), POST here. Synchronous;
+    ~1 minute for a 60-code watchlist."""
+    from .services import kline as kline_svc
+    return kline_svc.pull_for_watchlist()
 
 
 @app.get("/api/_diag/snapshot-schema")

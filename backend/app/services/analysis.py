@@ -67,6 +67,7 @@ ANALYSIS_TOOL = {
                     "stop_loss_levels",
                     "scenario_advice",
                     "actionable_tiers",
+                    "next_day_outlook",
                     "risk_scores",
                     "confidence",
                 ],
@@ -202,6 +203,41 @@ ANALYSIS_TOOL = {
                             for f in ("aggressive", "neutral", "conservative")
                         },
                     },
+                    "next_day_outlook": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["trend", "target_low", "target_high",
+                                     "reasoning", "confidence"],
+                        "description": (
+                            "次日（下一交易日）走势预判。基于技术面（K 线 / MA / "
+                            "MACD / RSI / KDJ / BOLL）+ 资金面（3 日净流入 / "
+                            "今日主力 / 北向）+ 消息面给出 1-2 个交易日的预期。"
+                            "信号不足就 confidence='低' + reasoning 写明哪里不足，"
+                            "不要硬猜。"
+                        ),
+                        "properties": {
+                            "trend": {
+                                "type": "string",
+                                "enum": ["看涨", "看平", "看跌"],
+                            },
+                            "target_low": {
+                                "type": "number",
+                                "description": "次日合理价格区间下限",
+                            },
+                            "target_high": {
+                                "type": "number",
+                                "description": "次日合理价格区间上限",
+                            },
+                            "reasoning": {
+                                "type": "string",
+                                "description": "≤ 80 字。这个判断的主要依据。",
+                            },
+                            "confidence": {
+                                "type": "string",
+                                "enum": ["高", "中", "低"],
+                            },
+                        },
+                    },
                     "risk_scores": {
                         "type": "object",
                         "additionalProperties": False,
@@ -293,6 +329,17 @@ def _system_prompt(strategy: Strategy) -> list[dict[str, Any]]:
         "- 信息缺失就直说 '信息不全，无法判断'，并把 confidence 降到 '低'\n"
         "- 始终调用 submit_analysis 工具**一次**，不要给出其他文本\n"
         "\n"
+        "# 次日走势预判（next_day_outlook）\n"
+        "\n"
+        "基于技术面 + 资金面 + 消息面，给出**下一交易日**的走势预判。\n"
+        "- trend: 看涨 / 看平 / 看跌\n"
+        "- target_low / target_high: 合理价格区间（基于支撑位 / 阻力位 / 当日波幅）\n"
+        "- reasoning ≤ 80 字: 这个判断的主要依据\n"
+        "- confidence: 信号充分→高；模糊→中；信号不足→低（且 reasoning 写明哪里不足）\n"
+        "\n"
+        "**别硬猜**。技术面信号缺失（KK 线没拉到）+ 当日没特殊消息 → confidence 直接给 '低'，"
+        "trend 给 '看平'，target 给一个相对窄的区间。\n"
+        "\n"
         "# 三档建议（actionable_tiers）\n"
         "\n"
         "同一支票，不同人风险偏好不同。除了顶部的 actionable / position_pct 给"
@@ -375,6 +422,34 @@ def _user_prompt(w: Watchlist, s: Snapshot | None) -> str:
         industry_line = (
             f"所属行业: {s.industry_name}\n" if s.industry_name else ""
         )
+        # Phase 9: technical-面 block fed by latest K-line + indicators.
+        # Falls back to "未拉到" when the post-close kline tick hasn't run
+        # yet for this code (cold start) — LLM is told to drop confidence.
+        from . import kline as kline_svc  # late import to dodge circular
+        latest_k = kline_svc.latest_for_code(s.code)
+        if latest_k is None:
+            technical_section = (
+                "\n## 技术面\n（K 线未拉到，技术面信号缺失，"
+                "请把 next_day_outlook.confidence 设为 '低'）\n"
+            )
+        else:
+            def _f(v):
+                return f"{v:.2f}" if v is not None else "—"
+            macd_status = "?"
+            if (latest_k.macd_dif is not None and latest_k.macd_dea is not None):
+                macd_status = "DIF 上 DEA" if latest_k.macd_dif > latest_k.macd_dea else "DIF 下 DEA"
+            technical_section = (
+                f"\n## 技术面（{latest_k.date}）\n"
+                f"收盘: {_f(latest_k.close)}\n"
+                f"MA5/10/20/60: {_f(latest_k.ma5)} / {_f(latest_k.ma10)} / "
+                f"{_f(latest_k.ma20)} / {_f(latest_k.ma60)}\n"
+                f"MACD: DIF={_f(latest_k.macd_dif)}  DEA={_f(latest_k.macd_dea)}  "
+                f"HIST={_f(latest_k.macd_hist)}  ({macd_status})\n"
+                f"BOLL: 中={_f(latest_k.boll_mid)} 上={_f(latest_k.boll_up)} "
+                f"下={_f(latest_k.boll_low)}\n"
+                f"KDJ: K={_f(latest_k.kdj_k)} D={_f(latest_k.kdj_d)} J={_f(latest_k.kdj_j)}\n"
+                f"RSI6 / RSI12: {_f(latest_k.rsi6)} / {_f(latest_k.rsi12)}\n"
+            )
         snap_section = (
             f"快照时间: {s.ts.isoformat()}\n"
             f"{industry_line}"
@@ -383,7 +458,8 @@ def _user_prompt(w: Watchlist, s: Snapshot | None) -> str:
             f"成交量: {s.volume}\n"
             f"成交额: {s.turnover} 元\n"
             f"主力净流入(当日): {s.main_net_flow} 元\n"
-            f"命中信号: {', '.join(s.signals or []) or '（无）'}\n\n"
+            f"命中信号: {', '.join(s.signals or []) or '（无）'}\n"
+            f"{technical_section}\n"
             f"## 估值与活跃度\n{valuation_section}"
             f"{three_day_section}\n"
             f"## 最近新闻\n{news_lines}\n\n"

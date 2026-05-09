@@ -37,7 +37,7 @@ from .scraper import (
 )
 from .realtime_quotes import fetch_quotes_sina, fetch_quotes_tencent
 from .signals import compute_signals
-from . import three_day, industry as industry_svc
+from . import kline as kline_svc, three_day, industry as industry_svc
 
 # Phase 7: extra fields the snapshot row carries beyond the legacy set.
 # Listed here so worker / row builders / carry-forward stay in sync.
@@ -154,6 +154,14 @@ def _enrich_with_three_day_and_industry(
     for entry in pool:
         for f in INDUSTRY_FIELDS:
             bulk.setdefault(entry["code"], {})[f] = entry.get(f)
+
+    # Phase 9: attach latest K-line indicators so signal predicates that
+    # rely on technical state (breakout_20d / below_ma60 / MACD crosses)
+    # can fire. Stored under "kline" — never written to the snapshot row,
+    # consumed only by compute_signals.
+    indicators = kline_svc.latest_indicators_for_codes(codes)
+    for code, ind in indicators.items():
+        bulk.setdefault(code, {})["kline"] = ind
 
     return bulk
 
@@ -404,6 +412,10 @@ def run_quotes_job() -> dict:
                 **three_day_vals,
                 **industry_vals,
                 **carry,
+                # Phase 9: kline indicator dict (consumed by compute_signals,
+                # not written to the Snapshot row). Falls through carry-forward
+                # naturally since it's not in any *_FIELDS list.
+                "kline": quote.get("kline"),
             }
             snap["signals"] = compute_signals(snap)
             row = Snapshot(
@@ -536,6 +548,16 @@ def _daily_analysis_tick():
         pass
 
 
+def _kline_tick():
+    """Daily 16:30 BJT post-close: refresh K-lines + indicators for the
+    full watchlist union. Sequential ~1s/code; ~1min for 60 codes."""
+    try:
+        from . import kline as kline_svc
+        kline_svc.pull_for_watchlist()
+    except Exception:
+        logger.exception("kline tick failed")
+
+
 def start_scheduler() -> None:
     """Idempotent. Called from FastAPI lifespan."""
     global scheduler
@@ -574,6 +596,16 @@ def start_scheduler() -> None:
         id="quotes_5min",
         replace_existing=True,
         misfire_grace_time=120,
+    )
+    # Phase 9: K-line + indicators refresh, daily 16:30 BJT (post-close).
+    # ~1s/code so 60 codes in ~1min. Falls outside the snapshot/quotes
+    # paths so it doesn't compete with them.
+    sched.add_job(
+        _kline_tick,
+        CronTrigger(day_of_week="mon-fri", hour=16, minute=30, timezone="Asia/Shanghai"),
+        id="kline_16_30",
+        replace_existing=True,
+        misfire_grace_time=1800,
     )
     sched.start()
     scheduler = sched

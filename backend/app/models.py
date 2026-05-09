@@ -128,6 +128,63 @@ class Snapshot(Base):
     )
 
 
+class Kline(Base):
+    """Daily K-line + computed technical indicators for one (code, date).
+
+    Phase 9: 60-day rolling cache. Refreshed by `_kline_tick` post-close
+    (16:30) once per trading day, idempotent UPSERT keyed by (code, date).
+    Indicators computed with hand-rolled formulas (no pandas-ta on
+    Railway's Python wheels) — see services/kline.py.
+    """
+    __tablename__ = "klines"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    code: Mapped[str] = mapped_column(String(6), nullable=False)
+    date: Mapped[str] = mapped_column(String(10), nullable=False)  # YYYY-MM-DD
+
+    open: Mapped[float | None] = mapped_column(Float, nullable=True)
+    close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    high: Mapped[float | None] = mapped_column(Float, nullable=True)
+    low: Mapped[float | None] = mapped_column(Float, nullable=True)
+    volume: Mapped[float | None] = mapped_column(Float, nullable=True)
+    change_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    turnover_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # MAs
+    ma5: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ma10: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ma20: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ma60: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # MACD (12, 26, 9)
+    macd_dif: Mapped[float | None] = mapped_column(Float, nullable=True)
+    macd_dea: Mapped[float | None] = mapped_column(Float, nullable=True)
+    macd_hist: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # BOLL (20, 2)
+    boll_mid: Mapped[float | None] = mapped_column(Float, nullable=True)
+    boll_up: Mapped[float | None] = mapped_column(Float, nullable=True)
+    boll_low: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # KDJ (9, 3, 3)
+    kdj_k: Mapped[float | None] = mapped_column(Float, nullable=True)
+    kdj_d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    kdj_j: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # RSI
+    rsi6: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rsi12: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("code", "date", name="uq_klines_code_date"),
+        Index("ix_klines_code_date", "code", "date"),
+    )
+
+
 class IndustryMeta(Base):
     """Stock-code → industry mapping. Refreshed weekly from
     akshare.stock_industry_category_cninfo() (CNINFO taxonomy). One row per

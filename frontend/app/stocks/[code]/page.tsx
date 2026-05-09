@@ -2,8 +2,8 @@
 
 import { use, useEffect, useState, type ReactNode } from "react";
 import {
-  api, ActionableTier, ActionableTiers, KeyTable, RiskScores, ScenarioAdvice,
-  StockAnalysis, StockDetail, StopLossLevel,
+  api, ActionableTier, ActionableTiers, KeyTable, NextDayOutlook, RiskScores,
+  ScenarioAdvice, StockAnalysis, StockDetail, StopLossLevel,
 } from "../../../lib/api";
 
 type TierKey = "aggressive" | "neutral" | "conservative";
@@ -359,6 +359,9 @@ function KeyTableCard({ kt }: { kt: KeyTable }) {
         {kt.risk_scores && <RiskScoreCard scores={kt.risk_scores} />}
       </div>
 
+      {/* Phase 9: next-day price outlook (technical + capital + news driven) */}
+      {kt.next_day_outlook && <NextDayOutlookCard outlook={kt.next_day_outlook} />}
+
       {/* Stop-loss tiers — most important for high-risk picks */}
       {kt.stop_loss_levels && kt.stop_loss_levels.length > 0 && (
         <StopLossCard levels={kt.stop_loss_levels} />
@@ -366,6 +369,48 @@ function KeyTableCard({ kt }: { kt: KeyTable }) {
 
       {/* Scenario-based advice — what to do based on current holding state */}
       {kt.scenario_advice && <ScenarioAdviceCard advice={kt.scenario_advice} />}
+    </section>
+  );
+}
+
+
+function NextDayOutlookCard({ outlook }: { outlook: NextDayOutlook }) {
+  // 看涨/看平/看跌 → red/grey/green per A股 convention.
+  const trendColor =
+    outlook.trend === "看涨" ? "#ef4444" :
+    outlook.trend === "看跌" ? "#22c55e" :
+    "#9ca3af";
+  const confidenceColor =
+    outlook.confidence === "高" ? "#22c55e" :
+    outlook.confidence === "低" ? "#facc15" :
+    "#9ca3af";
+
+  return (
+    <section style={{ border: "1px solid #2a2a2a", borderRadius: 8, overflow: "hidden" }}>
+      <div style={{
+        padding: "10px 14px", background: "#0f0f0f",
+        color: "#888", fontSize: 12,
+        display: "flex", alignItems: "center", gap: 8,
+      }}>
+        <span>次日走势预判</span>
+        <span style={{ color: "#444" }}>·</span>
+        <span style={{ color: confidenceColor }}>置信度 {outlook.confidence}</span>
+      </div>
+      <div style={{ padding: "14px 16px" }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 16, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 20, fontWeight: 600, color: trendColor }}>
+            {outlook.trend}
+          </span>
+          <span style={{ color: "#aaa", fontSize: 13, fontFamily: "monospace" }}>
+            目标区间 {outlook.target_low.toFixed(2)} – {outlook.target_high.toFixed(2)}
+          </span>
+        </div>
+        {outlook.reasoning && (
+          <p style={{ color: "#d4d4d4", fontSize: 13, marginTop: 8, marginBottom: 0, lineHeight: 1.5 }}>
+            {outlook.reasoning}
+          </p>
+        )}
+      </div>
     </section>
   );
 }

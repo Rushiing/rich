@@ -120,6 +120,14 @@ export type ActionableTiers = {
   conservative: ActionableTier;
 };
 
+export type NextDayOutlook = {
+  trend: string;          // 看涨 / 看平 / 看跌
+  target_low: number;
+  target_high: number;
+  reasoning: string;
+  confidence: string;
+};
+
 export type KeyTable = {
   company_tag: string;
   actionable: string;
@@ -136,6 +144,8 @@ export type KeyTable = {
   // Phase 8: optional because legacy cached rows from before this schema
   // bump won't have it. UI gracefully degrades.
   actionable_tiers?: ActionableTiers;
+  // Phase 9: same — present on freshly generated rows, absent on legacy.
+  next_day_outlook?: NextDayOutlook;
   risk_scores: RiskScores;
   confidence: string;
 };
