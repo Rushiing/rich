@@ -53,6 +53,7 @@ export default function SectorsPage() {
           <UserChip />
           <a href="/stocks" style={linkStyle}>盯盘</a>
           <a href="/watchlist" style={linkStyle}>自选池</a>
+          <a href="/changelog" style={linkStyle}>更新日志</a>
         </div>
       </header>
 

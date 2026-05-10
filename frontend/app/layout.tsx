@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import ChangelogModal from "./_components/ChangelogModal";
 
 export const metadata: Metadata = {
   title: "rich",
@@ -60,6 +61,7 @@ export default function RootLayout({
         }}
       >
         {children}
+        <ChangelogModal />
       </body>
     </html>
   );

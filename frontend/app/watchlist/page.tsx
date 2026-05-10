@@ -90,6 +90,7 @@ export default function WatchlistPage() {
           <ThemeToggle />
           <UserChip />
           <a href="/stocks" style={linkStyle}>盯盘</a>
+          <a href="/changelog" style={linkStyle}>更新日志</a>
           <button onClick={() => setShowImport(true)} style={primaryBtn}>导入</button>
         </div>
       </header>
