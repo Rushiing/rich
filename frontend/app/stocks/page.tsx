@@ -347,7 +347,7 @@ export default function StocksPage() {
   }
 
   return (
-    <main style={{ padding: 20, maxWidth: 1100, margin: "0 auto" }}>
+    <main style={{ padding: 20, maxWidth: 1600, margin: "0 auto" }}>
       <header style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
         <h1 style={{ fontSize: 18, margin: 0 }}>盯盘</h1>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -555,7 +555,10 @@ function ActionableCell({ analysis }: { analysis: AnalysisBrief | null }) {
   const flagCount = analysis.red_flags?.length ?? 0;
   const explainBlurb = ACTIONABLE_EXPLAIN[analysis.actionable] ?? "";
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 180, maxWidth: 280 }}>
+    // Wider on desktop (ultrawide-friendly), still capped so a single line of
+    // 操作建议 doesn't run forever on huge screens. minWidth keeps the cell
+    // from collapsing on mobile.
+    <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 180, maxWidth: 480 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
         <Tooltip
           content={

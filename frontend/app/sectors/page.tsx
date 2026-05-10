@@ -45,7 +45,7 @@ export default function SectorsPage() {
   }
 
   return (
-    <main style={{ padding: 20, maxWidth: 1100, margin: "0 auto" }}>
+    <main style={{ padding: 20, maxWidth: 1600, margin: "0 auto" }}>
       <header style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
         <h1 style={{ fontSize: 18, margin: 0 }}>板块</h1>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
