@@ -200,11 +200,33 @@ export type Sector = {
   };
 };
 
+export type SectorPick = {
+  code: string;
+  name: string;
+  reason: string;
+};
+
+export type SectorPickGroup = {
+  name: string;
+  change_pct: number;
+  reason: string;
+  picks: SectorPick[];
+};
+
+export type SectorPicksResponse = {
+  sectors: SectorPickGroup[];
+  generated_at: string;
+  is_fresh: boolean;
+};
+
 export const api = {
   // ---- auth ----
   me: () => request<Me>("/api/auth/me"),
   // ---- sectors ----
   listSectors: () => request<Sector[]>("/api/sectors"),
+  getSectorPicks: () => request<SectorPicksResponse>("/api/sectors/picks"),
+  refreshSectorPicks: () =>
+    request<SectorPicksResponse>("/api/sectors/picks/refresh", { method: "POST" }),
   logout: () => request<{ ok: boolean }>("/api/auth/logout", { method: "POST" }),
   // ---- watchlist + stocks ----
   listWatchlist: () => request<WatchlistItem[]>("/api/watchlist"),

@@ -1,24 +1,48 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, Sector } from "../../lib/api";
+import { api, Sector, SectorPicksResponse } from "../../lib/api";
 import UserChip from "../_components/UserChip";
 import ThemeToggle from "../_components/ThemeToggle";
+import Tooltip from "../_components/Tooltip";
 
 /**
- * Phase 8: industry-sector ranking. Backend pulls Sina's "新浪行业" (49
- * sectors) sorted by today's change_pct. We add a small zone separator
- * so 涨幅 vs 跌幅 sectors are visually distinct.
+ * Phase 8: industry-sector ranking page.
+ *
+ * Layout:
+ *   1. Hero: LLM-curated TOP-N sector picks with per-sector and per-stock
+ *      reasons. 2-hour TTL on the backend, regenerable on demand.
+ *   2. Below: full 49-sector ranking table (Sina's 新浪行业 spot).
  */
 export default function SectorsPage() {
   const [sectors, setSectors] = useState<Sector[] | null>(null);
+  const [picks, setPicks] = useState<SectorPicksResponse | null>(null);
+  const [picksLoading, setPicksLoading] = useState(true);
+  const [picksErr, setPicksErr] = useState<string | null>(null);
+  const [picksRefreshing, setPicksRefreshing] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     api.listSectors()
       .then(setSectors)
       .catch((e) => setErr(e instanceof Error ? e.message : String(e)));
+    api.getSectorPicks()
+      .then((p) => { setPicks(p); setPicksErr(null); })
+      .catch((e) => setPicksErr(e instanceof Error ? e.message : String(e)))
+      .finally(() => setPicksLoading(false));
   }, []);
+
+  async function regeneratePicks() {
+    setPicksRefreshing(true);
+    setPicksErr(null);
+    try {
+      setPicks(await api.refreshSectorPicks());
+    } catch (e) {
+      setPicksErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPicksRefreshing(false);
+    }
+  }
 
   return (
     <main style={{ padding: 20, maxWidth: 1100, margin: "0 auto" }}>
@@ -32,7 +56,18 @@ export default function SectorsPage() {
         </div>
       </header>
 
-      <p style={{ color: "var(--text-muted)", fontSize: 12, marginTop: 12 }}>
+      <PicksHero
+        picks={picks}
+        loading={picksLoading}
+        err={picksErr}
+        refreshing={picksRefreshing}
+        onRegenerate={regeneratePicks}
+      />
+
+      <h2 style={{ fontSize: 14, color: "var(--text-soft)", margin: "32px 0 0", fontWeight: 500 }}>
+        全部板块涨跌榜
+      </h2>
+      <p style={{ color: "var(--text-muted)", fontSize: 12, marginTop: 6 }}>
         新浪行业划分，{sectors?.length ?? "—"} 个板块，按今日涨跌幅降序排列。
       </p>
 
@@ -120,6 +155,151 @@ export default function SectorsPage() {
         </div>
       )}
     </main>
+  );
+}
+
+function PicksHero({
+  picks, loading, err, refreshing, onRegenerate,
+}: {
+  picks: SectorPicksResponse | null;
+  loading: boolean;
+  err: string | null;
+  refreshing: boolean;
+  onRegenerate: () => void;
+}) {
+  return (
+    <section style={{ marginTop: 16 }}>
+      <div style={{
+        display: "flex",
+        alignItems: "baseline",
+        justifyContent: "space-between",
+        gap: 12,
+        flexWrap: "wrap",
+      }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+          <h2 style={{ fontSize: 16, margin: 0 }}>今日推荐 · TOP {picks?.sectors.length ?? 5} 板块</h2>
+          <Tooltip
+            content="基于今日板块涨跌 + 成份股表现的 LLM 综合判断。每 2 小时缓存一次；点'重新生成'强制重算。仅供参考，不构成投资建议。"
+          >
+            <span style={{
+              fontSize: 11,
+              color: "var(--text-faint)",
+              cursor: "help",
+              padding: "1px 6px",
+              border: "1px solid var(--border)",
+              borderRadius: 10,
+            }}>?</span>
+          </Tooltip>
+          {picks?.generated_at && (
+            <span style={{ fontSize: 12, color: "var(--text-faint)" }}>
+              生成于 {new Date(picks.generated_at).toLocaleString("zh-CN", {
+                month: "numeric", day: "numeric",
+                hour: "2-digit", minute: "2-digit",
+              })}
+            </span>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={onRegenerate}
+          disabled={refreshing || loading}
+          style={{
+            padding: "4px 10px",
+            background: "transparent",
+            color: "var(--text-soft)",
+            border: "1px solid var(--border-mid)",
+            borderRadius: 6,
+            fontSize: 12,
+            cursor: refreshing || loading ? "not-allowed" : "pointer",
+          }}
+        >
+          {refreshing ? "生成中…" : "重新生成"}
+        </button>
+      </div>
+
+      {err && <div style={{ color: "#ef4444", fontSize: 13, marginTop: 8 }}>{err}</div>}
+
+      {loading && !picks ? (
+        <p style={{ color: "var(--text-faint)", marginTop: 16 }}>加载中…</p>
+      ) : !picks || picks.sectors.length === 0 ? (
+        <p style={{ color: "var(--text-faint)", marginTop: 16 }}>暂无推荐</p>
+      ) : (
+        <div style={{
+          marginTop: 12,
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+          gap: 12,
+        }}>
+          {picks.sectors.map((sec) => (
+            <SectorPickCard key={sec.name} sec={sec} />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function SectorPickCard({ sec }: { sec: SectorPicksResponse["sectors"][number] }) {
+  const upColor = "#ef4444", downColor = "#22c55e";
+  const trendColor = sec.change_pct >= 0 ? upColor : downColor;
+  return (
+    <div style={{
+      padding: 12,
+      border: "1px solid var(--border)",
+      borderRadius: 8,
+      background: "var(--surface-alt)",
+      display: "flex",
+      flexDirection: "column",
+      gap: 8,
+    }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
+        <span style={{ fontSize: 14, fontWeight: 600 }}>{sec.name}</span>
+        <span style={{ fontFamily: "monospace", fontSize: 13, color: trendColor, fontWeight: 600 }}>
+          {sec.change_pct >= 0 ? "+" : ""}{sec.change_pct.toFixed(2)}%
+        </span>
+      </div>
+      <p style={{ margin: 0, fontSize: 12, color: "var(--text-soft)", lineHeight: 1.55 }}>
+        {sec.reason}
+      </p>
+      <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 2 }}>
+        {sec.picks.map((p) => (
+          <Tooltip
+            key={p.code}
+            content={
+              <div>
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>{p.code} {p.name}</div>
+                <div style={{ color: "var(--text-soft)" }}>{p.reason}</div>
+              </div>
+            }
+          >
+            <a
+              href={`/stocks/${p.code}`}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 8,
+                padding: "6px 8px",
+                background: "var(--surface)",
+                border: "1px solid var(--border-faint)",
+                borderRadius: 6,
+                color: "var(--text)",
+                fontSize: 12,
+                textDecoration: "none",
+              }}
+            >
+              <span style={{ display: "flex", gap: 6, alignItems: "baseline", minWidth: 0 }}>
+                <span style={{ fontFamily: "monospace", color: "var(--text-faint)", fontSize: 11 }}>{p.code}</span>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {p.name}
+                </span>
+              </span>
+              <span style={{ color: "var(--text-faint)", fontSize: 11, flexShrink: 0 }}>详情 →</span>
+            </a>
+          </Tooltip>
+        ))}
+      </div>
+    </div>
   );
 }
 
