@@ -46,8 +46,12 @@ def detect_exchange(code: str) -> str:
     return "unknown"
 
 
-def _fetch_name(code: str) -> str | None:
-    """Resolve a code's 股票简称. Retries on transient akshare failures."""
+def _fetch_name_eastmoney(code: str) -> str | None:
+    """Per-code lookup via akshare's `stock_individual_info_em`. Used only
+    as a fallback when the primary Tencent batch path doesn't have the
+    code — eastmoney's push2 host is blocked on Railway, so this almost
+    always fails in production. Kept for dev/local where it works and
+    for the rare delisted code that Tencent might also miss."""
     if code in _name_cache:
         return _name_cache[code]
     last_err: Exception | None = None
@@ -56,8 +60,6 @@ def _fetch_name(code: str) -> str | None:
             df = ak.stock_individual_info_em(symbol=code)
             match = df[df["item"] == "股票简称"]
             if len(match) == 0:
-                # akshare succeeded but has no row — treat as "really not found",
-                # don't retry. Returning None here is a definitive "no such code".
                 return None
             name = str(match.iloc[0]["value"]).strip()
             if not name:
@@ -68,25 +70,32 @@ def _fetch_name(code: str) -> str | None:
             last_err = e
             if attempt < LOOKUP_RETRIES - 1:
                 time.sleep(0.5 * (attempt + 1))
-    logger.warning("stock name lookup failed for %s after %d attempts: %s",
+    logger.warning("eastmoney lookup fallback failed for %s after %d attempts: %s",
                    code, LOOKUP_RETRIES, last_err)
     return None
 
 
 def lookup_codes(codes: Iterable[str]) -> dict[str, LookupOutcome]:
-    """Validate and resolve a batch of codes in parallel.
+    """Validate and resolve a batch of codes.
+
+    Resolution order:
+    1. In-process name cache.
+    2. Tencent qt.gtimg.cn batch — one HTTP call covers up to 50 codes
+       at once. Reachable from Railway (eastmoney's per-code info
+       endpoint isn't), so this is the primary path.
+    3. eastmoney per-code fallback for codes Tencent didn't recognize.
+       Almost always fails on Railway; kept for dev parity.
 
     Returns a dict mapping each input code to one of:
       - {"code", "name", "exchange"}: success
       - "invalid_format": doesn't match ^\\d{6}$
-      - "lookup_failed": format ok, but akshare didn't return a name (transient
-        network failure or — rarely — a delisted/non-existent code).
-        Caller should let the user retry these.
+      - "lookup_failed": format ok but no source had a name. Frontend
+        offers a "retry" CTA on these so transient network blips don't
+        force the user to re-paste.
     """
     code_list = [c.strip() for c in codes]
     out: dict[str, LookupOutcome] = {}
 
-    # Format check is free; only spend network on syntactically valid codes.
     to_resolve: list[str] = []
     for c in code_list:
         if not CODE_RE.match(c):
@@ -94,18 +103,44 @@ def lookup_codes(codes: Iterable[str]) -> dict[str, LookupOutcome]:
         else:
             to_resolve.append(c)
 
-    if to_resolve:
-        with ThreadPoolExecutor(max_workers=min(20, len(to_resolve))) as pool:
-            futures = {pool.submit(_fetch_name, c): c for c in to_resolve}
+    # Pre-fill from name cache so a re-import after a partial failure is free.
+    cached_now: dict[str, str] = {}
+    still_unknown: list[str] = []
+    for c in to_resolve:
+        if c in _name_cache:
+            cached_now[c] = _name_cache[c]
+        else:
+            still_unknown.append(c)
+
+    # --- primary: Tencent batch (1 HTTP call per 50 codes) ---
+    if still_unknown:
+        # Late import to dodge a circular reference (realtime_quotes is in
+        # the same package and imports from .scraper, which imports us).
+        from .realtime_quotes import fetch_names_tencent
+        tencent = fetch_names_tencent(still_unknown)
+        for c, name in tencent.items():
+            cached_now[c] = name
+            _name_cache[c] = name
+        still_unknown = [c for c in still_unknown if c not in tencent]
+
+    # --- fallback: eastmoney per-code (parallel) ---
+    if still_unknown:
+        with ThreadPoolExecutor(max_workers=min(20, len(still_unknown))) as pool:
+            futures = {pool.submit(_fetch_name_eastmoney, c): c for c in still_unknown}
             for fut in as_completed(futures):
                 c = futures[fut]
                 name = fut.result()
-                if name is None:
-                    out[c] = "lookup_failed"
-                else:
-                    out[c] = {"code": c, "name": name, "exchange": detect_exchange(c)}
+                if name is not None:
+                    cached_now[c] = name
 
-    # Preserve input order in the returned dict.
+    # Build outcomes
+    for c in to_resolve:
+        name = cached_now.get(c)
+        if name is None:
+            out[c] = "lookup_failed"
+        else:
+            out[c] = {"code": c, "name": name, "exchange": detect_exchange(c)}
+
     return {c: out[c] for c in code_list}
 
 

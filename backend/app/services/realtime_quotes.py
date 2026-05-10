@@ -133,6 +133,43 @@ def _tencent_symbol(code: str) -> str:
     return code
 
 
+def fetch_names_tencent(
+    codes: list[str], chunk: int = 50, timeout: int = 8
+) -> dict[str, str]:
+    """Pull stock 简称 for a batch of codes from qt.gtimg.cn. One HTTP call
+    per chunk-of-50, returns {code: name}. Used by services.stocks.lookup_codes
+    as the primary watchlist-import path because eastmoney's per-stock info
+    endpoint is blocked on Railway.
+
+    Codes Tencent doesn't recognize (delisted / wrong format) are simply
+    absent from the result — caller decides how to surface that to the UI.
+    """
+    if not codes:
+        return {}
+    out: dict[str, str] = {}
+    for i in range(0, len(codes), chunk):
+        batch = codes[i:i + chunk]
+        url = TENCENT_BASE + ",".join(_tencent_symbol(c) for c in batch)
+        try:
+            req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urlopen(req, timeout=timeout) as resp:
+                body = resp.read().decode("gbk", errors="replace")
+        except (URLError, TimeoutError) as e:
+            logger.warning("tencent name fetch failed for %d codes: %s", len(batch), e)
+            continue
+        for sym, payload in _TENCENT_LINE_RE.findall(body):
+            if not payload.strip():
+                continue
+            code = sym[2:] if sym[:2] in ("sh", "sz", "bj") else sym
+            fields = payload.split("~")
+            if len(fields) < 3:
+                continue
+            name = (fields[1] or "").strip()
+            if name:
+                out[code] = name
+    return out
+
+
 def fetch_quotes_tencent(
     codes: list[str], chunk: int = 50, timeout: int = 8
 ) -> dict[str, dict[str, Any]]:
