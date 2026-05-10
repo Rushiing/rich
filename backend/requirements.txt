@@ -7,6 +7,9 @@ pydantic-settings==2.7.0
 python-dotenv==1.0.1
 itsdangerous==2.2.0
 
+# Phase 6.5: password hashing (bcrypt) for self-service registration
+bcrypt==4.2.1
+
 # Phase 1: A-share data
 akshare==1.18.57
 pandas==2.2.3

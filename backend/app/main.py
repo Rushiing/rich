@@ -23,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
 from .db import Base, engine, ensure_extra_columns, migrate_watchlist_pk, snapshot_columns
 from .models import (  # noqa: F401  (register tables with metadata)
-    Analysis, IndustryMeta, Kline, SectorPicks, Snapshot, User, Watchlist,
+    Analysis, IndustryMeta, InviteCode, Kline, SectorPicks, Snapshot, User, Watchlist,
 )
 from .routes import auth as auth_routes
 from .routes import sectors as sectors_routes

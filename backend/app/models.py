@@ -32,6 +32,48 @@ class User(Base):
     last_login_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True,
     )
+    # Phase 6.5: password-based auth replacing dev-mode SMS. Nullable on
+    # rollout — existing SMS-verified rows have NULL until the migration
+    # script (or admin endpoint) sets a temporary hash. Users with a NULL
+    # password_hash can't log in via /auth/login; they need an admin reset
+    # or fall back to the legacy SMS dev path until that's removed.
+    password_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+
+class InviteCode(Base):
+    """One-shot invite codes for self-service registration.
+
+    Workflow:
+      - Admin generates a code via the CLI script `backend/admin_invite.py`
+      - Hands the string to a friend out-of-band (im, voice, paper)
+      - Friend hits /register with phone + password + code
+      - Code marked used (used_by_user_id, used_at populated); not reusable
+
+    Codes can carry an optional `expires_at` for time-bounded invites.
+    `created_by_user_id` is informational only — admin tooling reads it
+    to show "who issued this".
+    """
+    __tablename__ = "invite_codes"
+
+    code: Mapped[str] = mapped_column(String(32), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    used_by_user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
+    )
+    # Optional human-readable label so the issuer remembers who they
+    # handed the code to (e.g. "for 老王").
+    note: Mapped[str | None] = mapped_column(String(60), nullable=True)
 
 
 class Watchlist(Base):

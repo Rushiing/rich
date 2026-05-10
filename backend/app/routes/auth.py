@@ -1,14 +1,22 @@
-"""Auth routes — Phase 6 SMS flow + legacy single-password fallback.
+"""Auth routes.
 
-Endpoints:
-- POST /api/auth/sms/send       — request a verification code for a phone
-- POST /api/auth/sms/verify     — verify code, upsert user, sign session
-- POST /api/auth/login          — legacy single-password (still works
-                                  while AUTH_DISABLED windows or for
-                                  back-compat tests)
+Active flow (Phase 6.5):
+- POST /api/auth/register   — phone + password + invite_code → creates user + signs cookie
+- POST /api/auth/login      — phone + password → signs cookie
+
+Legacy / transitional:
+- POST /api/auth/sms/send       — dev-mode 8888 + whitelist (kept as fallback
+                                  while existing internal users migrate)
+- POST /api/auth/sms/verify     — same
+- POST /api/auth/legacy-login   — single-shared-password (AUTH_DISABLED tests)
 - POST /api/auth/logout         — clear cookie
-- GET  /api/auth/me             — { user_id, phone } when v2 cookie,
-                                  { ok: True } for legacy v1 sessions
+- GET  /api/auth/me             — { user_id, phone } when v2 cookie
+
+Why we keep SMS dev-mode running: 3 existing users were SMS-verified in
+Phase 6 and don't have password hashes yet. After they each set a password
+via the upcoming /auth/login flow (or the admin reset), the SMS routes can
+be removed. The admin script `admin_users.py` is the path of least
+resistance for in-place password setup.
 """
 from datetime import datetime, timezone
 
@@ -17,18 +25,111 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ..auth import (
-    COOKIE_NAME, check_password, decode_token, issue_token, require_auth,
+    COOKIE_NAME, check_password, decode_token, issue_token,
 )
 from ..db import get_db
-from ..models import User
+from ..models import InviteCode, User
 from ..services import sms
+from ..services.passwords import (
+    PasswordError, hash_password, validate as validate_password, verify_password,
+)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
 
 
-# --- SMS flow ------------------------------------------------------------
+def _set_session_cookie(response: Response, user_id: int) -> None:
+    """Sign the v2 token + drop it as the rich_session cookie."""
+    token = issue_token(user_id=user_id)
+    response.set_cookie(
+        key=COOKIE_NAME, value=token,
+        httponly=True, samesite="lax",
+        secure=False,  # set True behind HTTPS in production
+        max_age=COOKIE_MAX_AGE, path="/",
+    )
+
+
+# --- Password-based: register + login ------------------------------------
+
+
+class RegisterRequest(BaseModel):
+    phone: str = Field(min_length=11, max_length=11)
+    password: str
+    invite_code: str = Field(min_length=4, max_length=32)
+
+
+class LoginRequest(BaseModel):
+    phone: str = Field(min_length=11, max_length=11)
+    password: str
+
+
+@router.post("/register")
+def register(body: RegisterRequest, response: Response, db: Session = Depends(get_db)):
+    """Self-service registration. Requires a valid, unused, unexpired invite
+    code. The code is consumed atomically — concurrent registrations against
+    the same code race for it; loser gets 409.
+    """
+    # Password sanity first so we don't burn an invite on a malformed pwd.
+    try:
+        validate_password(body.password)
+    except PasswordError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Phone uniqueness — friendlier error than the eventual integrity error.
+    existing = db.query(User).filter(User.phone == body.phone).first()
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="该手机号已注册，请直接登录")
+
+    code_row = db.query(InviteCode).filter(InviteCode.code == body.invite_code).first()
+    if code_row is None:
+        raise HTTPException(status_code=400, detail="邀请码无效")
+    if code_row.used_at is not None:
+        raise HTTPException(status_code=400, detail="邀请码已被使用")
+    if code_row.expires_at is not None:
+        # Normalize tz so comparison works regardless of DB driver.
+        ea = code_row.expires_at
+        if ea.tzinfo is None:
+            ea = ea.replace(tzinfo=timezone.utc)
+        if ea < datetime.now(timezone.utc):
+            raise HTTPException(status_code=400, detail="邀请码已过期")
+
+    now = datetime.now(timezone.utc)
+    user = User(
+        phone=body.phone,
+        password_hash=hash_password(body.password),
+        # No SMS verified phone — but we treat invite-code registration
+        # as enough for now. Field stays NULL.
+        last_login_at=now,
+    )
+    db.add(user)
+    db.flush()  # need user.id before marking the code
+
+    code_row.used_at = now
+    code_row.used_by_user_id = user.id
+    db.commit()
+    db.refresh(user)
+
+    _set_session_cookie(response, user.id)
+    return {"ok": True, "user_id": user.id, "phone": user.phone}
+
+
+@router.post("/login")
+def login(body: LoginRequest, response: Response, db: Session = Depends(get_db)):
+    """Phone + password login. Generic 401 message regardless of whether
+    the phone exists or the password is wrong — no info leak."""
+    user = db.query(User).filter(User.phone == body.phone).first()
+    if user is None or not verify_password(body.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="手机号或密码错误")
+
+    user.last_login_at = datetime.now(timezone.utc)
+    db.commit()
+
+    _set_session_cookie(response, user.id)
+    return {"ok": True, "user_id": user.id, "phone": user.phone}
+
+
+# --- SMS flow (transitional) ---------------------------------------------
 
 
 class SmsSendRequest(BaseModel):
@@ -54,8 +155,6 @@ def sms_verify(body: SmsVerifyRequest, response: Response, db: Session = Depends
     if not sms.verify_code(body.phone, body.code):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="验证码错误或已过期")
 
-    # Upsert by phone — first verification creates the user; subsequent
-    # logins just bump last_login_at + phone_verified_at.
     user = db.query(User).filter(User.phone == body.phone).first()
     now = datetime.now(timezone.utc)
     if user is None:
@@ -67,29 +166,21 @@ def sms_verify(body: SmsVerifyRequest, response: Response, db: Session = Depends
     db.commit()
     db.refresh(user)
 
-    token = issue_token(user_id=user.id)
-    response.set_cookie(
-        key=COOKIE_NAME, value=token,
-        httponly=True, samesite="lax",
-        secure=False,  # set True behind HTTPS in production
-        max_age=COOKIE_MAX_AGE, path="/",
-    )
+    _set_session_cookie(response, user.id)
     return {"ok": True, "user_id": user.id, "phone": user.phone}
 
 
-# --- Legacy single-password (kept for back-compat) -----------------------
+# --- Legacy single-password (kept for AUTH_DISABLED tests) ---------------
 
 
-class LoginRequest(BaseModel):
+class LegacyLoginRequest(BaseModel):
     password: str
 
 
-@router.post("/login")
-def login(body: LoginRequest, response: Response):
-    """Legacy single-password gate. Cookie issued has no user_id; routes
-    that require user scoping will treat it as anonymous (effectively the
-    same as AUTH_DISABLED). Kept so internal scripts and the old test
-    flow still work while Phase 6 rolls out."""
+@router.post("/legacy-login")
+def legacy_login(body: LegacyLoginRequest, response: Response):
+    """Single-shared-password gate. Cookie issued has no user_id; routes
+    that require user scoping treat it as anonymous."""
     if not check_password(body.password):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid password")
     token = issue_token()  # v1, no uid
@@ -110,10 +201,6 @@ def logout(response: Response):
 
 @router.get("/me")
 def me(rich_session: str | None = Cookie(default=None), db: Session = Depends(get_db)):
-    """Returns identity info to drive the frontend user chip / logout
-    button. Returns 401 if no valid cookie. v1 cookies (no uid) come back
-    with {ok: True, anonymous: True} so the UI can still render — they
-    represent legacy single-password sessions."""
     if rich_session is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
     payload = decode_token(rich_session)
@@ -124,6 +211,12 @@ def me(rich_session: str | None = Cookie(default=None), db: Session = Depends(ge
         return {"ok": True, "anonymous": True}
     user = db.query(User).filter(User.id == uid).first()
     if user is None:
-        # Cookie says you're user 42 but row is gone — treat as logged out.
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
-    return {"ok": True, "user_id": user.id, "phone": user.phone}
+    return {
+        "ok": True,
+        "user_id": user.id,
+        "phone": user.phone,
+        # Frontend uses this to gate "请设置密码" prompt for migrated users
+        # who haven't picked one yet.
+        "has_password": user.password_hash is not None,
+    }

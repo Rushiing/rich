@@ -57,6 +57,9 @@ _POSTGRES_BACKFILL = [
     ("snapshots", "industry_flow_3d_pctile",  "DOUBLE PRECISION"),
     ("snapshots", "industry_pe_avg",          "DOUBLE PRECISION"),
     ("snapshots", "industry_pb_avg",          "DOUBLE PRECISION"),
+    # Phase 6.5: password auth — existing rows stay NULL until the admin
+    # reset script populates them.
+    ("users",     "password_hash",            "VARCHAR(128)"),
 ]
 
 
