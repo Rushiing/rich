@@ -1,11 +1,8 @@
 "use client";
 
 /**
- * Phone + password login. Replaces the SMS-flow login (which is now
- * fallback-only at /login/sms while existing users migrate over).
- *
- * Form: phone + password → POST /api/auth/login → redirect /stocks.
- * Link to /register for new users with an invite code.
+ * Self-service registration with invite code.
+ * Form: phone + password + invite_code → POST /api/auth/register → /stocks.
  */
 
 import { useState } from "react";
@@ -13,10 +10,12 @@ import { useRouter } from "next/navigation";
 
 const PHONE_RE = /^1[3-9]\d{9}$/;
 
-export default function LoginPage() {
+export default function RegisterPage() {
   const router = useRouter();
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -31,16 +30,28 @@ export default function LoginPage() {
       setError("密码至少 6 位");
       return;
     }
+    if (password !== confirmPassword) {
+      setError("两次密码不一致");
+      return;
+    }
+    if (!inviteCode.trim()) {
+      setError("请填写邀请码");
+      return;
+    }
     setBusy(true);
     try {
-      const res = await fetch("/api/auth/login", {
+      const res = await fetch("/api/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone, password }),
+        body: JSON.stringify({
+          phone,
+          password,
+          invite_code: inviteCode.trim().toUpperCase(),
+        }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        setError(body.detail || "登录失败");
+        setError(body.detail || "注册失败");
         return;
       }
       router.push("/stocks");
@@ -57,9 +68,9 @@ export default function LoginPage() {
       minHeight: "100vh", padding: 16,
     }}>
       <form onSubmit={submit} style={formStyle}>
-        <h1 style={{ fontSize: 22, margin: 0 }}>rich</h1>
+        <h1 style={{ fontSize: 22, margin: 0 }}>注册 rich 账号</h1>
         <p style={{ margin: 0, color: "var(--text-muted)", fontSize: 13 }}>
-          手机号 + 密码登录
+          凭邀请码注册。手机号当账号 ID。
         </p>
 
         <input
@@ -78,10 +89,30 @@ export default function LoginPage() {
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          placeholder="密码"
-          autoComplete="current-password"
+          placeholder="密码（至少 6 位）"
+          autoComplete="new-password"
           maxLength={64}
           style={inputStyle}
+        />
+
+        <input
+          type="password"
+          value={confirmPassword}
+          onChange={(e) => setConfirmPassword(e.target.value)}
+          placeholder="再次输入密码"
+          autoComplete="new-password"
+          maxLength={64}
+          style={inputStyle}
+        />
+
+        <input
+          type="text"
+          value={inviteCode}
+          onChange={(e) => setInviteCode(e.target.value.toUpperCase().slice(0, 32))}
+          placeholder="邀请码"
+          autoCapitalize="characters"
+          maxLength={32}
+          style={{ ...inputStyle, fontFamily: "monospace", letterSpacing: 2 }}
         />
 
         {error && (
@@ -90,7 +121,7 @@ export default function LoginPage() {
 
         <button
           type="submit"
-          disabled={busy || !phone || !password}
+          disabled={busy || !phone || !password || !confirmPassword || !inviteCode}
           style={{
             padding: "10px 12px",
             background: busy ? "var(--text-dim)" : "var(--link)",
@@ -101,23 +132,15 @@ export default function LoginPage() {
             cursor: busy ? "not-allowed" : "pointer",
           }}
         >
-          {busy ? "登录中…" : "登录"}
+          {busy ? "注册中…" : "注册并登录"}
         </button>
 
-        <div style={{
-          display: "flex",
-          justifyContent: "space-between",
-          fontSize: 12,
-          color: "var(--text-muted)",
-          marginTop: 4,
+        <a href="/login" style={{
+          color: "var(--text-faint)", fontSize: 12, textDecoration: "none",
+          textAlign: "center", marginTop: 4,
         }}>
-          <a href="/register" style={{ color: "var(--link)", textDecoration: "none" }}>
-            没有账号？凭邀请码注册 →
-          </a>
-          <a href="/login/sms" style={{ color: "var(--text-faint)", textDecoration: "none" }}>
-            短信验证码登录
-          </a>
-        </div>
+          ← 已有账号，去登录
+        </a>
       </form>
     </main>
   );

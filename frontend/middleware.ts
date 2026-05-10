@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 
 // Pages that don't require auth. /api/* is always passed through — the backend
 // is the actual auth gate (returns 401 if needed).
-const PUBLIC_PAGES = ["/login"];
+// /login covers /login and /login/sms (startsWith match below).
+const PUBLIC_PAGES = ["/login", "/register"];
 
 // Testing-window kill switch. When AUTH_DISABLED=true on the frontend
 // service we skip every redirect; backend reads the same env var and
