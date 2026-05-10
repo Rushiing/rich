@@ -19,8 +19,28 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  themeColor: "#0a0a0a",
+  // themeColor is light/dark adaptive — the browser chrome (PWA status bar)
+  // matches the user's pick.
+  themeColor: [
+    { media: "(prefers-color-scheme: dark)",  color: "#0a0a0a" },
+    { media: "(prefers-color-scheme: light)", color: "#fafafa" },
+  ],
 };
+
+// Synchronous boot script — runs before paint to set data-theme so we don't
+// flash the wrong palette on hard refresh. Mirrors ThemeToggle's storage
+// contract: localStorage.theme = "system" | "light" | "dark", default "system".
+const BOOT_THEME = `
+(function() {
+  try {
+    var t = localStorage.getItem("theme");
+    if (t === "light" || t === "dark") {
+      document.documentElement.setAttribute("data-theme", t);
+    }
+    // "system" or unset → leave attribute off; CSS @media handles it.
+  } catch (e) {}
+})();
+`;
 
 export default function RootLayout({
   children,
@@ -29,12 +49,13 @@ export default function RootLayout({
 }) {
   return (
     <html lang="zh-CN">
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: BOOT_THEME }} />
+      </head>
       <body
         style={{
           fontFamily:
             "-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue', Arial, sans-serif",
-          background: "#0a0a0a",
-          color: "#e5e5e5",
           minHeight: "100vh",
         }}
       >

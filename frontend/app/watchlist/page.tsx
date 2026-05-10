@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import readXlsxFile from "read-excel-file";
 import { api, WatchlistItem, ImportResult } from "../../lib/api";
 import UserChip from "../_components/UserChip";
+import ThemeToggle from "../_components/ThemeToggle";
 
 const exchangeLabel: Record<string, string> = {
   sh: "上交",
@@ -42,6 +43,7 @@ export default function WatchlistPage() {
       <header style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
         <h1 style={{ fontSize: 18, margin: 0 }}>自选池</h1>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <ThemeToggle />
           <UserChip />
           <a href="/stocks" style={linkStyle}>盯盘</a>
           <button
@@ -55,14 +57,14 @@ export default function WatchlistPage() {
         </div>
       </header>
 
-      <div style={{ marginTop: 16, color: "#888", fontSize: 13 }}>
+      <div style={{ marginTop: 16, color: "var(--text-muted)", fontSize: 13 }}>
         共 {items.length} 支
       </div>
 
       <div className="table-scroll">
       <table style={tableStyle}>
         <thead>
-          <tr style={{ color: "#888", fontSize: 12 }}>
+          <tr style={{ color: "var(--text-muted)", fontSize: 12 }}>
             <th style={th}>代码</th>
             <th style={th}>名称</th>
             <th style={th}>市场</th>
@@ -73,12 +75,12 @@ export default function WatchlistPage() {
         <tbody>
           {loading && (
             <tr>
-              <td colSpan={5} style={{ ...td, textAlign: "center", color: "#666" }}>加载中...</td>
+              <td colSpan={5} style={{ ...td, textAlign: "center", color: "var(--text-faint)" }}>加载中...</td>
             </tr>
           )}
           {!loading && items.length === 0 && (
             <tr>
-              <td colSpan={5} style={{ ...td, textAlign: "center", color: "#666" }}>
+              <td colSpan={5} style={{ ...td, textAlign: "center", color: "var(--text-faint)" }}>
                 自选池为空，点击右上角"导入"添加股票
               </td>
             </tr>
@@ -88,7 +90,7 @@ export default function WatchlistPage() {
               <td style={{ ...td, fontFamily: "monospace" }}>{item.code}</td>
               <td style={td}>{item.name}</td>
               <td style={td}>{exchangeLabel[item.exchange] || item.exchange}</td>
-              <td style={{ ...td, color: "#888", fontSize: 12 }}>
+              <td style={{ ...td, color: "var(--text-muted)", fontSize: 12 }}>
                 {item.added_at ? new Date(item.added_at).toLocaleString("zh-CN") : "-"}
               </td>
               <td style={{ ...td, textAlign: "right" }}>
@@ -182,7 +184,7 @@ function BulkDeleteDialog({
     <div style={modalBackdrop} onClick={onClose}>
       <div style={modalBox} onClick={(e) => e.stopPropagation()}>
         <h2 style={{ fontSize: 16, margin: 0 }}>批量删除股票</h2>
-        <p style={{ color: "#888", fontSize: 12, margin: 0 }}>
+        <p style={{ color: "var(--text-muted)", fontSize: 12, margin: 0 }}>
           粘贴一列 6 位代码（一行一个或用空格/逗号分隔），或上传 Excel/CSV（识别第一列）。
           只会删除当前自选池里命中的代码（共 {currentCount} 支），其他忽略。
         </p>
@@ -201,7 +203,7 @@ function BulkDeleteDialog({
             type="file"
             accept=".xlsx,.csv"
             onChange={onPickFile}
-            style={{ fontSize: 12, color: "#aaa" }}
+            style={{ fontSize: 12, color: "var(--text-soft)" }}
           />
         </div>
 
@@ -226,7 +228,7 @@ function BulkDeleteDialog({
               disabled={busy || !text.trim()}
               style={{
                 ...primaryBtn,
-                background: busy || !text.trim() ? "#444" : "#dc2626",
+                background: busy || !text.trim() ? "var(--text-dim)" : "#dc2626",
               }}
             >
               {busy ? "删除中..." : "确认删除"}
@@ -302,7 +304,7 @@ function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone: () => 
     <div style={modalBackdrop} onClick={onClose}>
       <div style={modalBox} onClick={(e) => e.stopPropagation()}>
         <h2 style={{ fontSize: 16, margin: 0 }}>导入股票代码</h2>
-        <p style={{ color: "#888", fontSize: 12, margin: 0 }}>
+        <p style={{ color: "var(--text-muted)", fontSize: 12, margin: 0 }}>
           粘贴一列 6 位代码（一行一个或用空格/逗号分隔），或上传 Excel/CSV（识别第一列）。
           系统会通过 akshare 校验代码并查询股票名称。
         </p>
@@ -321,7 +323,7 @@ function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone: () => 
             type="file"
             accept=".xlsx,.csv"
             onChange={onPickFile}
-            style={{ fontSize: 12, color: "#aaa" }}
+            style={{ fontSize: 12, color: "var(--text-soft)" }}
           />
         </div>
 
@@ -373,7 +375,7 @@ const linkStyle: React.CSSProperties = {
 };
 const primaryBtn: React.CSSProperties = {
   padding: "6px 12px",
-  background: "#3b82f6",
+  background: "var(--link)",
   color: "white",
   border: "none",
   borderRadius: 6,
@@ -383,8 +385,8 @@ const primaryBtn: React.CSSProperties = {
 const ghostBtn: React.CSSProperties = {
   padding: "6px 12px",
   background: "transparent",
-  color: "#aaa",
-  border: "1px solid #333",
+  color: "var(--text-soft)",
+  border: "1px solid var(--border-mid)",
   borderRadius: 6,
   fontSize: 13,
   cursor: "pointer",
@@ -406,12 +408,12 @@ const tableStyle: React.CSSProperties = {
 const th: React.CSSProperties = {
   textAlign: "left",
   padding: "8px 10px",
-  borderBottom: "1px solid #222",
+  borderBottom: "1px solid var(--border-soft)",
   fontWeight: 500,
 };
 const td: React.CSSProperties = {
   padding: "10px",
-  borderBottom: "1px solid #1a1a1a",
+  borderBottom: "1px solid var(--border-faint)",
   fontSize: 14,
 };
 const modalBackdrop: React.CSSProperties = {
@@ -425,8 +427,8 @@ const modalBackdrop: React.CSSProperties = {
   padding: 16,
 };
 const modalBox: React.CSSProperties = {
-  background: "#141414",
-  border: "1px solid #2a2a2a",
+  background: "var(--surface)",
+  border: "1px solid var(--border)",
   borderRadius: 8,
   padding: 20,
   width: "100%",
@@ -436,18 +438,18 @@ const modalBox: React.CSSProperties = {
   gap: 12,
 };
 const textareaStyle: React.CSSProperties = {
-  background: "#0a0a0a",
-  border: "1px solid #2a2a2a",
+  background: "var(--bg)",
+  border: "1px solid var(--border)",
   borderRadius: 6,
-  color: "#e5e5e5",
+  color: "var(--text)",
   fontFamily: "monospace",
   fontSize: 13,
   padding: 10,
   resize: "vertical",
 };
 const resultBox: React.CSSProperties = {
-  background: "#0a0a0a",
-  border: "1px solid #2a2a2a",
+  background: "var(--bg)",
+  border: "1px solid var(--border)",
   borderRadius: 6,
   padding: 10,
   fontSize: 13,

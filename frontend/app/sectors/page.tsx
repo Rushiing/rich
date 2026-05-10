@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { api, Sector } from "../../lib/api";
 import UserChip from "../_components/UserChip";
+import ThemeToggle from "../_components/ThemeToggle";
 
 /**
  * Phase 8: industry-sector ranking. Backend pulls Sina's "新浪行业" (49
@@ -24,25 +25,26 @@ export default function SectorsPage() {
       <header style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
         <h1 style={{ fontSize: 18, margin: 0 }}>板块</h1>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <ThemeToggle />
           <UserChip />
           <a href="/stocks" style={linkStyle}>盯盘</a>
           <a href="/watchlist" style={linkStyle}>自选池</a>
         </div>
       </header>
 
-      <p style={{ color: "#888", fontSize: 12, marginTop: 12 }}>
+      <p style={{ color: "var(--text-muted)", fontSize: 12, marginTop: 12 }}>
         新浪行业划分，{sectors?.length ?? "—"} 个板块，按今日涨跌幅降序排列。
       </p>
 
       {err && <div style={{ color: "#ef4444", fontSize: 13, marginTop: 12 }}>{err}</div>}
 
       {!sectors ? (
-        <p style={{ color: "#666", marginTop: 24 }}>加载中…</p>
+        <p style={{ color: "var(--text-faint)", marginTop: 24 }}>加载中…</p>
       ) : (
         <div className="table-scroll" style={{ marginTop: 12 }}>
           <table style={tableStyle}>
             <thead>
-              <tr style={{ color: "#888", fontSize: 12 }}>
+              <tr style={{ color: "var(--text-muted)", fontSize: 12 }}>
                 <th style={{ ...th, textAlign: "right", width: 36 }}>#</th>
                 <th style={th}>板块</th>
                 <th style={{ ...th, textAlign: "right" }}>涨跌幅</th>
@@ -55,7 +57,7 @@ export default function SectorsPage() {
             <tbody>
               {sectors.map((s, i) => (
                 <tr key={s.code || s.name}>
-                  <td style={{ ...td, textAlign: "right", color: "#666", fontSize: 12 }}>
+                  <td style={{ ...td, textAlign: "right", color: "var(--text-faint)", fontSize: 12 }}>
                     {i + 1}
                   </td>
                   <td style={td}>
@@ -70,13 +72,13 @@ export default function SectorsPage() {
                   }}>
                     {s.change_pct >= 0 ? "+" : ""}{s.change_pct.toFixed(2)}%
                   </td>
-                  <td style={{ ...td, textAlign: "right", color: "#aaa", fontFamily: "monospace" }}>
+                  <td style={{ ...td, textAlign: "right", color: "var(--text-soft)", fontFamily: "monospace" }}>
                     {s.company_count}
                   </td>
-                  <td style={{ ...td, textAlign: "right", color: "#aaa", fontFamily: "monospace" }}>
+                  <td style={{ ...td, textAlign: "right", color: "var(--text-soft)", fontFamily: "monospace" }}>
                     {s.avg_price != null ? s.avg_price.toFixed(2) : "—"}
                   </td>
-                  <td style={{ ...td, textAlign: "right", color: "#aaa", fontFamily: "monospace" }}>
+                  <td style={{ ...td, textAlign: "right", color: "var(--text-soft)", fontFamily: "monospace" }}>
                     {fmtTurnover(s.total_turnover)}
                   </td>
                   <td style={td}>
@@ -91,7 +93,7 @@ export default function SectorsPage() {
                       >
                         <span style={{
                           fontFamily: "monospace",
-                          color: "#666",
+                          color: "var(--text-faint)",
                           marginRight: 6,
                         }}>
                           {s.leader.code}
@@ -108,7 +110,7 @@ export default function SectorsPage() {
                         </span>
                       </a>
                     ) : (
-                      <span style={{ color: "#444" }}>—</span>
+                      <span style={{ color: "var(--text-dim)" }}>—</span>
                     )}
                   </td>
                 </tr>
@@ -142,11 +144,11 @@ const tableStyle: React.CSSProperties = {
 const th: React.CSSProperties = {
   textAlign: "left",
   padding: "8px 10px",
-  borderBottom: "1px solid #222",
+  borderBottom: "1px solid var(--border-soft)",
   fontWeight: 500,
 };
 const td: React.CSSProperties = {
   padding: "10px",
-  borderBottom: "1px solid #1a1a1a",
+  borderBottom: "1px solid var(--border-faint)",
   fontSize: 13,
 };

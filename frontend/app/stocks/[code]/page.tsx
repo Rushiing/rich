@@ -70,7 +70,7 @@ export default function StockDetailPage({
       </header>
 
       {loading ? (
-        <p style={{ color: "#666", marginTop: 24 }}>加载中…</p>
+        <p style={{ color: "var(--text-faint)", marginTop: 24 }}>加载中…</p>
       ) : (
         <>
           {detail && <IndustryContextCard detail={detail} />}
@@ -124,7 +124,7 @@ function IndustryContextCard({ detail }: { detail: StockDetail }) {
       return (
         <span title={hint} style={{
           padding: "2px 8px", borderRadius: 4, fontSize: 11,
-          background: "#1a1a1a", color: "#444",
+          background: "var(--border-faint)", color: "var(--text-dim)",
         }}>{label}: —</span>
       );
     }
@@ -141,12 +141,12 @@ function IndustryContextCard({ detail }: { detail: StockDetail }) {
 
   return (
     <section style={{
-      marginTop: 16, padding: 14, border: "1px solid #2a2a2a",
-      borderRadius: 8, background: "#0f0f0f",
+      marginTop: 16, padding: 14, border: "1px solid var(--border)",
+      borderRadius: 8, background: "var(--surface-alt)",
     }}>
       <div style={{ display: "flex", gap: 12, alignItems: "baseline", flexWrap: "wrap" }}>
-        <span style={{ fontSize: 13, color: "#888" }}>所属行业</span>
-        <span style={{ fontSize: 14, color: "#e5e5e5" }}>
+        <span style={{ fontSize: 13, color: "var(--text-muted)" }}>所属行业</span>
+        <span style={{ fontSize: 14, color: "var(--text)" }}>
           {detail.industry_name ?? "未知"}
         </span>
       </div>
@@ -155,13 +155,13 @@ function IndustryContextCard({ detail }: { detail: StockDetail }) {
         {pctChip("3 日涨幅 分位", detail.industry_change_3d_pctile, "本股近 3 日涨幅在行业中的百分位（高=领跑）")}
         {pctChip("3 日资金 分位", detail.industry_flow_3d_pctile, "近 3 日主力净流入在行业中的百分位（高=被资金抢筹）")}
       </div>
-      <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "4px 16px", fontSize: 12, color: "#aaa" }}>
-        <div>3 日涨幅: <b style={{ color: "#e5e5e5", fontFamily: "monospace" }}>{fmtPct(detail.change_pct_3d)}</b></div>
-        <div>3 日换手: <b style={{ color: "#e5e5e5", fontFamily: "monospace" }}>{fmtPct(detail.turnover_rate_3d)}</b></div>
-        <div>3 日主力净流入: <b style={{ color: "#e5e5e5", fontFamily: "monospace" }}>{fmtFlow(detail.net_flow_3d)}</b></div>
-        <div>本股 PE / PB: <b style={{ color: "#e5e5e5", fontFamily: "monospace" }}>{detail.pe_ratio?.toFixed(1) ?? "—"} / {detail.pb_ratio?.toFixed(2) ?? "—"}</b></div>
-        <div>行业平均 PE: <b style={{ color: "#e5e5e5", fontFamily: "monospace" }}>{detail.industry_pe_avg?.toFixed(1) ?? "—"}</b></div>
-        <div>行业平均 PB: <b style={{ color: "#e5e5e5", fontFamily: "monospace" }}>{detail.industry_pb_avg?.toFixed(2) ?? "—"}</b></div>
+      <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "4px 16px", fontSize: 12, color: "var(--text-soft)" }}>
+        <div>3 日涨幅: <b style={{ color: "var(--text)", fontFamily: "monospace" }}>{fmtPct(detail.change_pct_3d)}</b></div>
+        <div>3 日换手: <b style={{ color: "var(--text)", fontFamily: "monospace" }}>{fmtPct(detail.turnover_rate_3d)}</b></div>
+        <div>3 日主力净流入: <b style={{ color: "var(--text)", fontFamily: "monospace" }}>{fmtFlow(detail.net_flow_3d)}</b></div>
+        <div>本股 PE / PB: <b style={{ color: "var(--text)", fontFamily: "monospace" }}>{detail.pe_ratio?.toFixed(1) ?? "—"} / {detail.pb_ratio?.toFixed(2) ?? "—"}</b></div>
+        <div>行业平均 PE: <b style={{ color: "var(--text)", fontFamily: "monospace" }}>{detail.industry_pe_avg?.toFixed(1) ?? "—"}</b></div>
+        <div>行业平均 PB: <b style={{ color: "var(--text)", fontFamily: "monospace" }}>{detail.industry_pb_avg?.toFixed(2) ?? "—"}</b></div>
       </div>
     </section>
   );
@@ -170,9 +170,9 @@ function IndustryContextCard({ detail }: { detail: StockDetail }) {
 
 function EmptyState({ onGenerate, generating, err }: { onGenerate: () => void; generating: boolean; err: string | null }) {
   return (
-    <div style={{ marginTop: 32, padding: 24, border: "1px solid #2a2a2a", borderRadius: 8, textAlign: "center" }}>
-      <p style={{ color: "#aaa", fontSize: 14, margin: 0 }}>尚未生成深度解析</p>
-      <p style={{ color: "#666", fontSize: 12, marginTop: 6 }}>
+    <div style={{ marginTop: 32, padding: 24, border: "1px solid var(--border)", borderRadius: 8, textAlign: "center" }}>
+      <p style={{ color: "var(--text-soft)", fontSize: 14, margin: 0 }}>尚未生成深度解析</p>
+      <p style={{ color: "var(--text-faint)", fontSize: 12, marginTop: 6 }}>
         生成会调一次 Claude API（基于该股票最新 snapshot），约 5–15 秒
       </p>
       <button
@@ -181,7 +181,7 @@ function EmptyState({ onGenerate, generating, err }: { onGenerate: () => void; g
         style={{
           marginTop: 16,
           padding: "8px 16px",
-          background: generating ? "#444" : "#3b82f6",
+          background: generating ? "var(--text-dim)" : "var(--link)",
           color: "white",
           border: "none",
           borderRadius: 6,
@@ -198,7 +198,7 @@ function EmptyState({ onGenerate, generating, err }: { onGenerate: () => void; g
 
 function FreshnessBar({ analysis, generating, onRegenerate }: { analysis: StockAnalysis; generating: boolean; onRegenerate: () => void }) {
   return (
-    <div style={{ marginTop: 16, display: "flex", alignItems: "center", justifyContent: "space-between", color: "#888", fontSize: 12 }}>
+    <div style={{ marginTop: 16, display: "flex", alignItems: "center", justifyContent: "space-between", color: "var(--text-muted)", fontSize: 12 }}>
       <span>
         生成于 {new Date(analysis.created_at).toLocaleString("zh-CN")}
         {!analysis.is_fresh && <span style={{ color: "#facc15", marginLeft: 8 }}>· 缓存已过期 (&gt;4h)</span>}
@@ -210,8 +210,8 @@ function FreshnessBar({ analysis, generating, onRegenerate }: { analysis: StockA
         style={{
           padding: "4px 10px",
           background: "transparent",
-          color: "#aaa",
-          border: "1px solid #333",
+          color: "var(--text-soft)",
+          border: "1px solid var(--border-mid)",
           borderRadius: 4,
           fontSize: 12,
           cursor: generating ? "not-allowed" : "pointer",
@@ -253,7 +253,7 @@ function KeyTableCard({ kt }: { kt: KeyTable }) {
   return (
     <section style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 12 }}>
       {/* Header card: actionable verdict + company portrait + red flags */}
-      <div style={{ padding: 16, background: "#141414", border: "1px solid #2a2a2a", borderRadius: 8 }}>
+      <div style={{ padding: 16, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8 }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
           <div style={{ fontSize: 22, fontWeight: 600, color: actionableColor }}>{view.action}</div>
           {kt.company_tag && (
@@ -293,10 +293,10 @@ function KeyTableCard({ kt }: { kt: KeyTable }) {
           control entirely so the layout stays the same. */}
       {tiers && (
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <span style={{ color: "#888", fontSize: 12 }}>风险偏好：</span>
+          <span style={{ color: "var(--text-muted)", fontSize: 12 }}>风险偏好：</span>
           <div style={{
             display: "inline-flex",
-            border: "1px solid #2a2a2a",
+            border: "1px solid var(--border)",
             borderRadius: 6,
             overflow: "hidden",
           }}>
@@ -310,7 +310,7 @@ function KeyTableCard({ kt }: { kt: KeyTable }) {
                   style={{
                     padding: "5px 14px",
                     background: active ? color : "transparent",
-                    color: active ? "#0a0a0a" : "#aaa",
+                    color: active ? "var(--bg)" : "var(--text-soft)",
                     border: "none",
                     fontSize: 12,
                     fontWeight: active ? 600 : 400,
@@ -322,7 +322,7 @@ function KeyTableCard({ kt }: { kt: KeyTable }) {
               );
             })}
           </div>
-          <span style={{ color: "#666", fontSize: 11 }}>
+          <span style={{ color: "var(--text-faint)", fontSize: 11 }}>
             （表里"建议仓位 / 合理买入价 / 持有时间"会跟着切）
           </span>
         </div>
@@ -332,8 +332,8 @@ function KeyTableCard({ kt }: { kt: KeyTable }) {
           was removed — every dimension was coming back at 5⭐ from the LLM,
           which is noise. We keep the synthesized "综合评级" inline below
           since that's the one risk signal that actually varies. */}
-      <div style={{ border: "1px solid #2a2a2a", borderRadius: 8, overflow: "hidden" }}>
-        <div style={{ padding: "10px 14px", background: "#0f0f0f", color: "#888", fontSize: 12 }}>关键数据</div>
+      <div style={{ border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+        <div style={{ padding: "10px 14px", background: "var(--surface-alt)", color: "var(--text-muted)", fontSize: 12 }}>关键数据</div>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <tbody>
             <KtRow label="合理买入价" value={`${view.buy_price_low.toFixed(2)} – ${view.buy_price_high.toFixed(2)}`} />
@@ -375,14 +375,14 @@ function NextDayOutlookCard({ outlook }: { outlook: NextDayOutlook }) {
     "#9ca3af";
 
   return (
-    <section style={{ border: "1px solid #2a2a2a", borderRadius: 8, overflow: "hidden" }}>
+    <section style={{ border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
       <div style={{
-        padding: "10px 14px", background: "#0f0f0f",
-        color: "#888", fontSize: 12,
+        padding: "10px 14px", background: "var(--surface-alt)",
+        color: "var(--text-muted)", fontSize: 12,
         display: "flex", alignItems: "center", gap: 8,
       }}>
         <span>次日走势预判</span>
-        <span style={{ color: "#444" }}>·</span>
+        <span style={{ color: "var(--text-dim)" }}>·</span>
         <span style={{ color: confidenceColor }}>置信度 {outlook.confidence}</span>
       </div>
       <div style={{ padding: "14px 16px" }}>
@@ -390,7 +390,7 @@ function NextDayOutlookCard({ outlook }: { outlook: NextDayOutlook }) {
           <span style={{ fontSize: 20, fontWeight: 600, color: trendColor }}>
             {outlook.trend}
           </span>
-          <span style={{ color: "#aaa", fontSize: 13, fontFamily: "monospace" }}>
+          <span style={{ color: "var(--text-soft)", fontSize: 13, fontFamily: "monospace" }}>
             目标区间 {outlook.target_low.toFixed(2)} – {outlook.target_high.toFixed(2)}
           </span>
         </div>
@@ -407,8 +407,8 @@ function NextDayOutlookCard({ outlook }: { outlook: NextDayOutlook }) {
 function KtRow({ label, value }: { label: string; value: string }) {
   return (
     <tr>
-      <td style={{ padding: "8px 14px", color: "#888", fontSize: 13, width: "45%", borderBottom: "1px solid #1a1a1a" }}>{label}</td>
-      <td style={{ padding: "8px 14px", fontSize: 14, fontFamily: "monospace", borderBottom: "1px solid #1a1a1a" }}>{value}</td>
+      <td style={{ padding: "8px 14px", color: "var(--text-muted)", fontSize: 13, width: "45%", borderBottom: "1px solid var(--border-faint)" }}>{label}</td>
+      <td style={{ padding: "8px 14px", fontSize: 14, fontFamily: "monospace", borderBottom: "1px solid var(--border-faint)" }}>{value}</td>
     </tr>
   );
 }
@@ -419,8 +419,8 @@ function StopLossCard({ levels }: { levels: StopLossLevel[] }) {
     label === "中线止损" ? "#facc15" :
     "#9ca3af";
   return (
-    <div style={{ border: "1px solid #2a2a2a", borderRadius: 8, overflow: "hidden" }}>
-      <div style={{ padding: "10px 14px", background: "#0f0f0f", color: "#888", fontSize: 12 }}>止损线</div>
+    <div style={{ border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+      <div style={{ padding: "10px 14px", background: "var(--surface-alt)", color: "var(--text-muted)", fontSize: 12 }}>止损线</div>
       <div>
         {levels.map((lv, i) => (
           <div
@@ -429,7 +429,7 @@ function StopLossCard({ levels }: { levels: StopLossLevel[] }) {
               display: "flex",
               alignItems: "center",
               padding: "10px 14px",
-              borderTop: i === 0 ? undefined : "1px solid #1a1a1a",
+              borderTop: i === 0 ? undefined : "1px solid var(--border-faint)",
               gap: 12,
             }}
           >
@@ -439,7 +439,7 @@ function StopLossCard({ levels }: { levels: StopLossLevel[] }) {
             <span style={{ fontFamily: "monospace", fontSize: 15, color: colorOf(lv.label), minWidth: 60 }}>
               {lv.price.toFixed(2)}
             </span>
-            <span style={{ color: "#aaa", fontSize: 13, lineHeight: 1.5 }}>{lv.reason}</span>
+            <span style={{ color: "var(--text-soft)", fontSize: 13, lineHeight: 1.5 }}>{lv.reason}</span>
           </div>
         ))}
       </div>
@@ -455,8 +455,8 @@ function ScenarioAdviceCard({ advice }: { advice: ScenarioAdvice }) {
     { label: "已持仓 · 大幅浮亏", text: advice.holding_big_loss },
   ];
   return (
-    <div style={{ border: "1px solid #2a2a2a", borderRadius: 8, overflow: "hidden" }}>
-      <div style={{ padding: "10px 14px", background: "#0f0f0f", color: "#888", fontSize: 12 }}>按持仓情境</div>
+    <div style={{ border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+      <div style={{ padding: "10px 14px", background: "var(--surface-alt)", color: "var(--text-muted)", fontSize: 12 }}>按持仓情境</div>
       <div>
         {items.map((it, i) => (
           <div
@@ -464,11 +464,11 @@ function ScenarioAdviceCard({ advice }: { advice: ScenarioAdvice }) {
             style={{
               display: "flex",
               padding: "10px 14px",
-              borderTop: i === 0 ? undefined : "1px solid #1a1a1a",
+              borderTop: i === 0 ? undefined : "1px solid var(--border-faint)",
               gap: 12,
             }}
           >
-            <span style={{ color: "#888", fontSize: 13, minWidth: 130 }}>{it.label}</span>
+            <span style={{ color: "var(--text-muted)", fontSize: 13, minWidth: 130 }}>{it.label}</span>
             <span style={{ color: "#d4d4d4", fontSize: 13, lineHeight: 1.5, flex: 1 }}>{it.text}</span>
           </div>
         ))}
@@ -479,7 +479,7 @@ function ScenarioAdviceCard({ advice }: { advice: ScenarioAdvice }) {
 
 function DeepAnalysis({ md }: { md: string }) {
   return (
-    <section style={{ marginTop: 16, padding: 16, border: "1px solid #2a2a2a", borderRadius: 8, lineHeight: 1.7, fontSize: 14 }}>
+    <section style={{ marginTop: 16, padding: 16, border: "1px solid var(--border)", borderRadius: 8, lineHeight: 1.7, fontSize: 14 }}>
       {renderMarkdown(md)}
     </section>
   );
@@ -487,7 +487,7 @@ function DeepAnalysis({ md }: { md: string }) {
 
 function Footnote({ analysis }: { analysis: StockAnalysis }) {
   return (
-    <p style={{ marginTop: 16, color: "#555", fontSize: 11, textAlign: "center" }}>
+    <p style={{ marginTop: 16, color: "var(--text-faint)", fontSize: 11, textAlign: "center" }}>
       策略 {analysis.strategy}
       {analysis.snapshot_id != null && <> · 基于 snapshot #{analysis.snapshot_id}</>}
       <br />
@@ -608,8 +608,8 @@ function renderMarkdown(md: string): ReactNode[] {
       return (
         <h3
           key={i}
-          style={{ fontSize: 15, margin: "20px 0 6px", color: "#e5e5e5",
-                   borderBottom: "1px solid #222", paddingBottom: 4 }}
+          style={{ fontSize: 15, margin: "20px 0 6px", color: "var(--text)",
+                   borderBottom: "1px solid var(--border-soft)", paddingBottom: 4 }}
         >
           {inline(b.text)}
         </h3>
@@ -633,7 +633,7 @@ function renderMarkdown(md: string): ReactNode[] {
             <tr>
               {b.header.map((h, j) => (
                 <th key={j} style={{ padding: "6px 12px", textAlign: "left",
-                                     borderBottom: "1px solid #333", color: "#aaa", fontWeight: 500 }}>
+                                     borderBottom: "1px solid var(--border-mid)", color: "var(--text-soft)", fontWeight: 500 }}>
                   {inline(h)}
                 </th>
               ))}
@@ -643,7 +643,7 @@ function renderMarkdown(md: string): ReactNode[] {
             {b.rows.map((row, ri) => (
               <tr key={ri}>
                 {row.map((cell, ci) => (
-                  <td key={ci} style={{ padding: "6px 12px", borderBottom: "1px solid #1a1a1a", color: "#d4d4d4" }}>
+                  <td key={ci} style={{ padding: "6px 12px", borderBottom: "1px solid var(--border-faint)", color: "#d4d4d4" }}>
                     {inline(cell)}
                   </td>
                 ))}

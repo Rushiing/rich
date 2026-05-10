@@ -3,6 +3,7 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { api, AnalysisBrief, StockRow } from "../../lib/api";
 import UserChip from "../_components/UserChip";
+import ThemeToggle from "../_components/ThemeToggle";
 
 // While a snapshot job is running we re-pull /api/stocks at this cadence so
 // rows surface as their data lands. 5s feels responsive without hammering.
@@ -341,6 +342,7 @@ export default function StocksPage() {
       <header style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
         <h1 style={{ fontSize: 18, margin: 0 }}>盯盘</h1>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <ThemeToggle />
           <UserChip />
           <a href="/sectors" style={primaryLinkBtn}>板块</a>
           <a href="/watchlist" style={primaryLinkBtn}>自选池</a>
@@ -358,12 +360,12 @@ export default function StocksPage() {
       </header>
 
       {msg && (
-        <div style={{ marginTop: 12, color: "#aaa", fontSize: 13 }}>{msg}</div>
+        <div style={{ marginTop: 12, color: "var(--text-soft)", fontSize: 13 }}>{msg}</div>
       )}
 
       <ActionableFilter rows={rows} value={filter} onChange={setFilter} />
 
-      <div style={{ marginTop: 8, color: "#888", fontSize: 13 }}>
+      <div style={{ marginTop: 8, color: "var(--text-muted)", fontSize: 13 }}>
         {filter === null ? `共 ${rows.length} 支` : `${visibleRows.length} / ${rows.length} 支`}
         {starredCount > 0 && (
           <span style={{ marginLeft: 12 }}>
@@ -383,7 +385,7 @@ export default function StocksPage() {
           </span>
         )}
         {filter === null && (
-          <span style={{ marginLeft: 12, color: "#666" }}>
+          <span style={{ marginLeft: 12, color: "var(--text-faint)" }}>
             点分组标题可折叠
           </span>
         )}
@@ -392,7 +394,7 @@ export default function StocksPage() {
       <div className="table-scroll">
       <table style={tableStyle}>
         <thead>
-          <tr style={{ color: "#888", fontSize: 12 }}>
+          <tr style={{ color: "var(--text-muted)", fontSize: 12 }}>
             <th style={{ ...th, width: 28 }} aria-label="特别关注"></th>
             <th style={th}>代码</th>
             <th style={th}>名称</th>
@@ -409,16 +411,16 @@ export default function StocksPage() {
         <tbody>
           {loading && (
             <tr>
-              <td colSpan={11} style={{ ...td, textAlign: "center", color: "#666" }}>
+              <td colSpan={11} style={{ ...td, textAlign: "center", color: "var(--text-faint)" }}>
                 加载中…
               </td>
             </tr>
           )}
           {!loading && rows.length === 0 && (
             <tr>
-              <td colSpan={11} style={{ ...td, textAlign: "center", color: "#666" }}>
+              <td colSpan={11} style={{ ...td, textAlign: "center", color: "var(--text-faint)" }}>
                 自选池为空，先去
-                <a href="/watchlist" style={{ color: "#3b82f6", marginLeft: 4 }}>
+                <a href="/watchlist" style={{ color: "var(--link)", marginLeft: 4 }}>
                   导入股票
                 </a>
                 ；导入后点右上角"手动抓取"或等下个整点
@@ -427,7 +429,7 @@ export default function StocksPage() {
           )}
           {!loading && rows.length > 0 && filter !== null && visibleRows.length === 0 && (
             <tr>
-              <td colSpan={11} style={{ ...td, textAlign: "center", color: "#666" }}>
+              <td colSpan={11} style={{ ...td, textAlign: "center", color: "var(--text-faint)" }}>
                 当前筛选下没有股票
               </td>
             </tr>
@@ -443,22 +445,22 @@ export default function StocksPage() {
               <Fragment key={key}>
                 <tr
                   onClick={() => toggleGroup(key)}
-                  style={{ cursor: "pointer", background: "#0a0a0a" }}
+                  style={{ cursor: "pointer", background: "var(--bg)" }}
                 >
                   <td colSpan={11} style={{
                     padding: "8px 10px",
-                    borderTop: "1px solid #222",
-                    borderBottom: "1px solid #222",
+                    borderTop: "1px solid var(--border-soft)",
+                    borderBottom: "1px solid var(--border-soft)",
                     fontSize: 12,
                     userSelect: "none",
                   }}>
-                    <span style={{ display: "inline-block", width: 14, color: "#666" }}>
+                    <span style={{ display: "inline-block", width: 14, color: "var(--text-faint)" }}>
                       {isCollapsed ? "▸" : "▾"}
                     </span>
                     <span style={{ color, fontWeight: 600, marginRight: 8 }}>
                       {label}
                     </span>
-                    <span style={{ color: "#888" }}>({groupRows.length})</span>
+                    <span style={{ color: "var(--text-muted)" }}>({groupRows.length})</span>
                   </td>
                 </tr>
                 {!isCollapsed && groupRows.map((r) => stockRow(r, toggleStar))}
@@ -517,9 +519,9 @@ function ActionableFilter({
               padding: "4px 10px",
               fontSize: 12,
               borderRadius: 14,
-              border: `1px solid ${active ? accent : "#2a2a2a"}`,
+              border: `1px solid ${active ? accent : "var(--border)"}`,
               background: active ? hexA(accent, 0.18) : "transparent",
-              color: active ? accent : b.count === 0 ? "#555" : "#aaa",
+              color: active ? accent : b.count === 0 ? "var(--text-faint)" : "var(--text-soft)",
               cursor: "pointer",
               transition: "all 0.15s",
             }}
@@ -534,7 +536,7 @@ function ActionableFilter({
 
 function ActionableCell({ analysis }: { analysis: AnalysisBrief | null }) {
   if (!analysis || !analysis.actionable) {
-    return <span style={{ color: "#444", fontSize: 12 }}>待生成</span>;
+    return <span style={{ color: "var(--text-dim)", fontSize: 12 }}>待生成</span>;
   }
   const style = ACTIONABLE_STYLE[analysis.actionable] ?? {
     color: "#9ca3af",
@@ -573,7 +575,7 @@ function ActionableCell({ analysis }: { analysis: AnalysisBrief | null }) {
           </span>
         )}
         {!analysis.is_fresh && (
-          <span style={{ color: "#666", fontSize: 10 }} title="生成时间已超过 4 小时">已过期</span>
+          <span style={{ color: "var(--text-faint)", fontSize: 10 }} title="生成时间已超过 4 小时">已过期</span>
         )}
       </div>
       {analysis.company_tag && (
@@ -582,7 +584,7 @@ function ActionableCell({ analysis }: { analysis: AnalysisBrief | null }) {
         </span>
       )}
       {analysis.one_line_reason && (
-        <span style={{ color: "#777", fontSize: 11, lineHeight: 1.4 }}>
+        <span style={{ color: "var(--text-muted)", fontSize: 11, lineHeight: 1.4 }}>
           {analysis.one_line_reason}
         </span>
       )}
@@ -617,7 +619,7 @@ function stockRow(r: StockRow, onToggleStar: (code: string) => void) {
             padding: 2,
             fontSize: 14,
             cursor: "pointer",
-            color: r.starred ? "#facc15" : "#3a3a3a",
+            color: r.starred ? "#facc15" : "var(--text-dim)",
             lineHeight: 1,
           }}
         >
@@ -625,7 +627,7 @@ function stockRow(r: StockRow, onToggleStar: (code: string) => void) {
         </button>
       </td>
       <td style={{ ...td, fontFamily: "monospace" }}>
-        <span style={{ color: "#666", marginRight: 4 }}>{exchangeLabel[r.exchange] || ""}</span>
+        <span style={{ color: "var(--text-faint)", marginRight: 4 }}>{exchangeLabel[r.exchange] || ""}</span>
         {r.code}
       </td>
       <td style={td}>{r.name}</td>
@@ -633,7 +635,7 @@ function stockRow(r: StockRow, onToggleStar: (code: string) => void) {
         ...td,
         textAlign: "right",
         fontFamily: "monospace",
-        color: r.change_pct == null ? "#888" : r.change_pct >= 0 ? "#ef4444" : "#22c55e",
+        color: r.change_pct == null ? "var(--text-muted)" : r.change_pct >= 0 ? "#ef4444" : "#22c55e",
       }}>
         {r.change_pct != null ? `${r.change_pct >= 0 ? "+" : ""}${r.change_pct.toFixed(2)}%` : "-"}
       </td>
@@ -641,14 +643,14 @@ function stockRow(r: StockRow, onToggleStar: (code: string) => void) {
         ...td,
         textAlign: "right",
         fontFamily: "monospace",
-        color: r.change_pct_3d == null ? "#888" : r.change_pct_3d >= 0 ? "#ef4444" : "#22c55e",
+        color: r.change_pct_3d == null ? "var(--text-muted)" : r.change_pct_3d >= 0 ? "#ef4444" : "#22c55e",
       }}>
         {r.change_pct_3d != null ? `${r.change_pct_3d >= 0 ? "+" : ""}${r.change_pct_3d.toFixed(2)}%` : "-"}
       </td>
-      <td style={{ ...td, textAlign: "right", fontFamily: "monospace", color: "#aaa" }}>
+      <td style={{ ...td, textAlign: "right", fontFamily: "monospace", color: "var(--text-soft)" }}>
         {r.turnover_rate_3d != null ? `${r.turnover_rate_3d.toFixed(1)}%` : "-"}
       </td>
-      <td style={{ ...td, textAlign: "right", fontFamily: "monospace", color: "#aaa" }}>
+      <td style={{ ...td, textAlign: "right", fontFamily: "monospace", color: "var(--text-soft)" }}>
         {fmtFlow(r.net_flow_3d)}
       </td>
       <td style={td}>
@@ -657,11 +659,11 @@ function stockRow(r: StockRow, onToggleStar: (code: string) => void) {
       <td style={td}>
         <ActionableCell analysis={r.analysis} />
       </td>
-      <td style={{ ...td, color: "#666", fontSize: 12 }}>
+      <td style={{ ...td, color: "var(--text-faint)", fontSize: 12 }}>
         {r.last_ts ? new Date(r.last_ts).toLocaleString("zh-CN", { hour: "2-digit", minute: "2-digit", month: "numeric", day: "numeric" }) : "未抓取"}
       </td>
       <td style={{ ...td, textAlign: "right" }}>
-        <a href={`/stocks/${r.code}`} style={{ color: "#3b82f6", fontSize: 12, textDecoration: "none" }}>
+        <a href={`/stocks/${r.code}`} style={{ color: "var(--link)", fontSize: 12, textDecoration: "none" }}>
           解析 →
         </a>
       </td>
@@ -678,12 +680,12 @@ function IndustryWaterCell({ row }: { row: StockRow }) {
   // None of the three having a value (cold start) → just industry name.
   if (!row.industry_name && row.industry_pe_pctile == null
       && row.industry_change_3d_pctile == null && row.industry_flow_3d_pctile == null) {
-    return <span style={{ color: "#444" }}>–</span>;
+    return <span style={{ color: "var(--text-dim)" }}>–</span>;
   }
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
       {row.industry_name && (
-        <span style={{ color: "#aaa", fontSize: 11 }}>{row.industry_name}</span>
+        <span style={{ color: "var(--text-soft)", fontSize: 11 }}>{row.industry_name}</span>
       )}
       <div style={{ display: "flex", gap: 3 }}>
         <PctChip label="估" value={row.industry_pe_pctile} hint="PE 行业分位" />
@@ -699,7 +701,7 @@ function PctChip({ label, value, hint }: { label: string; value: number | null; 
     return (
       <span title={hint} style={{
         padding: "1px 5px", borderRadius: 3, fontSize: 10,
-        background: "#1a1a1a", color: "#444", letterSpacing: 0.5,
+        background: "var(--border-faint)", color: "var(--text-dim)", letterSpacing: 0.5,
       }}>{label}–</span>
     );
   }
@@ -729,7 +731,7 @@ function fmtFlow(yuan: number | null): string {
 const primaryLinkBtn: React.CSSProperties = {
   display: "inline-block",
   padding: "6px 14px",
-  background: "#3b82f6",
+  background: "var(--link)",
   color: "white",
   border: "none",
   borderRadius: 6,
@@ -741,8 +743,8 @@ const primaryLinkBtn: React.CSSProperties = {
 const ghostBtn: React.CSSProperties = {
   padding: "6px 12px",
   background: "transparent",
-  color: "#aaa",
-  border: "1px solid #333",
+  color: "var(--text-soft)",
+  border: "1px solid var(--border-mid)",
   borderRadius: 6,
   fontSize: 13,
   cursor: "pointer",
@@ -755,12 +757,12 @@ const tableStyle: React.CSSProperties = {
 const th: React.CSSProperties = {
   textAlign: "left",
   padding: "8px 10px",
-  borderBottom: "1px solid #222",
+  borderBottom: "1px solid var(--border-soft)",
   fontWeight: 500,
 };
 const td: React.CSSProperties = {
   padding: "10px",
-  borderBottom: "1px solid #1a1a1a",
+  borderBottom: "1px solid var(--border-faint)",
   fontSize: 13,
 };
 const rowStrong: React.CSSProperties = {
@@ -773,7 +775,7 @@ function signalChip(strong: boolean): React.CSSProperties {
     marginRight: 4,
     borderRadius: 3,
     background: strong ? "rgba(239, 68, 68, 0.2)" : "rgba(255,255,255,0.05)",
-    color: strong ? "#fca5a5" : "#aaa",
+    color: strong ? "#fca5a5" : "var(--text-soft)",
     fontSize: 11,
   };
 }

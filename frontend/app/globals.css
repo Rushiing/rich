@@ -1,5 +1,89 @@
-/* Global resets + mobile responsive helpers. Inline styles handle layout per
-   component; this file owns media queries (which can't live in inline style). */
+/* Global resets + responsive helpers + theme variables.
+ *
+ * Theme strategy:
+ *   - Default token values target dark.
+ *   - @media (prefers-color-scheme: light) flips to light when the system asks.
+ *   - [data-theme="dark"] / [data-theme="light"] on <html> overrides explicitly
+ *     when the user picks via ThemeToggle (writes localStorage.theme).
+ *
+ * The boot script in layout.tsx runs synchronously before paint to set
+ * data-theme so we don't flash the "wrong" theme on hard refresh. Inline
+ * styles across components reference these vars via var(--xxx).
+ *
+ * What stays HARDCODED (not themed):
+ *   - A股语义色: red=#ef4444 (涨/buy), green=#22c55e (跌/sell), yellow=#facc15 (star).
+ *     These mean specific things; flipping them would break the read.
+ */
+
+:root,
+[data-theme="dark"] {
+  --bg: #0a0a0a;
+  --surface: #141414;
+  --surface-alt: #0f0f0f;
+
+  --border: #2a2a2a;
+  --border-mid: #333;
+  --border-soft: #222;
+  --border-faint: #1a1a1a;
+
+  --text: #e5e5e5;
+  --text-soft: #aaa;
+  --text-muted: #888;
+  --text-faint: #666;
+  --text-dim: #444;
+
+  --link: #3b82f6;
+  --row-strong-bg: rgba(239, 68, 68, 0.08);
+
+  /* opacity tints — actionable chip backgrounds, etc. */
+  --tint-alpha: 0.18;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #fafafa;
+    --surface: #ffffff;
+    --surface-alt: #f5f5f5;
+
+    --border: #d4d4d4;
+    --border-mid: #c4c4c4;
+    --border-soft: #e2e2e2;
+    --border-faint: #ececec;
+
+    --text: #1a1a1a;
+    --text-soft: #525252;
+    --text-muted: #737373;
+    --text-faint: #999999;
+    --text-dim: #b8b8b8;
+
+    --link: #2563eb;
+    --row-strong-bg: rgba(239, 68, 68, 0.07);
+
+    --tint-alpha: 0.14;
+  }
+}
+
+[data-theme="light"] {
+  --bg: #fafafa;
+  --surface: #ffffff;
+  --surface-alt: #f5f5f5;
+
+  --border: #d4d4d4;
+  --border-mid: #c4c4c4;
+  --border-soft: #e2e2e2;
+  --border-faint: #ececec;
+
+  --text: #1a1a1a;
+  --text-soft: #525252;
+  --text-muted: #737373;
+  --text-faint: #999999;
+  --text-dim: #b8b8b8;
+
+  --link: #2563eb;
+  --row-strong-bg: rgba(239, 68, 68, 0.07);
+
+  --tint-alpha: 0.14;
+}
 
 * {
   box-sizing: border-box;
@@ -8,6 +92,8 @@
 html, body {
   margin: 0;
   padding: 0;
+  background: var(--bg);
+  color: var(--text);
 }
 
 /* Tighten up vertical rhythm on small screens. */
@@ -28,7 +114,7 @@ html, body {
 .table-scroll {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
-  margin: 0 -4px;  /* let the scrollbar hug the edges on narrow screens */
+  margin: 0 -4px;
 }
 
 /* Mobile-friendly tap targets. */
@@ -37,7 +123,6 @@ button {
   -webkit-tap-highlight-color: rgba(255,255,255,0.05);
 }
 
-/* Make sure text doesn't get tiny in detail/markdown sections on phones. */
 @media (max-width: 640px) {
   body {
     font-size: 14px;

@@ -111,7 +111,7 @@ export default function LoginPage() {
         }}
       >
         <h1 style={{ fontSize: 22, margin: 0 }}>rich</h1>
-        <p style={{ margin: 0, color: "#888", fontSize: 13 }}>
+        <p style={{ margin: 0, color: "var(--text-muted)", fontSize: 13 }}>
           {step === "phone"
             ? "输入手机号，我们会发送验证码"
             : `验证码已发送至 ${phone}`}
@@ -158,7 +158,7 @@ export default function LoginPage() {
                 onClick={() => sendCode()}
                 style={{
                   background: "transparent", border: "none",
-                  color: cooldown > 0 ? "#555" : "#3b82f6",
+                  color: cooldown > 0 ? "var(--text-faint)" : "var(--link)",
                   padding: 0, cursor: cooldown > 0 ? "not-allowed" : "pointer",
                 }}
               >
@@ -182,7 +182,7 @@ export default function LoginPage() {
           disabled={busy || (step === "phone" ? !phone : !code)}
           style={{
             padding: "10px 12px",
-            background: busy ? "#444" : "#3b82f6",
+            background: busy ? "var(--text-dim)" : "var(--link)",
             color: "white",
             border: "none",
             borderRadius: 6,
@@ -202,10 +202,10 @@ export default function LoginPage() {
 
 const inputStyle: React.CSSProperties = {
   padding: "10px 12px",
-  background: "#1a1a1a",
-  border: "1px solid #333",
+  background: "var(--border-faint)",
+  border: "1px solid var(--border-mid)",
   borderRadius: 6,
-  color: "#e5e5e5",
+  color: "var(--text)",
   fontSize: 14,
   letterSpacing: 1,
 };
