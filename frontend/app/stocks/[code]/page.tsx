@@ -2,7 +2,7 @@
 
 import { use, useEffect, useState, type ReactNode } from "react";
 import {
-  api, ActionableTier, ActionableTiers, KeyTable, NextDayOutlook, RiskScores,
+  api, ActionableTier, ActionableTiers, KeyTable, NextDayOutlook,
   ScenarioAdvice, StockAnalysis, StockDetail, StopLossLevel,
 } from "../../../lib/api";
 
@@ -12,17 +12,6 @@ const TIER_DEFS: { key: TierKey; label: string; color: string }[] = [
   { key: "neutral",      label: "中立", color: "#9ca3af" },
   { key: "conservative", label: "保守", color: "#22c55e" },
 ];
-
-const RISK_DIM_LABEL: Record<keyof Omit<RiskScores, "overall">, string> = {
-  fundamentals: "基本面",
-  valuation: "估值",
-  earnings_momentum: "业绩兑现",
-  industry: "行业景气度",
-  governance: "公司治理",
-  price_action: "股价表现",
-  capital: "资金面",
-  thematic: "题材炒作",
-};
 
 export default function StockDetailPage({
   params,
@@ -213,7 +202,7 @@ function FreshnessBar({ analysis, generating, onRegenerate }: { analysis: StockA
       <span>
         生成于 {new Date(analysis.created_at).toLocaleString("zh-CN")}
         {!analysis.is_fresh && <span style={{ color: "#facc15", marginLeft: 8 }}>· 缓存已过期 (&gt;4h)</span>}
-        <span style={{ marginLeft: 8 }}>· 模型 {analysis.model}</span>
+        {/* Model name intentionally hidden from end users. */}
       </span>
       <button
         onClick={onRegenerate}
@@ -339,24 +328,24 @@ function KeyTableCard({ kt }: { kt: KeyTable }) {
         </div>
       )}
 
-      {/* Two-column: key prices/positions on left, risk scorecard on right */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <div style={{ border: "1px solid #2a2a2a", borderRadius: 8, overflow: "hidden" }}>
-          <div style={{ padding: "10px 14px", background: "#0f0f0f", color: "#888", fontSize: 12 }}>关键数据</div>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <tbody>
-              <KtRow label="合理买入价" value={`${view.buy_price_low.toFixed(2)} – ${view.buy_price_high.toFixed(2)}`} />
-              <KtRow label="合理卖出价" value={`${kt.sell_price_low.toFixed(2)} – ${kt.sell_price_high.toFixed(2)}`} />
-              <KtRow label="建议仓位" value={`${view.position_pct.toFixed(0)}%`} />
-              <KtRow label="持有时间" value={view.hold_period} />
-              <KtRow label="置信度" value={kt.confidence} />
-              {kt.risk_scores?.overall && (
-                <KtRow label="综合评级" value={kt.risk_scores.overall} />
-              )}
-            </tbody>
-          </table>
-        </div>
-        {kt.risk_scores && <RiskScoreCard scores={kt.risk_scores} />}
+      {/* Key prices / positions table. The eight-dimension star scorecard
+          was removed — every dimension was coming back at 5⭐ from the LLM,
+          which is noise. We keep the synthesized "综合评级" inline below
+          since that's the one risk signal that actually varies. */}
+      <div style={{ border: "1px solid #2a2a2a", borderRadius: 8, overflow: "hidden" }}>
+        <div style={{ padding: "10px 14px", background: "#0f0f0f", color: "#888", fontSize: 12 }}>关键数据</div>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <tbody>
+            <KtRow label="合理买入价" value={`${view.buy_price_low.toFixed(2)} – ${view.buy_price_high.toFixed(2)}`} />
+            <KtRow label="合理卖出价" value={`${kt.sell_price_low.toFixed(2)} – ${kt.sell_price_high.toFixed(2)}`} />
+            <KtRow label="建议仓位" value={`${view.position_pct.toFixed(0)}%`} />
+            <KtRow label="持有时间" value={view.hold_period} />
+            <KtRow label="置信度" value={kt.confidence} />
+            {kt.risk_scores?.overall && (
+              <KtRow label="综合评级" value={kt.risk_scores.overall} />
+            )}
+          </tbody>
+        </table>
       </div>
 
       {/* Phase 9: next-day price outlook (technical + capital + news driven) */}
@@ -421,26 +410,6 @@ function KtRow({ label, value }: { label: string; value: string }) {
       <td style={{ padding: "8px 14px", color: "#888", fontSize: 13, width: "45%", borderBottom: "1px solid #1a1a1a" }}>{label}</td>
       <td style={{ padding: "8px 14px", fontSize: 14, fontFamily: "monospace", borderBottom: "1px solid #1a1a1a" }}>{value}</td>
     </tr>
-  );
-}
-
-function RiskScoreCard({ scores }: { scores: RiskScores }) {
-  const dims = Object.entries(RISK_DIM_LABEL) as [keyof typeof RISK_DIM_LABEL, string][];
-  return (
-    <div style={{ border: "1px solid #2a2a2a", borderRadius: 8, overflow: "hidden" }}>
-      <div style={{ padding: "10px 14px", background: "#0f0f0f", color: "#888", fontSize: 12 }}>风险评分</div>
-      <div style={{ padding: 4 }}>
-        {dims.map(([key, label]) => (
-          <div key={key} style={{ display: "flex", alignItems: "center", padding: "6px 10px" }}>
-            <span style={{ color: "#888", fontSize: 13, flex: 1 }}>{label}</span>
-            <span style={{ fontSize: 13, color: "#facc15", letterSpacing: 1 }}>
-              {"⭐".repeat(scores[key])}
-              <span style={{ color: "#333" }}>{"⭐".repeat(5 - scores[key])}</span>
-            </span>
-          </div>
-        ))}
-      </div>
-    </div>
   );
 }
 
