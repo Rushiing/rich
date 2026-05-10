@@ -35,13 +35,13 @@ def detect_exchange(code: str) -> str:
 
     上交所: 60xxxx, 688xxx (科创板), 689xxx
     深交所: 00xxxx, 002xxx, 003xxx, 30xxxx (创业板)
-    北交所: 8xxxxx, 4xxxxx
+    北交所: 8xxxxx, 4xxxxx, 920xxx (新前缀, 2024 起)
     """
     if code.startswith(("60", "68")):
         return "sh"
     if code.startswith(("00", "30")):
         return "sz"
-    if code.startswith(("8", "4")):
+    if code.startswith(("8", "4", "92")):
         return "bj"
     return "unknown"
 

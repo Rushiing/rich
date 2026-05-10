@@ -40,7 +40,8 @@ def _sina_symbol(code: str) -> str:
         return "sh" + code
     if code.startswith(("00", "30")):
         return "sz" + code
-    if code.startswith(("8", "4")):
+    # 北交所: 8xxxxx / 4xxxxx 老段, 920xxx 新段 (2024 起)
+    if code.startswith(("8", "4", "92")):
         return "bj" + code
     return code  # let sina reject if it doesn't recognize
 
@@ -128,7 +129,8 @@ def _tencent_symbol(code: str) -> str:
         return "sh" + code
     if code.startswith(("00", "30")):
         return "sz" + code
-    if code.startswith(("8", "4")):
+    # 北交所: 8xxxxx / 4xxxxx 老段, 920xxx 新段 (2024 起)
+    if code.startswith(("8", "4", "92")):
         return "bj" + code
     return code
 
