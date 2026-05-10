@@ -204,6 +204,24 @@ class IndustryMeta(Base):
     )
 
 
+class SectorPicks(Base):
+    """LLM-curated daily sector recommendations.
+
+    One row only — id is fixed at 1 and we replace the row each refresh.
+    `payload` carries the full structured pick result (top N sectors × K
+    picks each, with per-sector and per-stock reasons). TTL check happens
+    in the route based on `generated_at`.
+    """
+    __tablename__ = "sector_picks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    model: Mapped[str] = mapped_column(String(50), nullable=False)
+
+
 class Analysis(Base):
     """Cached LLM-generated analysis for a stock. One row per code (latest only)."""
 
