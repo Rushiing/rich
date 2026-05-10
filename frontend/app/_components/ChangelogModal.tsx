@@ -17,7 +17,12 @@ import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { CHANGELOG, LATEST_CHANGELOG } from "../../lib/changelog";
 
-const STORAGE_KEY = "changelog_seen";
+// Bumped to v2 (2026-05-10 evening) — the 5/10 entry was rewritten that
+// same day to reflect the password + invite-code auth (replacing the
+// earlier SMS-only description). Bumping the key forces a re-pop so users
+// who had dismissed v1 see the corrected/expanded notes on next visit.
+// Future content-only edits to existing entries: bump again.
+const STORAGE_KEY = "changelog_seen_v2";
 
 export default function ChangelogModal() {
   const pathname = usePathname();
