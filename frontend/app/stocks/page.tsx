@@ -354,7 +354,7 @@ export default function StocksPage() {
           <ThemeToggle />
           <UserChip />
           <a href="/sectors" style={primaryLinkBtn}>板块</a>
-          <a href="/watchlist" style={primaryLinkBtn}>自选池</a>
+          <a href="/watchlist" style={primaryLinkBtn}>自选池管理</a>
           <a href="/changelog" style={primaryLinkBtn}>更新日志</a>
           <button onClick={batchAnalyze} disabled={analyzing} style={ghostBtn}>
             {analyzing
