@@ -82,34 +82,55 @@ def cmd_invite_create(args):
     expires_at = None
     if args.expires_in_days:
         expires_at = datetime.now(timezone.utc) + timedelta(days=args.expires_in_days)
+    # Resolve max_uses: --unlimited → NULL, --max-uses N → N, else default 1
+    if args.unlimited:
+        max_uses = None
+    elif args.max_uses is not None:
+        if args.max_uses < 1:
+            print("ERROR: --max-uses must be >= 1", file=sys.stderr)
+            sys.exit(2)
+        max_uses = args.max_uses
+    else:
+        max_uses = 1
     with SessionLocal() as db:
         existing = db.query(InviteCode).filter(InviteCode.code == code).first()
         if existing:
             print(f"ERROR: code {code} already exists", file=sys.stderr)
             sys.exit(1)
-        row = InviteCode(code=code, expires_at=expires_at, note=args.note)
+        row = InviteCode(
+            code=code, expires_at=expires_at, note=args.note,
+            max_uses=max_uses,
+        )
         db.add(row)
         db.commit()
     note_part = f"  note={args.note!r}" if args.note else ""
     exp_part = f"  expires={expires_at.strftime('%Y-%m-%d %H:%M')}" if expires_at else "  no expiry"
-    print(f"OK: invite code {code}{note_part}{exp_part}")
+    uses_part = "  unlimited uses" if max_uses is None else f"  max_uses={max_uses}"
+    print(f"OK: invite code {code}{uses_part}{note_part}{exp_part}")
 
 
 def cmd_invite_list(args):
     with SessionLocal() as db:
         q = db.query(InviteCode)
         if args.unused:
-            q = q.filter(InviteCode.used_at.is_(None))
+            # "unused" now means "still has redemptions left" — for legacy
+            # one-shot semantics we check current_uses < max_uses (or
+            # max_uses NULL = unlimited).
+            q = q.filter(
+                (InviteCode.max_uses.is_(None)) |
+                (InviteCode.current_uses < InviteCode.max_uses)
+            )
         rows = q.order_by(InviteCode.created_at.desc()).all()
         if not rows:
             print("(no invite codes)")
             return
-        print(f"{'code':<10}  {'used':<4}  {'note':<14}  expires_at")
+        print(f"{'code':<10}  {'uses':<10}  {'note':<14}  expires_at")
         for r in rows:
-            used = "yes" if r.used_at else "—"
+            cap = "∞" if r.max_uses is None else str(r.max_uses)
+            uses = f"{r.current_uses or 0}/{cap}"
             note = (r.note or "")[:14]
             exp = r.expires_at.strftime("%Y-%m-%d") if r.expires_at else "—"
-            print(f"{r.code:<10}  {used:<4}  {note:<14}  {exp}")
+            print(f"{r.code:<10}  {uses:<10}  {note:<14}  {exp}")
 
 
 def main():
@@ -130,6 +151,10 @@ def main():
     inv_create.add_argument("--code", help="custom code (default: random 8 chars)")
     inv_create.add_argument("--note", help="who is this for / why")
     inv_create.add_argument("--expires-in-days", type=int, help="expiry in N days (no default)")
+    uses_group = inv_create.add_mutually_exclusive_group()
+    uses_group.add_argument("--unlimited", action="store_true",
+                            help="code can be redeemed unlimited times (通用邀请码)")
+    uses_group.add_argument("--max-uses", type=int, help="cap redemptions at N (default 1, one-shot)")
     inv_create.set_defaults(func=cmd_invite_create)
 
     inv_list = inv_sub.add_parser("list", help="list invite codes")

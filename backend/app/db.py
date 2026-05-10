@@ -60,6 +60,11 @@ _POSTGRES_BACKFILL = [
     # Phase 6.5: password auth — existing rows stay NULL until the admin
     # reset script populates them.
     ("users",     "password_hash",            "VARCHAR(128)"),
+    # Phase 6.5b: shared invite codes — max_uses NULL = unlimited reuse,
+    # current_uses counts redemptions. Existing one-shot rows default to
+    # max_uses=1 (matching old behavior).
+    ("invite_codes", "max_uses",     "INTEGER"),
+    ("invite_codes", "current_uses", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 

@@ -41,17 +41,17 @@ class User(Base):
 
 
 class InviteCode(Base):
-    """One-shot invite codes for self-service registration.
+    """Invite codes for self-service registration.
 
-    Workflow:
-      - Admin generates a code via the CLI script `backend/admin_invite.py`
-      - Hands the string to a friend out-of-band (im, voice, paper)
-      - Friend hits /register with phone + password + code
-      - Code marked used (used_by_user_id, used_at populated); not reusable
+    Two modes:
+      - one-shot (max_uses=1, default): a single registration consumes it
+      - shared (max_uses=NULL or N>1): unlimited or N reuses, e.g. one
+        general code that gets shared in a group chat
 
-    Codes can carry an optional `expires_at` for time-bounded invites.
-    `created_by_user_id` is informational only — admin tooling reads it
-    to show "who issued this".
+    `current_uses` counts how many times the code has been redeemed;
+    `used_at` / `used_by_user_id` record the FIRST consumer (kept for
+    audit, repurposed for backwards compat with the one-shot rows
+    created before this column existed).
     """
     __tablename__ = "invite_codes"
 
@@ -65,14 +65,21 @@ class InviteCode(Base):
     expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True,
     )
+    # First-use audit. NULL until the code is first redeemed.
     used_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True,
     )
     used_by_user_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
     )
+    # NULL = unlimited reuse, integer N = up to N redemptions.
+    # Default 1 preserves the original one-shot behavior.
+    max_uses: Mapped[int | None] = mapped_column(Integer, nullable=True, default=1)
+    current_uses: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0",
+    )
     # Optional human-readable label so the issuer remembers who they
-    # handed the code to (e.g. "for 老王").
+    # handed the code to (e.g. "for 老王" or "通用邀请码 v1").
     note: Mapped[str | None] = mapped_column(String(60), nullable=True)
 
 

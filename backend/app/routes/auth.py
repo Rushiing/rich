@@ -81,13 +81,16 @@ def register(body: RegisterRequest, response: Response, db: Session = Depends(ge
     if existing is not None:
         raise HTTPException(status_code=409, detail="该手机号已注册，请直接登录")
 
-    code_row = db.query(InviteCode).filter(InviteCode.code == body.invite_code).first()
+    # Code lookup is upper-cased on the way in so users can type lowercase.
+    incoming = body.invite_code.strip().upper()
+    code_row = db.query(InviteCode).filter(InviteCode.code == incoming).first()
     if code_row is None:
         raise HTTPException(status_code=400, detail="邀请码无效")
-    if code_row.used_at is not None:
-        raise HTTPException(status_code=400, detail="邀请码已被使用")
+    # max_uses NULL = unlimited; integer N = up to N redemptions.
+    # current_uses counts; reject when consumed.
+    if code_row.max_uses is not None and code_row.current_uses >= code_row.max_uses:
+        raise HTTPException(status_code=400, detail="邀请码已达使用上限")
     if code_row.expires_at is not None:
-        # Normalize tz so comparison works regardless of DB driver.
         ea = code_row.expires_at
         if ea.tzinfo is None:
             ea = ea.replace(tzinfo=timezone.utc)
@@ -98,15 +101,17 @@ def register(body: RegisterRequest, response: Response, db: Session = Depends(ge
     user = User(
         phone=body.phone,
         password_hash=hash_password(body.password),
-        # No SMS verified phone — but we treat invite-code registration
-        # as enough for now. Field stays NULL.
         last_login_at=now,
     )
     db.add(user)
     db.flush()  # need user.id before marking the code
 
-    code_row.used_at = now
-    code_row.used_by_user_id = user.id
+    # Track first-use audit fields when this is the inaugural redemption;
+    # always increment the counter.
+    if code_row.used_at is None:
+        code_row.used_at = now
+        code_row.used_by_user_id = user.id
+    code_row.current_uses = (code_row.current_uses or 0) + 1
     db.commit()
     db.refresh(user)
 
