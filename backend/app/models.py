@@ -37,14 +37,14 @@ class User(Base):
 class Watchlist(Base):
     __tablename__ = "watchlist"
 
-    # Note on PK choice: `code` was the original PK back when there was a
-    # single shared watchlist. Phase 6 layers `user_id` on top but keeps
-    # code-as-PK for the rollout — the admin user owns all 61 existing
-    # rows, no second user owns the same code yet. The first time a second
-    # user wants to add a code the admin already has, we'll need to flip
-    # the PK to a synthetic id with UNIQUE(user_id, code). That's a
-    # 1-commit follow-up before public multi-user signup.
-    code: Mapped[str] = mapped_column(String(6), primary_key=True)
+    # PK choice: synthetic `id` so different users can each own the same
+    # code (Phase 6 multi-user). The original schema had code-as-PK back
+    # when there was one shared watchlist; we migrate that in
+    # `db.migrate_watchlist_pk` (idempotent) — drops the old PK, adds a
+    # BIGSERIAL id, and adds UNIQUE(user_id, code) to prevent the SAME
+    # user double-adding a code.
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    code: Mapped[str] = mapped_column(String(6), nullable=False, index=True)
     user_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("users.id", ondelete="CASCADE"),
         nullable=True, index=True,
@@ -59,6 +59,10 @@ class Watchlist(Base):
     # float up on rollout.
     starred: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false", default=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "code", name="uq_watchlist_user_code"),
     )
 
 

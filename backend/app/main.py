@@ -21,7 +21,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
-from .db import Base, engine, ensure_extra_columns, snapshot_columns
+from .db import Base, engine, ensure_extra_columns, migrate_watchlist_pk, snapshot_columns
 from .models import (  # noqa: F401  (register tables with metadata)
     Analysis, IndustryMeta, Kline, Snapshot, User, Watchlist,
 )
@@ -44,6 +44,11 @@ async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
     # create_all doesn't add columns to existing tables; close that gap.
     ensure_extra_columns()
+    # Phase 6 fix: switch watchlist PK from `code` to synthetic `id` so
+    # different users can own the same code. Must run BEFORE the admin
+    # backfill (which inserts/updates rows) and AFTER ensure_extra_columns
+    # (which adds the user_id column).
+    migrate_watchlist_pk()
     # Phase 6: backfill watchlist.user_id for existing rows (idempotent).
     # Skipped silently when ADMIN_PHONE is empty.
     migrate_admin_watchlist()

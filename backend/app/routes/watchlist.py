@@ -106,11 +106,8 @@ def import_codes(
     for code, info in valid.items():
         if code in existing_codes:
             continue
-        # NOTE: with `code` still as PK (rollout phase) we cannot insert
-        # the same code twice across users. Once a second user starts
-        # adding existing codes we'll need the PK swap follow-up. For now
-        # this branch is unreachable for non-admin users since admin
-        # already owns all 61 historical rows.
+        # PK is now synthetic `id` (see migrate_watchlist_pk); UNIQUE is on
+        # (user_id, code) — different users can each own the same code.
         row = Watchlist(
             code=info["code"], name=info["name"], exchange=info["exchange"],
             user_id=owner,
