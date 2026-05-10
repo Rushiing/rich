@@ -2,28 +2,32 @@
 
 /**
  * Lightweight tooltip — wraps any inline element, shows a styled popover on
- * hover/focus (desktop) or tap (mobile). Replaces the native `title=...` UX,
- * which has ~700ms delay, no wrapping, and no styling.
+ * hover/focus (desktop) or tap (mobile). Replaces the native `title=...`
+ * UX, which has ~700ms delay, no wrapping, and no styling.
  *
- * Anchors to children with absolute positioning inside a relatively-positioned
- * wrapper span. Auto-flips top↔bottom if the popover would overflow viewport.
+ * Rendering strategy: createPortal → body, position: fixed, coords computed
+ * from the trigger's getBoundingClientRect. This avoids being clipped by
+ * any ancestor with `overflow: auto/hidden/scroll` (notably .table-scroll
+ * around the stocks list), which would otherwise crop the popover.
+ *
+ * Auto-flips top↔bottom if the popover would overflow viewport. Recomputes
+ * on scroll/resize while open so a scrolled-out trigger pulls the popover
+ * with it (or hides if intersection allows; we just track position here).
  *
  * Mobile contract: a tap on the trigger toggles open; while open, a tap
  * outside (anywhere) closes it. Hover/focus is desktop-only.
- *
- * Note we don't portal: the chips/icons we wrap aren't inside overflow:hidden
- * containers in this app, so positioned-relative siblings render fine. If
- * that changes, switch to portal + position: fixed.
  */
 
 import {
   ReactNode, useEffect, useRef, useState, type CSSProperties,
 } from "react";
+import { createPortal } from "react-dom";
 
 type Placement = "top" | "bottom";
 
 const SHOW_DELAY_MS = 150;
 const VIEWPORT_MARGIN = 8;
+const POPOVER_GAP = 6;       // gap between trigger and popover
 
 export default function Tooltip({
   content,
@@ -37,10 +41,19 @@ export default function Tooltip({
   maxWidth?: number;
 }) {
   const [open, setOpen] = useState(false);
-  const [actualPlacement, setActualPlacement] = useState<Placement>(placement);
+  // Position is computed from the trigger's rect. We store viewport coords
+  // and a measured `actualPlacement` after we can see the popover's height.
+  const [coords, setCoords] = useState<{
+    top: number; left: number; placement: Placement;
+  } | null>(null);
   const wrapRef = useRef<HTMLSpanElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
   const showTimer = useRef<number | null>(null);
+  const [mounted, setMounted] = useState(false);
+
+  // Portal target — rendering before mount returns null, so the SSR HTML
+  // doesn't include the popover.
+  useEffect(() => setMounted(true), []);
 
   function clearShowTimer() {
     if (showTimer.current != null) {
@@ -64,45 +77,72 @@ export default function Tooltip({
     setOpen((v) => !v);
   }
 
-  // Auto-flip logic. After open, measure the popover's effective rect; if the
-  // top placement would clip above the viewport, switch to bottom (or v.v.).
-  useEffect(() => {
-    if (!open || !wrapRef.current || !popRef.current) return;
+  // Reposition: read trigger rect, decide top vs bottom based on available
+  // space, write {top, left} for the fixed popover. Called on first open
+  // and on scroll/resize while open.
+  function reposition() {
+    if (!wrapRef.current || !popRef.current) return;
     const trig = wrapRef.current.getBoundingClientRect();
     const pop = popRef.current.getBoundingClientRect();
+
+    let p: Placement = placement;
     if (placement === "top" && trig.top - pop.height - VIEWPORT_MARGIN < 0) {
-      setActualPlacement("bottom");
+      p = "bottom";
     } else if (
       placement === "bottom" &&
       trig.bottom + pop.height + VIEWPORT_MARGIN > window.innerHeight
     ) {
-      setActualPlacement("top");
-    } else {
-      setActualPlacement(placement);
+      p = "top";
     }
-  }, [open, placement]);
 
-  // Mobile-style tap-outside dismiss: only attach the listener while open
-  // so we're not paying for it on every page.
+    const top = p === "top"
+      ? trig.top - pop.height - POPOVER_GAP
+      : trig.bottom + POPOVER_GAP;
+
+    // Center horizontally on the trigger, but keep within viewport.
+    let left = trig.left + trig.width / 2 - pop.width / 2;
+    left = Math.max(VIEWPORT_MARGIN, Math.min(left, window.innerWidth - pop.width - VIEWPORT_MARGIN));
+
+    setCoords({ top, left, placement: p });
+  }
+
+  // Position on open and whenever the trigger or window changes.
+  useEffect(() => {
+    if (!open) return;
+    // popRef may not yet be set on first render — defer one tick.
+    const r = requestAnimationFrame(reposition);
+    function onScrollOrResize() { reposition(); }
+    window.addEventListener("scroll", onScrollOrResize, true);
+    window.addEventListener("resize", onScrollOrResize);
+    return () => {
+      cancelAnimationFrame(r);
+      window.removeEventListener("scroll", onScrollOrResize, true);
+      window.removeEventListener("resize", onScrollOrResize);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  // Tap-outside dismiss: only attach while open so we're not paying for it
+  // on every page.
   useEffect(() => {
     if (!open) return;
     function onDocClick(e: MouseEvent) {
-      if (!wrapRef.current) return;
-      if (!wrapRef.current.contains(e.target as Node)) close();
+      const t = e.target as Node;
+      if (wrapRef.current?.contains(t)) return;
+      if (popRef.current?.contains(t)) return;
+      close();
     }
     document.addEventListener("click", onDocClick);
     return () => document.removeEventListener("click", onDocClick);
   }, [open]);
 
-  // Cleanup on unmount.
   useEffect(() => () => clearShowTimer(), []);
 
   const popStyle: CSSProperties = {
-    position: "absolute",
-    left: "50%",
-    transform: "translateX(-50%)",
-    [actualPlacement === "top" ? "bottom" : "top"]: "calc(100% + 6px)" as unknown as number,
-    zIndex: 50,
+    position: "fixed",
+    top: coords?.top ?? -9999,
+    left: coords?.left ?? -9999,
+    zIndex: 1000,
     background: "var(--surface)",
     border: "1px solid var(--border)",
     borderRadius: 6,
@@ -115,6 +155,9 @@ export default function Tooltip({
     whiteSpace: "normal",
     boxShadow: "0 4px 12px rgba(0,0,0,0.25)",
     pointerEvents: "auto",
+    // Hide visually until we have measured-and-positioned coords (first paint
+    // happens at -9999 to let us measure, then this kicks in).
+    visibility: coords ? "visible" : "hidden",
   };
 
   return (
@@ -125,9 +168,6 @@ export default function Tooltip({
       onFocus={scheduleOpen}
       onBlur={close}
       onClick={(e) => {
-        // Only treat as a tap-toggle on touch-capable input. On desktop the
-        // hover handlers already control state, so a click would close
-        // immediately on the same event.
         if ((e.nativeEvent as PointerEvent).pointerType === "touch") {
           e.stopPropagation();
           toggle();
@@ -140,10 +180,11 @@ export default function Tooltip({
       }}
     >
       {children}
-      {open && (
+      {mounted && open && createPortal(
         <div ref={popRef} style={popStyle} role="tooltip">
           {content}
-        </div>
+        </div>,
+        document.body,
       )}
     </span>
   );
