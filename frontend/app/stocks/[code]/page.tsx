@@ -5,6 +5,7 @@ import {
   api, ActionableTier, ActionableTiers, KeyTable, NextDayOutlook,
   ScenarioAdvice, StockAnalysis, StockDetail, StopLossLevel,
 } from "../../../lib/api";
+import Tooltip from "../../_components/Tooltip";
 
 type TierKey = "aggressive" | "neutral" | "conservative";
 const TIER_DEFS: { key: TierKey; label: string; color: string }[] = [
@@ -119,23 +120,36 @@ function IndustryContextCard({ detail }: { detail: StockDetail }) {
     if (abs >= 1e4) return `${sign}${(abs / 1e4).toFixed(0)}万`;
     return `${sign}${abs.toFixed(0)}`;
   }
-  function pctChip(label: string, v: number | null, hint: string) {
+  function pctChip(label: string, v: number | null, title: string, desc: string) {
+    const body = (currentLine: string) => (
+      <div>
+        <div style={{ fontWeight: 600, marginBottom: 4 }}>{title}</div>
+        <div style={{ color: "var(--text-soft)" }}>{desc}</div>
+        <div style={{ marginTop: 6, fontFamily: "monospace", color: "var(--text)" }}>
+          {currentLine}
+        </div>
+      </div>
+    );
     if (v == null) {
       return (
-        <span title={hint} style={{
-          padding: "2px 8px", borderRadius: 4, fontSize: 11,
-          background: "var(--border-faint)", color: "var(--text-dim)",
-        }}>{label}: —</span>
+        <Tooltip content={body("当前：暂无数据")}>
+          <span style={{
+            padding: "2px 8px", borderRadius: 4, fontSize: 11,
+            background: "var(--border-faint)", color: "var(--text-dim)",
+          }}>{label}: —</span>
+        </Tooltip>
       );
     }
     const x = Math.max(0, Math.min(100, v));
     const color = x >= 70 ? "#fca5a5" : x <= 30 ? "#86efac" : "#9ca3af";
     const bg = x >= 70 ? "rgba(239,68,68,0.18)" : x <= 30 ? "rgba(34,197,94,0.15)" : "rgba(255,255,255,0.05)";
     return (
-      <span title={hint} style={{
-        padding: "2px 8px", borderRadius: 4, fontSize: 11,
-        background: bg, color,
-      }}>{label}: {x.toFixed(0)}%</span>
+      <Tooltip content={body(`当前分位：${x.toFixed(0)}%`)}>
+        <span style={{
+          padding: "2px 8px", borderRadius: 4, fontSize: 11,
+          background: bg, color,
+        }}>{label}: {x.toFixed(0)}%</span>
+      </Tooltip>
     );
   }
 
@@ -151,9 +165,24 @@ function IndustryContextCard({ detail }: { detail: StockDetail }) {
         </span>
       </div>
       <div style={{ marginTop: 10, display: "flex", gap: 6, flexWrap: "wrap" }}>
-        {pctChip("PE 分位", detail.industry_pe_pctile, "本股 PE 在所属行业中的百分位排名（高=贵）")}
-        {pctChip("3 日涨幅 分位", detail.industry_change_3d_pctile, "本股近 3 日涨幅在行业中的百分位（高=领跑）")}
-        {pctChip("3 日资金 分位", detail.industry_flow_3d_pctile, "近 3 日主力净流入在行业中的百分位（高=被资金抢筹）")}
+        {pctChip(
+          "PE 分位",
+          detail.industry_pe_pctile,
+          "估值分位 (PE)",
+          "本股 PE 在所属行业内的分位（0=最便宜，100=最贵）。70+ 红色 = 估值偏贵；30- 绿色 = 相对便宜。",
+        )}
+        {pctChip(
+          "3 日涨幅 分位",
+          detail.industry_change_3d_pctile,
+          "走势分位 (3日涨幅)",
+          "近 3 日涨幅在行业内的排位。70+ = 领涨同业；30- = 落后，资金可能正撤离。",
+        )}
+        {pctChip(
+          "3 日资金 分位",
+          detail.industry_flow_3d_pctile,
+          "资金分位 (3日主力净流入)",
+          "主力近 3 日净流入在行业内的排位。70+ = 资金堆积；30- = 主力撤退。",
+        )}
       </div>
       <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "4px 16px", fontSize: 12, color: "var(--text-soft)" }}>
         <div>3 日涨幅: <b style={{ color: "var(--text)", fontFamily: "monospace" }}>{fmtPct(detail.change_pct_3d)}</b></div>

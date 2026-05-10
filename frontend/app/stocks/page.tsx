@@ -4,6 +4,7 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { api, AnalysisBrief, StockRow } from "../../lib/api";
 import UserChip from "../_components/UserChip";
 import ThemeToggle from "../_components/ThemeToggle";
+import Tooltip from "../_components/Tooltip";
 
 // While a snapshot job is running we re-pull /api/stocks at this cadence so
 // rows surface as their data lands. 5s feels responsive without hammering.
@@ -31,6 +32,14 @@ const ACTIONABLE_STYLE: Record<string, { color: string; label: string }> = {
   "观望":       { color: "#9ca3af", label: "观望" },
   "建议卖出":   { color: "#22c55e", label: "卖" },
   "不建议入手": { color: "#6b7280", label: "不入" },
+};
+
+// Tooltip blurbs for each `actionable` value. AI-generated; kept short.
+const ACTIONABLE_EXPLAIN: Record<string, string> = {
+  "建议买入":   "AI 综合估值、资金、技术、消息面后给出的入场建议。",
+  "观望":       "信号不充分或风险未消化，建议先按兵不动。",
+  "建议卖出":   "估值偏贵、动能转弱或基本面恶化，建议减仓或离场。",
+  "不建议入手": "命中负面规则（如 ST、业绩塌方等），不在可选池里。",
 };
 
 const SIGNAL_LABEL: Record<string, string> = {
@@ -543,39 +552,63 @@ function ActionableCell({ analysis }: { analysis: AnalysisBrief | null }) {
     label: analysis.actionable,
   };
   const flagCount = analysis.red_flags?.length ?? 0;
+  const explainBlurb = ACTIONABLE_EXPLAIN[analysis.actionable] ?? "";
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 180, maxWidth: 280 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-        <span
-          style={{
-            display: "inline-block",
-            padding: "1px 6px",
-            borderRadius: 3,
-            background: hexA(style.color, 0.15),
-            color: style.color,
-            fontSize: 11,
-            fontWeight: 600,
-          }}
+        <Tooltip
+          content={
+            <div>
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>{analysis.actionable}</div>
+              <div style={{ color: "var(--text-soft)" }}>{explainBlurb}</div>
+            </div>
+          }
         >
-          {style.label}
-        </span>
-        {flagCount > 0 && (
           <span
             style={{
               display: "inline-block",
-              padding: "1px 5px",
+              padding: "1px 6px",
               borderRadius: 3,
-              background: "rgba(239, 68, 68, 0.18)",
-              color: "#fca5a5",
-              fontSize: 10,
+              background: hexA(style.color, 0.15),
+              color: style.color,
+              fontSize: 11,
+              fontWeight: 600,
             }}
-            title={analysis.red_flags.join(" / ")}
           >
-            🔴 {flagCount}
+            {style.label}
           </span>
+        </Tooltip>
+        {flagCount > 0 && (
+          <Tooltip
+            content={
+              <div>
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>检测到 {flagCount} 项风险</div>
+                <ul style={{ margin: 0, paddingLeft: 16, color: "var(--text-soft)" }}>
+                  {analysis.red_flags.map((f, i) => (
+                    <li key={i} style={{ marginBottom: 2 }}>{f}</li>
+                  ))}
+                </ul>
+              </div>
+            }
+          >
+            <span
+              style={{
+                display: "inline-block",
+                padding: "1px 5px",
+                borderRadius: 3,
+                background: "rgba(239, 68, 68, 0.18)",
+                color: "#fca5a5",
+                fontSize: 10,
+              }}
+            >
+              🔴 {flagCount}
+            </span>
+          </Tooltip>
         )}
         {!analysis.is_fresh && (
-          <span style={{ color: "var(--text-faint)", fontSize: 10 }} title="生成时间已超过 4 小时">已过期</span>
+          <Tooltip content="解析生成已超过 4 小时，建议在详情页点 '重新生成' 拿最新版本。">
+            <span style={{ color: "var(--text-faint)", fontSize: 10 }}>已过期</span>
+          </Tooltip>
         )}
       </div>
       {analysis.company_tag && (
@@ -688,21 +721,59 @@ function IndustryWaterCell({ row }: { row: StockRow }) {
         <span style={{ color: "var(--text-soft)", fontSize: 11 }}>{row.industry_name}</span>
       )}
       <div style={{ display: "flex", gap: 3 }}>
-        <PctChip label="估" value={row.industry_pe_pctile} hint="PE 行业分位" />
-        <PctChip label="势" value={row.industry_change_3d_pctile} hint="3日涨幅 行业分位" />
-        <PctChip label="金" value={row.industry_flow_3d_pctile} hint="3日资金 行业分位" />
+        <PctChip
+          label="估"
+          value={row.industry_pe_pctile}
+          title="估值分位 (PE)"
+          desc="本股 PE 在所属行业内的分位（0=最便宜，100=最贵）。70+ 红色 = 估值偏贵；30- 绿色 = 相对便宜。"
+        />
+        <PctChip
+          label="势"
+          value={row.industry_change_3d_pctile}
+          title="走势分位 (3日涨幅)"
+          desc="近 3 日涨幅在行业内的排位。70+ = 领涨同业；30- = 落后，资金可能正撤离。"
+        />
+        <PctChip
+          label="金"
+          value={row.industry_flow_3d_pctile}
+          title="资金分位 (3日主力净流入)"
+          desc="主力近 3 日净流入在行业内的排位。70+ = 资金堆积；30- = 主力撤退。"
+        />
       </div>
     </div>
   );
 }
 
-function PctChip({ label, value, hint }: { label: string; value: number | null; hint: string }) {
+function PctChip({
+  label, value, title, desc,
+}: {
+  label: string;
+  value: number | null;
+  title: string;
+  desc: string;
+}) {
+  // Build the tooltip body once; both null + value paths share it. The "current
+  // value" line only appears when we have one.
+  const tooltipBody = (currentLine: string | null) => (
+    <div>
+      <div style={{ fontWeight: 600, marginBottom: 4 }}>{title}</div>
+      <div style={{ color: "var(--text-soft)" }}>{desc}</div>
+      {currentLine && (
+        <div style={{ marginTop: 6, fontFamily: "monospace", color: "var(--text)" }}>
+          {currentLine}
+        </div>
+      )}
+    </div>
+  );
+
   if (value == null) {
     return (
-      <span title={hint} style={{
-        padding: "1px 5px", borderRadius: 3, fontSize: 10,
-        background: "var(--border-faint)", color: "var(--text-dim)", letterSpacing: 0.5,
-      }}>{label}–</span>
+      <Tooltip content={tooltipBody("当前：暂无数据")}>
+        <span style={{
+          padding: "1px 5px", borderRadius: 3, fontSize: 10,
+          background: "var(--border-faint)", color: "var(--text-dim)", letterSpacing: 0.5,
+        }}>{label}–</span>
+      </Tooltip>
     );
   }
   // Linear color ramp from green (low) → grey (mid) → red (high)
@@ -710,10 +781,12 @@ function PctChip({ label, value, hint }: { label: string; value: number | null; 
   const color = v >= 70 ? "#fca5a5" : v <= 30 ? "#86efac" : "#9ca3af";
   const bg = v >= 70 ? "rgba(239,68,68,0.18)" : v <= 30 ? "rgba(34,197,94,0.15)" : "rgba(255,255,255,0.05)";
   return (
-    <span title={`${hint}: ${v.toFixed(0)}%`} style={{
-      padding: "1px 5px", borderRadius: 3, fontSize: 10,
-      background: bg, color, letterSpacing: 0.5,
-    }}>{label}{v.toFixed(0)}</span>
+    <Tooltip content={tooltipBody(`当前分位：${v.toFixed(0)}%`)}>
+      <span style={{
+        padding: "1px 5px", borderRadius: 3, fontSize: 10,
+        background: bg, color, letterSpacing: 0.5,
+      }}>{label}{v.toFixed(0)}</span>
+    </Tooltip>
   );
 }
 
