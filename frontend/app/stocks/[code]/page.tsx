@@ -242,7 +242,7 @@ function FreshnessBar({
         {/* Model name intentionally hidden from end users. */}
       </span>
       <div style={{ display: "flex", gap: 6 }}>
-        <Tooltip content="走「看多 → 看空 → 裁判」三步辩论流程，红旗检测更锐利。约 30 秒，比普通解析慢一些。">
+        <Tooltip content="更深入的解析模式：从看多和看空两个角度交叉验证，风险点检测更准。约 30 秒，比常规解析慢一些。">
           <button
             onClick={onDebate}
             disabled={generating}
@@ -256,7 +256,7 @@ function FreshnessBar({
               cursor: generating ? "not-allowed" : "pointer",
             }}
           >
-            ⚖️ 深度辩论
+            🔬 深度解析
           </button>
         </Tooltip>
         <button
