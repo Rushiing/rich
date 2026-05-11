@@ -39,6 +39,11 @@ logger = logging.getLogger(__name__)
 # no protocol change. Tone matches the user's "克制研究员" preference.
 DEFAULT_MODEL = "kimi-k2.5"
 
+# Prompt version — bump whenever the tool schema or system prompt changes
+# in a way that affects output content. Stored on each Analysis row so we
+# can compare hit rates across versions later. Format: "vMAJOR.MINOR-shortdesc".
+PROMPT_VERSION = "v2.2-kline-history-cot"
+
 # Tool schema. Claude is forced to call this; we read the structured input
 # back as our analysis. The `additionalProperties: False` constraint + enums
 # keep the model from drifting out of contract.
@@ -52,8 +57,26 @@ ANALYSIS_TOOL = {
     "input_schema": {
         "type": "object",
         "additionalProperties": False,
-        "required": ["key_table", "deep_analysis"],
+        # analysis_thinking comes first so the model fills it before any
+        # structured field — JSON tool calls tend to honor declaration order
+        # in practice. This is our chain-of-thought scratchpad: the model
+        # is forced to reason before emitting buy/sell/position numbers,
+        # which significantly improves answer quality. Stripped before
+        # persistence so it doesn't pollute the deep_analysis display.
+        "required": ["analysis_thinking", "key_table", "deep_analysis"],
         "properties": {
+            "analysis_thinking": {
+                "type": "string",
+                "minLength": 200,
+                "maxLength": 2000,
+                "description": (
+                    "你的分析思考过程，200-2000 字。"
+                    "先看技术面（趋势 / 量价 / 关键支撑阻力）、再看资金面"
+                    "（主力净流入、3 日累计、北向、龙虎榜）、再看消息面"
+                    "（业绩 / 公告 / 新闻）、最后综合给方向。"
+                    "把推理写出来，结构化字段在下面填——不要在这里给最终结论。"
+                ),
+            },
             "key_table": {
                 "type": "object",
                 "additionalProperties": False,
@@ -328,6 +351,8 @@ def _system_prompt(strategy: Strategy) -> list[dict[str, Any]]:
         "- 完全基于提供的 snapshot 与新闻 / 公告做判断，**不要编造**未在输入中的信息\n"
         "- 信息缺失就直说 '信息不全，无法判断'，并把 confidence 降到 '低'\n"
         "- 始终调用 submit_analysis 工具**一次**，不要给出其他文本\n"
+        "- **先填 analysis_thinking 字段把推理写完，再填 key_table 和 deep_analysis 的结构化结果**。\n"
+        "  不允许跳过 analysis_thinking 直接给结论。这是为了让你思考更充分，质量更高。\n"
         "\n"
         "# 次日走势预判（next_day_outlook）\n"
         "\n"
@@ -438,6 +463,47 @@ def _user_prompt(w: Watchlist, s: Snapshot | None) -> str:
             macd_status = "?"
             if (latest_k.macd_dif is not None and latest_k.macd_dea is not None):
                 macd_status = "DIF 上 DEA" if latest_k.macd_dif > latest_k.macd_dea else "DIF 下 DEA"
+
+            # Compact 20-day K-line block. Gives the LLM trend / box /
+            # vol-price-divergence visibility instead of just one anchored
+            # snapshot. ~20 rows × 6 cols of digits is well within token
+            # budget for kimi-k2.5's 16K context.
+            recent = kline_svc.recent_for_code(s.code, days=20)
+            history_lines = ""
+            position_note = ""
+            if recent:
+                # Find prev high / low and how many trading days ago
+                closes_with_idx = [(i, r.close) for i, r in enumerate(recent)
+                                   if r.close is not None]
+                if closes_with_idx:
+                    hi_idx, hi_val = max(closes_with_idx, key=lambda x: x[1])
+                    lo_idx, lo_val = min(closes_with_idx, key=lambda x: x[1])
+                    days_from_high = len(recent) - 1 - hi_idx
+                    days_from_low = len(recent) - 1 - lo_idx
+                    position_note = (
+                        f"近 20 日最高 {hi_val:.2f}（{days_from_high} 日前），"
+                        f"最低 {lo_val:.2f}（{days_from_low} 日前）\n"
+                    )
+
+                def _fmt_vol(v):
+                    if v is None:
+                        return "—"
+                    if v >= 1e8:
+                        return f"{v/1e8:.2f}亿"
+                    if v >= 1e4:
+                        return f"{v/1e4:.0f}万"
+                    return f"{v:.0f}"
+                header = "日期         开    收    高    低    量\n"
+                rows = "\n".join(
+                    f"{r.date}  {_f(r.open):>5}  {_f(r.close):>5}  "
+                    f"{_f(r.high):>5}  {_f(r.low):>5}  {_fmt_vol(r.volume):>7}"
+                    for r in recent
+                )
+                history_lines = (
+                    f"\n近 {len(recent)} 日 K 线（升序）：\n{header}{rows}\n"
+                    f"{position_note}"
+                )
+
             technical_section = (
                 f"\n## 技术面（{latest_k.date}）\n"
                 f"收盘: {_f(latest_k.close)}\n"
@@ -449,6 +515,7 @@ def _user_prompt(w: Watchlist, s: Snapshot | None) -> str:
                 f"下={_f(latest_k.boll_low)}\n"
                 f"KDJ: K={_f(latest_k.kdj_k)} D={_f(latest_k.kdj_d)} J={_f(latest_k.kdj_j)}\n"
                 f"RSI6 / RSI12: {_f(latest_k.rsi6)} / {_f(latest_k.rsi12)}\n"
+                f"{history_lines}"
             )
         snap_section = (
             f"快照时间: {s.ts.isoformat()}\n"
@@ -543,6 +610,16 @@ def generate(
     if "key_table" not in payload or "deep_analysis" not in payload:
         raise RuntimeError(f"unexpected tool input: {json.dumps(payload)[:200]}")
 
+    # Strip analysis_thinking — it's the CoT scratchpad, useful for the
+    # model but not for display / persistence. Log a snippet so we can
+    # spot-check that the model actually used it.
+    thinking = payload.pop("analysis_thinking", None)
+    if thinking:
+        logger.info(
+            "analysis_thinking[%s] %d chars: %s",
+            code, len(thinking), thinking[:120].replace("\n", " "),
+        )
+
     existing = db.query(Analysis).filter(Analysis.code == code).first()
     if existing:
         existing.key_table = payload["key_table"]
@@ -550,6 +627,7 @@ def generate(
         existing.snapshot_id = s.id if s else None
         existing.model = model
         existing.strategy = strat.name
+        existing.prompt_version = PROMPT_VERSION
         existing.created_at = datetime.now(timezone.utc)
         row = existing
     else:
@@ -560,6 +638,7 @@ def generate(
             snapshot_id=s.id if s else None,
             model=model,
             strategy=strat.name,
+            prompt_version=PROMPT_VERSION,
         )
         db.add(row)
     db.commit()

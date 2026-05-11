@@ -282,6 +282,11 @@ class Analysis(Base):
     snapshot_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     model: Mapped[str] = mapped_column(String(50), nullable=False)
     strategy: Mapped[str] = mapped_column(String(50), nullable=False)
+    # Prompt version identifier — bump in services/analysis.py whenever the
+    # tool schema or system prompt changes. Lets us correlate quality
+    # differences across versions when the hit-rate tracker (ROADMAP P1)
+    # comes online.
+    prompt_version: Mapped[str | None] = mapped_column(String(40), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

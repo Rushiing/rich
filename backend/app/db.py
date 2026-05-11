@@ -65,6 +65,9 @@ _POSTGRES_BACKFILL = [
     # max_uses=1 (matching old behavior).
     ("invite_codes", "max_uses",     "INTEGER"),
     ("invite_codes", "current_uses", "INTEGER NOT NULL DEFAULT 0"),
+    # Analysis effect-quality v1: prompt version tracking so future
+    # hit-rate analytics can compare versions.
+    ("analyses",  "prompt_version",           "VARCHAR(40)"),
 ]
 
 

@@ -268,6 +268,31 @@ def latest_for_code(code: str) -> Kline | None:
         db.close()
 
 
+def recent_for_code(code: str, days: int = 20) -> list[Kline]:
+    """Last N days of K-line rows for a code, ascending (oldest first).
+
+    Used by the analysis prompt to feed the LLM a short price history so
+    it can reason about trend/box/divergence rather than just the latest
+    snapshot. Returns fewer rows when history is short; caller handles
+    empty list.
+    """
+    db: Session = SessionLocal()
+    try:
+        # Pull descending, slice, then reverse — straightforward and the row
+        # count is tiny (≤30) so order-by perf doesn't matter.
+        rows = (
+            db.query(Kline)
+            .filter(Kline.code == code)
+            .order_by(Kline.date.desc())
+            .limit(days)
+            .all()
+        )
+        rows.reverse()
+        return rows
+    finally:
+        db.close()
+
+
 def latest_indicators_for_codes(codes: Iterable[str]) -> dict[str, dict]:
     """Return {code: {close, ma5/10/20/60, macd_dif/dea/hist, macd_dif_prev,
     macd_dea_prev, rsi6/12, kdj_k/d/j, high20}}. high20 is max(close) over
