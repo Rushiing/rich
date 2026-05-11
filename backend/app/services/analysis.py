@@ -42,7 +42,7 @@ DEFAULT_MODEL = "kimi-k2.5"
 # Prompt version — bump whenever the tool schema or system prompt changes
 # in a way that affects output content. Stored on each Analysis row so we
 # can compare hit rates across versions later. Format: "vMAJOR.MINOR-shortdesc".
-PROMPT_VERSION = "v2.4-financials"
+PROMPT_VERSION = "v2.5-debate"
 
 # Tool schema. Claude is forced to call this; we read the structured input
 # back as our analysis. The `additionalProperties: False` constraint + enums
@@ -573,8 +573,17 @@ def generate(
     code: str,
     strategy_name: str | None = None,
     client: Anthropic | None = None,
+    mode: str = "single",
 ) -> Analysis:
     """Synchronously generate a fresh analysis and persist it.
+
+    `mode`:
+      - "single" (default): one LLM call. Fast, cheap, standard path.
+      - "debate": runs the three-role bull/bear/judge pipeline. 3x LLM
+        cost. Better red-flag detection for high-stakes calls. Triggered
+        from the route by ?mode=debate or auto-promoted when the single-
+        pass result is a high-conviction buy/sell (handled by caller; this
+        function trusts the mode argument as given).
 
     Replaces the existing Analysis row for this code (one row per code policy).
     """
@@ -602,6 +611,24 @@ def generate(
 
     model = settings.ANALYSIS_MODEL or DEFAULT_MODEL
 
+    # Build the user message. In debate mode the bull/bear views are
+    # appended after the base snapshot block so the judge sees both sides
+    # without re-deriving them.
+    base_user = _user_prompt(w, s)
+    debate_suffix = ""
+    if mode == "debate":
+        from .analysis_debate import run_debate, render_debate_for_judge, judge_system_prompt_suffix
+        logger.info("analysis[%s] starting debate mode (3 LLM calls)", code)
+        bull, bear = run_debate(client, model, w, s, base_user)
+        debate_suffix = render_debate_for_judge(bull, bear)
+        judge_system = (
+            _system_prompt(strat)
+            + [{"type": "text", "text": judge_system_prompt_suffix()}]
+        )
+        system_blocks = judge_system
+    else:
+        system_blocks = _system_prompt(strat)
+
     # tool_choice negotiation: most providers accept the strict
     # `{"type":"tool", "name":...}` shape, but some only support `any`/`auto`.
     # We try strict first, fall back to `any` on a 400 — for our single-tool
@@ -611,9 +638,9 @@ def generate(
         "max_tokens": 8192,  # bumped from 4096 — kimi/glm/minimax outputs run
                               # 1k–2k tokens; with thinking-style reasoners
                               # (qwen3.6) we'd hit ceiling at 4096 mid-tool.
-        "system": _system_prompt(strat),
+        "system": system_blocks,
         "tools": [ANALYSIS_TOOL],
-        "messages": [{"role": "user", "content": _user_prompt(w, s)}],
+        "messages": [{"role": "user", "content": base_user + debate_suffix}],
     }
     try:
         msg = client.messages.create(

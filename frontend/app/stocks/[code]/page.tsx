@@ -48,11 +48,11 @@ export default function StockDetailPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code]);
 
-  async function regenerate() {
+  async function regenerate(mode: "single" | "debate" = "single") {
     setGenerating(true);
     setErr(null);
     try {
-      const a = await api.generateAnalysis(code);
+      const a = await api.generateAnalysis(code, mode);
       setAnalysis(a);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -82,7 +82,8 @@ export default function StockDetailPage({
               <FreshnessBar
                 analysis={analysis}
                 generating={generating}
-                onRegenerate={regenerate}
+                onRegenerate={() => regenerate("single")}
+                onDebate={() => regenerate("debate")}
               />
               {err && <div style={{ color: "#ef4444", marginTop: 8, fontSize: 13 }}>{err}</div>}
               <KeyTableCard kt={analysis.key_table} />
@@ -225,29 +226,55 @@ function EmptyState({ onGenerate, generating, err }: { onGenerate: () => void; g
   );
 }
 
-function FreshnessBar({ analysis, generating, onRegenerate }: { analysis: StockAnalysis; generating: boolean; onRegenerate: () => void }) {
+function FreshnessBar({
+  analysis, generating, onRegenerate, onDebate,
+}: {
+  analysis: StockAnalysis;
+  generating: boolean;
+  onRegenerate: () => void;
+  onDebate: () => void;
+}) {
   return (
-    <div style={{ marginTop: 16, display: "flex", alignItems: "center", justifyContent: "space-between", color: "var(--text-muted)", fontSize: 12 }}>
+    <div style={{ marginTop: 16, display: "flex", alignItems: "center", justifyContent: "space-between", color: "var(--text-muted)", fontSize: 12, gap: 8, flexWrap: "wrap" }}>
       <span>
         生成于 {new Date(analysis.created_at).toLocaleString("zh-CN")}
         {!analysis.is_fresh && <span style={{ color: "#facc15", marginLeft: 8 }}>· 缓存已过期 (&gt;4h)</span>}
         {/* Model name intentionally hidden from end users. */}
       </span>
-      <button
-        onClick={onRegenerate}
-        disabled={generating}
-        style={{
-          padding: "4px 10px",
-          background: "transparent",
-          color: "var(--text-soft)",
-          border: "1px solid var(--border-mid)",
-          borderRadius: 4,
-          fontSize: 12,
-          cursor: generating ? "not-allowed" : "pointer",
-        }}
-      >
-        {generating ? "生成中…" : "重新生成"}
-      </button>
+      <div style={{ display: "flex", gap: 6 }}>
+        <Tooltip content="走「看多 → 看空 → 裁判」三步辩论流程，红旗检测更锐利。约 30 秒，比普通解析慢一些。">
+          <button
+            onClick={onDebate}
+            disabled={generating}
+            style={{
+              padding: "4px 10px",
+              background: "transparent",
+              color: "var(--text-soft)",
+              border: "1px solid var(--border-mid)",
+              borderRadius: 4,
+              fontSize: 12,
+              cursor: generating ? "not-allowed" : "pointer",
+            }}
+          >
+            ⚖️ 深度辩论
+          </button>
+        </Tooltip>
+        <button
+          onClick={onRegenerate}
+          disabled={generating}
+          style={{
+            padding: "4px 10px",
+            background: "transparent",
+            color: "var(--text-soft)",
+            border: "1px solid var(--border-mid)",
+            borderRadius: 4,
+            fontSize: 12,
+            cursor: generating ? "not-allowed" : "pointer",
+          }}
+        >
+          {generating ? "生成中…" : "重新生成"}
+        </button>
+      </div>
     </div>
   );
 }

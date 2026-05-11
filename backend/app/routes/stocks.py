@@ -462,16 +462,23 @@ def get_analysis(
 @router.post("/{code}/analysis", response_model=AnalysisOut)
 def generate_analysis(
     code: str,
+    mode: str = "single",
     db: Session = Depends(get_db),
     user_id: int | None = Depends(require_auth),
 ):
     """Force regenerate. Scoped to the user's watchlist (404 if not theirs)
-    so users can't burn LLM tokens for codes they don't follow."""
+    so users can't burn LLM tokens for codes they don't follow.
+
+    `?mode=debate` runs the bull/bear/judge debate pipeline (3 LLM calls,
+    ~30s, sharper red-flag detection). Default is `single` (~10s, one call).
+    """
     owner = resolve_owner(user_id, db)
     if not _user_watchlist(db, owner).filter(Watchlist.code == code).first():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not in watchlist")
+    if mode not in ("single", "debate"):
+        raise HTTPException(status_code=400, detail="mode must be single or debate")
     try:
-        row = analysis_generate(db, code)
+        row = analysis_generate(db, code, mode=mode)
     except RuntimeError as e:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
     except ValueError as e:

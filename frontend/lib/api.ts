@@ -258,6 +258,9 @@ export const api = {
     request<AnalysisBatchStatus>("/api/stocks/analysis/batch/status"),
   getAnalysis: (code: string) =>
     request<StockAnalysis | null>(`/api/stocks/${code}/analysis`),
-  generateAnalysis: (code: string) =>
-    request<StockAnalysis>(`/api/stocks/${code}/analysis`, { method: "POST" }),
+  generateAnalysis: (code: string, mode: "single" | "debate" = "single") =>
+    request<StockAnalysis>(
+      `/api/stocks/${code}/analysis?mode=${mode}`,
+      { method: "POST" },
+    ),
 };
