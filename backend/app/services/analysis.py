@@ -689,6 +689,7 @@ def generate(
         existing.model = model
         existing.strategy = strat.name
         existing.prompt_version = PROMPT_VERSION
+        existing.mode = mode
         existing.created_at = datetime.now(timezone.utc)
         row = existing
     else:
@@ -700,6 +701,7 @@ def generate(
             model=model,
             strategy=strat.name,
             prompt_version=PROMPT_VERSION,
+            mode=mode,
         )
         db.add(row)
     db.commit()

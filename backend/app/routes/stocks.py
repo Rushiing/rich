@@ -424,6 +424,9 @@ class AnalysisOut(BaseModel):
     created_at: str
     snapshot_id: int | None
     is_fresh: bool
+    # "single" | "debate" — drives the 🔬 深度解析结果 banner + scroll-to
+    # behavior on the detail page. None for legacy rows pre-Phase 10.5.
+    mode: str | None = None
 
     @classmethod
     def from_row(cls, row: Analysis, is_fresh: bool) -> "AnalysisOut":
@@ -436,6 +439,7 @@ class AnalysisOut(BaseModel):
             created_at=row.created_at.isoformat() if row.created_at else "",
             snapshot_id=row.snapshot_id,
             is_fresh=is_fresh,
+            mode=getattr(row, "mode", None) or "single",
         )
 
 

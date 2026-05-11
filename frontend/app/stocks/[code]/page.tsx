@@ -54,6 +54,18 @@ export default function StockDetailPage({
     try {
       const a = await api.generateAnalysis(code, mode);
       setAnalysis(a);
+      // Deep mode: scroll users right to the "看多 vs 看空" section so
+      // they see the cross-validation payoff immediately. Defer one frame
+      // so the new markdown renders before we query the DOM.
+      if (mode === "debate") {
+        requestAnimationFrame(() => {
+          // Anchor id derived from heading text in renderMarkdown (see
+          // h3.id assignment below). Fallback to deep-analysis container.
+          const heading = document.getElementById("md-h-看多-vs-看空")
+            ?? document.getElementById("md-deep-analysis");
+          heading?.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+      }
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -86,6 +98,7 @@ export default function StockDetailPage({
                 onDebate={() => regenerate("debate")}
               />
               {err && <div style={{ color: "#ef4444", marginTop: 8, fontSize: 13 }}>{err}</div>}
+              {analysis.mode === "debate" && <DebateBanner code={code} />}
               <KeyTableCard kt={analysis.key_table} />
               <DeepAnalysis md={analysis.deep_analysis} />
               <Footnote analysis={analysis} />
@@ -535,9 +548,49 @@ function ScenarioAdviceCard({ advice }: { advice: ScenarioAdvice }) {
 
 function DeepAnalysis({ md }: { md: string }) {
   return (
-    <section style={{ marginTop: 16, padding: 16, border: "1px solid var(--border)", borderRadius: 8, lineHeight: 1.7, fontSize: 14 }}>
+    <section
+      id="md-deep-analysis"
+      style={{ marginTop: 16, padding: 16, border: "1px solid var(--border)", borderRadius: 8, lineHeight: 1.7, fontSize: 14 }}
+    >
       {renderMarkdown(md)}
     </section>
+  );
+}
+
+/**
+ * Banner shown above the key-table when the analysis was generated in
+ * "debate" mode. Tells the user what's different about this result and
+ * points them to the 看多 vs 看空 section that holds the differentiating
+ * content. Clickable: jumps to that section.
+ */
+function DebateBanner({ code }: { code: string }) {
+  void code; // referenced for potential future per-code variation
+  return (
+    <a
+      href="#md-h-看多-vs-看空"
+      onClick={(e) => {
+        e.preventDefault();
+        const t = document.getElementById("md-h-看多-vs-看空")
+          ?? document.getElementById("md-deep-analysis");
+        t?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }}
+      style={{
+        display: "block",
+        marginTop: 16,
+        padding: "10px 14px",
+        border: "1px solid var(--border)",
+        background: "rgba(59, 130, 246, 0.08)",
+        borderRadius: 8,
+        color: "var(--text)",
+        textDecoration: "none",
+        fontSize: 13,
+      }}
+    >
+      <span style={{ fontWeight: 600 }}>🔬 这是深度解析结果</span>
+      <span style={{ color: "var(--text-soft)" }}>
+        {" "}· 已从看多和看空两个角度交叉验证。重点查看下方「看多 vs 看空」段 →
+      </span>
+    </a>
   );
 }
 
@@ -658,14 +711,23 @@ function splitTableRow(line: string): string[] {
   return line.replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
 }
 
+// Derive a DOM-id from heading text so the debate banner / regen flow can
+// scroll to a specific section (e.g. "看多 vs 看空"). Replaces whitespace
+// with dashes, leaves CJK characters alone (they're valid in HTML ids).
+function headingId(text: string): string {
+  return "md-h-" + text.trim().replace(/\s+/g, "-");
+}
+
 function renderMarkdown(md: string): ReactNode[] {
   return parseBlocks(md).map((b, i) => {
     if (b.kind === "h") {
       return (
         <h3
           key={i}
+          id={headingId(b.text)}
           style={{ fontSize: 15, margin: "20px 0 6px", color: "var(--text)",
-                   borderBottom: "1px solid var(--border-soft)", paddingBottom: 4 }}
+                   borderBottom: "1px solid var(--border-soft)", paddingBottom: 4,
+                   scrollMarginTop: 16 }}
         >
           {inline(b.text)}
         </h3>

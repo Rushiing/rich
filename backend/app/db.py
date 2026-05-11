@@ -68,6 +68,9 @@ _POSTGRES_BACKFILL = [
     # Analysis effect-quality v1: prompt version tracking so future
     # hit-rate analytics can compare versions.
     ("analyses",  "prompt_version",           "VARCHAR(40)"),
+    # Generation mode (single|debate) so frontend can surface a
+    # "🔬 深度解析结果" banner and scroll-to behavior.
+    ("analyses",  "mode",                     "VARCHAR(20) DEFAULT 'single'"),
 ]
 
 

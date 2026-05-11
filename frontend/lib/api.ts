@@ -159,6 +159,9 @@ export type StockAnalysis = {
   created_at: string;
   snapshot_id: number | null;
   is_fresh: boolean;
+  // "single" | "debate" — when "debate" the detail page shows a banner +
+  // auto-scrolls to the 看多 vs 看空 section.
+  mode?: string | null;
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

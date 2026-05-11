@@ -331,6 +331,11 @@ class Analysis(Base):
     # differences across versions when the hit-rate tracker (ROADMAP P1)
     # comes online.
     prompt_version: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # Generation mode: "single" (default, one LLM call) vs "debate" (three-
+    # role bull/bear/judge pipeline). Persisted so the frontend can show
+    # whether this result came from the deeper path and adjust UX (banner,
+    # auto-scroll to 看多 vs 看空 section, etc.)
+    mode: Mapped[str | None] = mapped_column(String(20), nullable=True, default="single")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
