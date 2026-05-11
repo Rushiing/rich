@@ -85,14 +85,53 @@ def diag_refresh_industry_meta():
     return industry_svc.refresh_industry_meta()
 
 
+_financials_lock = __import__("threading").Lock()
+_financials_running = {"v": False, "last_result": None}
+
+
 @app.post("/api/_diag/refresh-financials")
 def diag_refresh_financials():
-    """One-shot financials bootstrap. Pulls 8 quarters per code in the
-    watchlist via akshare's stock_financial_abstract (sina). ~90s for a
-    60-code watchlist; safe to re-run, upsert by (code, report_date).
-    Schedule weekly via _financials_tick afterwards."""
+    """One-shot financials bootstrap, ASYNC. Pulls 8 quarters per code in
+    the watchlist via akshare's stock_financial_abstract (sina). ~90s for
+    a 60-code watchlist — Railway's HTTP proxy kills synchronous requests
+    around 30s, so we run in a background thread and surface progress
+    via /api/_diag/refresh-financials/status.
+
+    Safe to re-run, upsert by (code, report_date). Already-running calls
+    return {already_running: true} without firing a second job."""
+    import threading
     from .services import financials as fin_svc
-    return fin_svc.pull_for_watchlist()
+
+    with _financials_lock:
+        if _financials_running["v"]:
+            return {"started": False, "already_running": True}
+        _financials_running["v"] = True
+        _financials_running["last_result"] = None
+
+    def _worker():
+        try:
+            result = fin_svc.pull_for_watchlist()
+            _financials_running["last_result"] = result
+        except Exception as e:
+            _financials_running["last_result"] = {"error": str(e)}
+        finally:
+            with _financials_lock:
+                _financials_running["v"] = False
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return {"started": True}
+
+
+@app.get("/api/_diag/refresh-financials/status")
+def diag_refresh_financials_status():
+    """Status of the most recent /refresh-financials run.
+    Returns {running, last_result}. last_result is None until the worker
+    completes; afterwards holds the counters dict {requested, ok, failed, rows}
+    or {error: msg}."""
+    return {
+        "running": _financials_running["v"],
+        "last_result": _financials_running["last_result"],
+    }
 
 
 @app.post("/api/_diag/refresh-klines")
