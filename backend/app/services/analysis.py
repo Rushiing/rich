@@ -42,7 +42,7 @@ DEFAULT_MODEL = "kimi-k2.5"
 # Prompt version — bump whenever the tool schema or system prompt changes
 # in a way that affects output content. Stored on each Analysis row so we
 # can compare hit rates across versions later. Format: "vMAJOR.MINOR-shortdesc".
-PROMPT_VERSION = "v2.3-kline-cot-validators"
+PROMPT_VERSION = "v2.4-financials"
 
 # Tool schema. Claude is forced to call this; we read the structured input
 # back as our analysis. The `additionalProperties: False` constraint + enums
@@ -517,6 +517,32 @@ def _user_prompt(w: Watchlist, s: Snapshot | None) -> str:
                 f"RSI6 / RSI12: {_f(latest_k.rsi6)} / {_f(latest_k.rsi12)}\n"
                 f"{history_lines}"
             )
+        # Phase 10: financial-statement summary. Latest 2 quarters so the
+        # LLM can see direction (improving vs deteriorating) rather than
+        # an isolated snapshot.
+        from . import financials as fin_svc
+        fin_rows = fin_svc.latest_for_code(s.code, n=2)
+        if fin_rows:
+            def _yi(v):
+                return f"{v/1e8:.1f}亿" if v else "—"
+            def _pct(v):
+                return f"{v:+.2f}%" if v is not None else "—"
+            financials_section = "\n## 财务面\n"
+            for i, f_row in enumerate(fin_rows):
+                tag = "最新" if i == 0 else "上期对照"
+                financials_section += (
+                    f"{tag} ({f_row.report_date}): "
+                    f"营收 {_yi(f_row.total_revenue)} (同比 {_pct(f_row.revenue_yoy)})  "
+                    f"净利润 {_yi(f_row.net_profit)} (同比 {_pct(f_row.profit_yoy)})  "
+                    f"毛利率 {_pct(f_row.gross_margin)}  净利率 {_pct(f_row.net_margin)}  "
+                    f"ROE {_pct(f_row.roe)}  期间费用率 {_pct(f_row.expense_ratio)}\n"
+                )
+        else:
+            financials_section = (
+                "\n## 财务面\n（财报数据未拉到，请把基本面权重降低，"
+                "并在 deep_analysis 里点出'缺财报数据'。）\n"
+            )
+
         snap_section = (
             f"快照时间: {s.ts.isoformat()}\n"
             f"{industry_line}"
@@ -528,7 +554,8 @@ def _user_prompt(w: Watchlist, s: Snapshot | None) -> str:
             f"命中信号: {', '.join(s.signals or []) or '（无）'}\n"
             f"{technical_section}\n"
             f"## 估值与活跃度\n{valuation_section}"
-            f"{three_day_section}\n"
+            f"{three_day_section}"
+            f"{financials_section}\n"
             f"## 最近新闻\n{news_lines}\n\n"
             f"## 最近公告\n{notice_lines}\n\n"
             f"## 龙虎榜\n{lhb}\n"

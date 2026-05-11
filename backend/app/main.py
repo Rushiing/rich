@@ -23,7 +23,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
 from .db import Base, engine, ensure_extra_columns, migrate_watchlist_pk, snapshot_columns
 from .models import (  # noqa: F401  (register tables with metadata)
-    Analysis, IndustryMeta, InviteCode, Kline, SectorPicks, Snapshot, User, Watchlist,
+    Analysis, Financial, IndustryMeta, InviteCode, Kline, SectorPicks,
+    Snapshot, User, Watchlist,
 )
 from .routes import auth as auth_routes
 from .routes import sectors as sectors_routes
@@ -82,6 +83,16 @@ def diag_refresh_industry_meta():
     deploy (or after adding new stocks)."""
     from .services import industry as industry_svc
     return industry_svc.refresh_industry_meta()
+
+
+@app.post("/api/_diag/refresh-financials")
+def diag_refresh_financials():
+    """One-shot financials bootstrap. Pulls 8 quarters per code in the
+    watchlist via akshare's stock_financial_abstract (sina). ~90s for a
+    60-code watchlist; safe to re-run, upsert by (code, report_date).
+    Schedule weekly via _financials_tick afterwards."""
+    from .services import financials as fin_svc
+    return fin_svc.pull_for_watchlist()
 
 
 @app.post("/api/_diag/refresh-klines")

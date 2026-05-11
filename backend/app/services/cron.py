@@ -558,6 +558,18 @@ def _kline_tick():
         logger.exception("kline tick failed")
 
 
+def _financials_tick():
+    """Weekly: refresh financial statements for the full watchlist. Sina
+    endpoint is per-stock ~1s, parallelized 8-way internally — ~90s for
+    60 codes. Earnings-window dates (10-15 of Apr/Aug/Oct ish) refresh
+    more often than weekly is value but we keep weekly as the default."""
+    try:
+        from . import financials as fin_svc
+        fin_svc.pull_for_watchlist()
+    except Exception:
+        logger.exception("financials tick failed")
+
+
 def start_scheduler() -> None:
     """Idempotent. Called from FastAPI lifespan."""
     global scheduler
@@ -606,6 +618,17 @@ def start_scheduler() -> None:
         id="kline_16_30",
         replace_existing=True,
         misfire_grace_time=1800,
+    )
+    # Phase 10: financial-statement refresh — weekly Monday 08:00 BJT
+    # before the morning analysis pass. Earnings windows (~10-15 Apr/Aug/Oct)
+    # may benefit from daily refresh; if we feel the lag we can flip
+    # day_of_week to mon-fri later.
+    sched.add_job(
+        _financials_tick,
+        CronTrigger(day_of_week="mon", hour=8, minute=0, timezone="Asia/Shanghai"),
+        id="financials_mon_08_00",
+        replace_existing=True,
+        misfire_grace_time=3600,
     )
     sched.start()
     scheduler = sched

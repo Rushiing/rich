@@ -253,6 +253,50 @@ class IndustryMeta(Base):
     )
 
 
+class Financial(Base):
+    """One row per (code, report_date) — financial highlights pulled from
+    akshare's `stock_financial_abstract` (sina).
+
+    We extract ~10 key indicators rather than the full 80-row wide table
+    sina ships. The composite PK (code, report_date) makes idempotent
+    upserts straightforward.
+
+    Refreshed weekly + on demand via /api/_diag/refresh-financials. During
+    earnings windows (April / August / October) consider daily refresh.
+    """
+    __tablename__ = "financials"
+
+    code: Mapped[str] = mapped_column(String(6), primary_key=True)
+    report_date: Mapped[str] = mapped_column(String(10), primary_key=True)  # YYYYMMDD
+    # 营业总收入 (元)
+    total_revenue: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 归母净利润 (元)
+    net_profit: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 扣非净利润 (元)
+    net_profit_excl_nr: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 毛利率 (%)
+    gross_margin: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 销售净利率 (%)
+    net_margin: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # ROE (%)
+    roe: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 营业总收入增长率 (%) — 同比
+    revenue_yoy: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 归属母公司净利润增长率 (%) — 同比
+    profit_yoy: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 资产负债率 (%)
+    debt_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 期间费用率 (%) — for the 三费占比 > 50% red flag rule
+    expense_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+
+    __table_args__ = (
+        Index("ix_financials_code_date", "code", "report_date"),
+    )
+
+
 class SectorPicks(Base):
     """LLM-curated daily sector recommendations.
 

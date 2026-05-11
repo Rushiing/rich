@@ -159,6 +159,38 @@ def _validate_numeric_consistency(
                   f"⚠️ 建议买入价上限 {buy_high:.2f} 超过当前价 30%，已下调")
 
 
+def _validate_earnings_collapse(
+    payload: dict[str, Any], w: Watchlist, corrections: list[str],
+) -> None:
+    """Profit YoY < -50% AND revenue YoY < 0 = severe earnings deterioration.
+    Cap suggested position at 10% so even an aggressive reader doesn't go
+    heavy into a fundamentally broken name."""
+    from . import financials as fin_svc
+    rows = fin_svc.latest_for_code(w.code, n=1)
+    if not rows:
+        return
+    latest = rows[0]
+    if latest.profit_yoy is None or latest.revenue_yoy is None:
+        return
+    if not (latest.profit_yoy < -50 and latest.revenue_yoy < 0):
+        return
+
+    key_table = payload.get("key_table", {})
+    position = key_table.get("position_pct") or 0
+    if position > 10:
+        key_table["position_pct"] = 10
+        _trip(corrections,
+              f"⚠️ 业绩塌方（净利同比 {latest.profit_yoy:.0f}%、营收同比 "
+              f"{latest.revenue_yoy:.0f}%），仓位上限压到 10%")
+    # Also clamp aggressive tier if present
+    tiers = key_table.get("actionable_tiers")
+    if isinstance(tiers, dict):
+        for tk in ("aggressive", "neutral", "conservative"):
+            tier = tiers.get(tk)
+            if isinstance(tier, dict) and (tier.get("position_pct") or 0) > 10:
+                tier["position_pct"] = 10
+
+
 def validate_and_correct(
     payload: dict[str, Any], w: Watchlist, snapshot: Snapshot | None,
 ) -> dict[str, Any]:
@@ -166,6 +198,7 @@ def validate_and_correct(
     are prepended to key_table.red_flags so the user sees what rules fired."""
     corrections: list[str] = []
     _validate_st(payload, w, corrections)
+    _validate_earnings_collapse(payload, w, corrections)
     _validate_technical_breakdown(payload, snapshot, corrections)
     _validate_numeric_consistency(payload, snapshot, corrections)
 
