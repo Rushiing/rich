@@ -125,11 +125,19 @@ def diag_refresh_financials():
 @app.get("/api/_diag/refresh-financials/status")
 def diag_refresh_financials_status():
     """Status of the most recent /refresh-financials run.
-    Returns {running, last_result}. last_result is None until the worker
-    completes; afterwards holds the counters dict {requested, ok, failed, rows}
-    or {error: msg}."""
+
+    Returns {running, progress, last_result}:
+      - running: True while the worker is in flight
+      - progress: live counters {done, ok, failed, total, current} so the
+        client can show "5/61 done, currently fetching 600519" instead of
+        a black-box spinner
+      - last_result: None until the worker completes; afterwards holds
+        the final counters dict or {error: msg}
+    """
+    from .services.financials import get_progress
     return {
         "running": _financials_running["v"],
+        "progress": get_progress(),
         "last_result": _financials_running["last_result"],
     }
 

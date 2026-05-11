@@ -11,12 +11,15 @@ Refresh cadence:
   - Cron: weekly Monday 08:00 BJT (heaviest during earnings windows;
     inside one of those windows we may want to switch to daily — TODO)
 
-Performance note: sina endpoint is per-stock, ~1-2s each. 60-stock
-watchlist serializes to ~90s. Run in a ThreadPoolExecutor with cap 8.
+Performance note: sina is per-stock ~1-3s each. We use a small thread
+pool (4 workers) — going higher trips sina's per-IP rate limit and
+actually makes the batch slower. Progress is published to a global
+counter so /status can show running totals.
 """
 from __future__ import annotations
 
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any, Iterable
@@ -27,6 +30,16 @@ from sqlalchemy.orm import Session
 from ..db import SessionLocal
 from ..models import Financial
 from .scraper import _safe_with_timeout
+
+# Live progress shared with the diag /status endpoint.
+_progress_lock = threading.Lock()
+_progress: dict[str, Any] = {"done": 0, "ok": 0, "failed": 0, "total": 0, "current": None}
+
+
+def get_progress() -> dict[str, Any]:
+    """Snapshot of in-flight batch progress. Empty dict outside a run."""
+    with _progress_lock:
+        return dict(_progress)
 
 logger = logging.getLogger(__name__)
 
@@ -65,8 +78,12 @@ def _f(v) -> float | None:
 def pull_for_code(code: str) -> int:
     """Fetch financials for one stock, upsert latest KEEP_QUARTERS rows.
     Returns count of rows written. Returns 0 on any failure (logged)."""
-    df = _safe_with_timeout(ak.stock_financial_abstract, symbol=code, _timeout=10.0)
+    import time as _time
+    _t0 = _time.monotonic()
+    df = _safe_with_timeout(ak.stock_financial_abstract, symbol=code, _timeout=15.0)
+    fetch_ms = int((_time.monotonic() - _t0) * 1000)
     if df is None or len(df) == 0:
+        logger.info("financials[%s] fetch=%dms result=empty", code, fetch_ms)
         return 0
 
     # Pre-extract each indicator row once
@@ -130,12 +147,23 @@ def pull_for_code(code: str) -> int:
         return 0
     finally:
         db.close()
+    total_ms = int((_time.monotonic() - _t0) * 1000)
+    logger.info("financials[%s] fetch=%dms total=%dms rows=%d",
+                code, fetch_ms, total_ms, written)
     return written
 
 
+# Sina rate-limits per-IP fairly aggressively; 4 concurrent workers is
+# the sweet spot in practice — higher leads to 429-style stalls that
+# make the whole batch slower.
+DEFAULT_MAX_WORKERS = 4
+
+
 def pull_for_watchlist(codes: Iterable[str] | None = None) -> dict:
-    """Batch refresh — uses a thread pool since sina is per-call. Default
-    = all distinct codes in watchlist. Returns counters for diag display."""
+    """Batch refresh — uses a small thread pool because sina rate-limits
+    per IP. Default = all distinct codes in watchlist. Updates the global
+    _progress dict so /api/_diag/refresh-financials/status can stream
+    counts mid-run. Returns final counters."""
     if codes is None:
         db: Session = SessionLocal()
         try:
@@ -147,8 +175,15 @@ def pull_for_watchlist(codes: Iterable[str] | None = None) -> dict:
     if not codes:
         return {"requested": 0, "ok": 0, "failed": 0, "rows": 0}
 
+    with _progress_lock:
+        _progress["total"] = len(codes)
+        _progress["done"] = 0
+        _progress["ok"] = 0
+        _progress["failed"] = 0
+        _progress["current"] = None
+
     ok = failed = rows = 0
-    with ThreadPoolExecutor(max_workers=min(8, len(codes))) as pool:
+    with ThreadPoolExecutor(max_workers=min(DEFAULT_MAX_WORKERS, len(codes))) as pool:
         futures = {pool.submit(pull_for_code, c): c for c in codes}
         for fut in as_completed(futures):
             code = futures[fut]
@@ -162,6 +197,12 @@ def pull_for_watchlist(codes: Iterable[str] | None = None) -> dict:
             except Exception:
                 logger.exception("financials thread for %s raised", code)
                 failed += 1
+            with _progress_lock:
+                _progress["done"] += 1
+                _progress["ok"] = ok
+                _progress["failed"] = failed
+                _progress["current"] = code
+
     logger.info("financials batch: requested=%d ok=%d failed=%d rows=%d",
                 len(codes), ok, failed, rows)
     return {"requested": len(codes), "ok": ok, "failed": failed, "rows": rows}
