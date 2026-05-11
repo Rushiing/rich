@@ -42,7 +42,7 @@ DEFAULT_MODEL = "kimi-k2.5"
 # Prompt version — bump whenever the tool schema or system prompt changes
 # in a way that affects output content. Stored on each Analysis row so we
 # can compare hit rates across versions later. Format: "vMAJOR.MINOR-shortdesc".
-PROMPT_VERSION = "v2.2-kline-history-cot"
+PROMPT_VERSION = "v2.3-kline-cot-validators"
 
 # Tool schema. Claude is forced to call this; we read the structured input
 # back as our analysis. The `additionalProperties: False` constraint + enums
@@ -619,6 +619,13 @@ def generate(
             "analysis_thinking[%s] %d chars: %s",
             code, len(thinking), thinking[:120].replace("\n", " "),
         )
+
+    # Post-hoc validators: catch self-contradictions the LLM still emits
+    # (ST stocks given 观望 instead of 不建议入手, 建议买入 against broken
+    # technicals, tier monotonicity violations, etc.) Mutates payload + adds
+    # corrections to red_flags.
+    from .analysis_validators import validate_and_correct
+    validate_and_correct(payload, w, s)
 
     existing = db.query(Analysis).filter(Analysis.code == code).first()
     if existing:
