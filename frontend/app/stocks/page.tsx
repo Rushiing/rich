@@ -408,7 +408,6 @@ export default function StocksPage() {
             <th style={{ ...th, width: 28 }} aria-label="特别关注"></th>
             <th style={th}>代码</th>
             <th style={th}>名称</th>
-            <th style={{ ...th, textAlign: "right" }}>现价</th>
             <th style={{ ...th, textAlign: "right" }}>今日</th>
             <th style={{ ...th, textAlign: "right" }}>3日涨幅</th>
             <th style={{ ...th, textAlign: "right" }}>3日换手</th>
@@ -422,14 +421,14 @@ export default function StocksPage() {
         <tbody>
           {loading && (
             <tr>
-              <td colSpan={12} style={{ ...td, textAlign: "center", color: "var(--text-faint)" }}>
+              <td colSpan={11} style={{ ...td, textAlign: "center", color: "var(--text-faint)" }}>
                 加载中…
               </td>
             </tr>
           )}
           {!loading && rows.length === 0 && (
             <tr>
-              <td colSpan={12} style={{ ...td, textAlign: "center", color: "var(--text-faint)" }}>
+              <td colSpan={11} style={{ ...td, textAlign: "center", color: "var(--text-faint)" }}>
                 自选池为空，先去
                 <a href="/watchlist" style={{ color: "var(--link)", marginLeft: 4 }}>
                   导入股票
@@ -440,7 +439,7 @@ export default function StocksPage() {
           )}
           {!loading && rows.length > 0 && filter !== null && visibleRows.length === 0 && (
             <tr>
-              <td colSpan={12} style={{ ...td, textAlign: "center", color: "var(--text-faint)" }}>
+              <td colSpan={11} style={{ ...td, textAlign: "center", color: "var(--text-faint)" }}>
                 当前筛选下没有股票
               </td>
             </tr>
@@ -458,7 +457,7 @@ export default function StocksPage() {
                   onClick={() => toggleGroup(key)}
                   style={{ cursor: "pointer", background: "var(--bg)" }}
                 >
-                  <td colSpan={12} style={{
+                  <td colSpan={11} style={{
                     padding: "8px 10px",
                     borderTop: "1px solid var(--border-soft)",
                     borderBottom: "1px solid var(--border-soft)",
@@ -669,15 +668,6 @@ function stockRow(r: StockRow, onToggleStar: (code: string) => void) {
         {r.code}
       </td>
       <td style={td}>{r.name}</td>
-      <td style={{
-        ...td,
-        textAlign: "right",
-        fontFamily: "monospace",
-        // Tint the price by today's direction so the column reads at a glance.
-        color: r.change_pct == null ? "var(--text)" : r.change_pct >= 0 ? "#ef4444" : "#22c55e",
-      }}>
-        {r.price != null ? r.price.toFixed(2) : "-"}
-      </td>
       <td style={{
         ...td,
         textAlign: "right",

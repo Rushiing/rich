@@ -75,12 +75,28 @@ export default function StockDetailPage({
 
   return (
     <main style={{ padding: 20, maxWidth: 880, margin: "0 auto" }}>
-      <header style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
-        <h1 style={{ fontSize: 18, margin: 0, display: "flex", alignItems: "baseline", gap: 8 }}>
+      <header style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <h1 style={{ fontSize: 18, margin: 0, display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
           {detail?.name && <span>{detail.name}</span>}
           <span style={{ fontFamily: "monospace", color: "var(--text-faint)", fontSize: 15 }}>
             {code}
           </span>
+          {detail?.price != null && (
+            <span style={{
+              fontFamily: "monospace",
+              fontSize: 16,
+              color: detail.change_pct == null
+                ? "var(--text)"
+                : detail.change_pct >= 0 ? "#ef4444" : "#22c55e",
+            }}>
+              {detail.price.toFixed(2)}
+              {detail.change_pct != null && (
+                <span style={{ fontSize: 13, marginLeft: 4 }}>
+                  {detail.change_pct >= 0 ? "+" : ""}{detail.change_pct.toFixed(2)}%
+                </span>
+              )}
+            </span>
+          )}
         </h1>
         <a href="/stocks" style={{ color: "#9ca3af", fontSize: 13, textDecoration: "none" }}>
           ← 返回盯盘

@@ -71,11 +71,9 @@ class StockRow(BaseModel):
     name: str
     exchange: str
     last_ts: str | None
-    # Realtime price + 今日涨跌. Both sourced from the latest snapshot row
-    # (same source the detail page uses). price was dropped from the list
-    # UI in Phase 7 then re-added on request — the field always stayed in
-    # the response.
-    price: float | None
+    # 今日 columns kept (the Phase 7 ask removed "价格" + "信号" from the
+    # list display, but the data stays — UI just doesn't render those
+    # columns anymore. change_pct labels as "今日涨跌" on frontend.)
     change_pct: float | None
     # Phase 7 new columns: 3-day rolling metrics
     change_pct_3d: float | None       # 3日涨幅 %
@@ -192,7 +190,6 @@ def list_stocks(
             name=w.name,
             exchange=w.exchange,
             last_ts=s.ts.isoformat() if s else None,
-            price=(s.price if s else None),
             change_pct=(s.change_pct if s else None),
             change_pct_3d=(s.change_pct_3d if s else None),
             turnover_rate_3d=(s.turnover_rate_3d if s else None),
