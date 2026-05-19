@@ -109,6 +109,36 @@ def cmd_invite_create(args):
     print(f"OK: invite code {code}{uses_part}{note_part}{exp_part}")
 
 
+def cmd_invite_set_max_uses(args):
+    """Repair / change a code's redemption cap. `value` is an integer or
+    the literal 'unlimited'. Use this to fix codes minted before the
+    column-default bug was removed (--unlimited codes stored as max_uses=1)."""
+    raw = args.value.strip().lower()
+    if raw in ("unlimited", "inf", "none", "null"):
+        new_max = None
+    else:
+        try:
+            new_max = int(raw)
+        except ValueError:
+            print(f"ERROR: value must be an integer or 'unlimited', got {args.value!r}",
+                  file=sys.stderr)
+            sys.exit(2)
+        if new_max < 1:
+            print("ERROR: max-uses must be >= 1", file=sys.stderr)
+            sys.exit(2)
+    code = args.code.upper()
+    with SessionLocal() as db:
+        row = db.query(InviteCode).filter(InviteCode.code == code).first()
+        if row is None:
+            print(f"ERROR: code {code} not found", file=sys.stderr)
+            sys.exit(1)
+        old = "∞" if row.max_uses is None else str(row.max_uses)
+        row.max_uses = new_max
+        db.commit()
+        new = "∞" if new_max is None else str(new_max)
+        print(f"OK: {code} max_uses {old} → {new}  (current_uses={row.current_uses or 0})")
+
+
 def cmd_invite_list(args):
     with SessionLocal() as db:
         q = db.query(InviteCode)
@@ -160,6 +190,12 @@ def main():
     inv_list = inv_sub.add_parser("list", help="list invite codes")
     inv_list.add_argument("--unused", action="store_true", help="only show unused codes")
     inv_list.set_defaults(func=cmd_invite_list)
+
+    inv_smu = inv_sub.add_parser(
+        "set-max-uses", help="change a code's redemption cap (int or 'unlimited')")
+    inv_smu.add_argument("code")
+    inv_smu.add_argument("value", help="integer N, or 'unlimited'")
+    inv_smu.set_defaults(func=cmd_invite_set_max_uses)
 
     args = parser.parse_args()
     args.func(args)

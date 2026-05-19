@@ -73,8 +73,13 @@ class InviteCode(Base):
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
     )
     # NULL = unlimited reuse, integer N = up to N redemptions.
-    # Default 1 preserves the original one-shot behavior.
-    max_uses: Mapped[int | None] = mapped_column(Integer, nullable=True, default=1)
+    # NOTE: deliberately no column `default` here. A scalar default fires
+    # whenever the value is None at flush time — even an *explicit*
+    # max_uses=None — so a column default would silently turn every
+    # --unlimited code into a one-shot (max_uses=1). One-shot semantics
+    # are handled in the caller (admin_users.py sets max_uses=1 explicitly
+    # when neither --unlimited nor --max-uses is given).
+    max_uses: Mapped[int | None] = mapped_column(Integer, nullable=True)
     current_uses: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0",
     )
