@@ -114,7 +114,7 @@ export default function SmsLoginPage() {
           display: "flex", flexDirection: "column", gap: 12,
         }}
       >
-        <h1 style={{ fontSize: 22, margin: 0 }}>rich</h1>
+        <h1 style={{ fontSize: 22, margin: 0 }}>RICH</h1>
         <p style={{ margin: 0, color: "var(--text-muted)", fontSize: 13 }}>
           {step === "phone"
             ? "短信验证码登录（白名单内手机号）"

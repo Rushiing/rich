@@ -62,7 +62,7 @@ export default function TopNav() {
           letterSpacing: 0.5,
         }}
       >
-        rich
+        RICH
       </a>
 
       <div style={{ display: "flex", gap: 2, flex: 1, flexWrap: "wrap" }}>

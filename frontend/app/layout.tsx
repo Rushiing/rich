@@ -4,13 +4,13 @@ import ChangelogModal from "./_components/ChangelogModal";
 import TopNav from "./_components/TopNav";
 
 export const metadata: Metadata = {
-  title: "rich",
+  title: "RICH",
   description: "A股盯盘与深度解析（内部使用）",
   manifest: "/manifest.webmanifest",
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
-    title: "rich",
+    title: "RICH",
   },
   icons: {
     icon: "/icon.svg",

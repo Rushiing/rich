@@ -57,7 +57,7 @@ export default function LoginPage() {
       minHeight: "100vh", padding: 16,
     }}>
       <form onSubmit={submit} style={formStyle}>
-        <h1 style={{ fontSize: 22, margin: 0 }}>rich</h1>
+        <h1 style={{ fontSize: 22, margin: 0 }}>RICH</h1>
         <p style={{ margin: 0, color: "var(--text-muted)", fontSize: 13 }}>
           手机号 + 密码登录
         </p>

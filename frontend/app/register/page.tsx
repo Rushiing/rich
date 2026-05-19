@@ -68,7 +68,7 @@ export default function RegisterPage() {
       minHeight: "100vh", padding: 16,
     }}>
       <form onSubmit={submit} style={formStyle}>
-        <h1 style={{ fontSize: 22, margin: 0 }}>注册 rich 账号</h1>
+        <h1 style={{ fontSize: 22, margin: 0 }}>注册 RICH 账号</h1>
         <p style={{ margin: 0, color: "var(--text-muted)", fontSize: 13 }}>
           凭邀请码注册。手机号当账号 ID。
         </p>
