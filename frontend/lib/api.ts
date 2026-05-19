@@ -55,7 +55,8 @@ export type StockRow = {
   name: string;
   exchange: string;
   last_ts: string | null;
-  // 今日涨跌 — kept on the row even though the redesign hides "价格"
+  // 现价 + 今日涨跌, both from the latest snapshot
+  price: number | null;
   change_pct: number | null;
   // Phase 7: 3-day rolling
   change_pct_3d: number | null;

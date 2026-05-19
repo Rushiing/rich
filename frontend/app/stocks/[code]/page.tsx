@@ -76,7 +76,12 @@ export default function StockDetailPage({
   return (
     <main style={{ padding: 20, maxWidth: 880, margin: "0 auto" }}>
       <header style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
-        <h1 style={{ fontSize: 18, margin: 0, fontFamily: "monospace" }}>{code}</h1>
+        <h1 style={{ fontSize: 18, margin: 0, display: "flex", alignItems: "baseline", gap: 8 }}>
+          {detail?.name && <span>{detail.name}</span>}
+          <span style={{ fontFamily: "monospace", color: "var(--text-faint)", fontSize: 15 }}>
+            {code}
+          </span>
+        </h1>
         <a href="/stocks" style={{ color: "#9ca3af", fontSize: 13, textDecoration: "none" }}>
           ← 返回盯盘
         </a>
