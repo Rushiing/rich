@@ -222,6 +222,22 @@ export type SectorPicksResponse = {
   is_fresh: boolean;
 };
 
+export type Holding = {
+  code: string;
+  cost_price: number;
+  shares: number | null;
+  opened_at: string | null;
+  note: string | null;
+  updated_at: string;
+};
+
+export type HoldingUpsert = {
+  cost_price: number;
+  shares?: number | null;
+  opened_at?: string | null;
+  note?: string | null;
+};
+
 export const api = {
   // ---- auth ----
   me: () => request<Me>("/api/auth/me"),
@@ -266,4 +282,14 @@ export const api = {
       `/api/stocks/${code}/analysis?mode=${mode}`,
       { method: "POST" },
     ),
+  // ---- holdings (cost basis) ----
+  getHolding: (code: string) =>
+    request<Holding | null>(`/api/holdings/${code}`),
+  upsertHolding: (code: string, body: HoldingUpsert) =>
+    request<Holding>(`/api/holdings/${code}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  deleteHolding: (code: string) =>
+    request<{ ok: boolean }>(`/api/holdings/${code}`, { method: "DELETE" }),
 };

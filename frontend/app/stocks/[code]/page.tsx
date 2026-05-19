@@ -2,7 +2,7 @@
 
 import { use, useEffect, useState, type ReactNode } from "react";
 import {
-  api, ActionableTier, ActionableTiers, KeyTable, NextDayOutlook,
+  api, ActionableTier, ActionableTiers, Holding, KeyTable, NextDayOutlook,
   ScenarioAdvice, StockAnalysis, StockDetail, StopLossLevel,
 } from "../../../lib/api";
 import Tooltip from "../../_components/Tooltip";
@@ -108,6 +108,11 @@ export default function StockDetailPage({
       ) : (
         <>
           {detail && <IndustryContextCard detail={detail} />}
+          <HoldingCard
+            code={code}
+            price={detail?.price ?? null}
+            keyTable={analysis?.key_table ?? null}
+          />
           {!analysis ? (
             <EmptyState onGenerate={regenerate} generating={generating} err={err} />
           ) : (
@@ -227,6 +232,269 @@ function IndustryContextCard({ detail }: { detail: StockDetail }) {
         <div>行业平均 PE: <b style={{ color: "var(--text)", fontFamily: "monospace" }}>{detail.industry_pe_avg?.toFixed(1) ?? "—"}</b></div>
         <div>行业平均 PB: <b style={{ color: "var(--text)", fontFamily: "monospace" }}>{detail.industry_pb_avg?.toFixed(2) ?? "—"}</b></div>
       </div>
+    </section>
+  );
+}
+
+
+/**
+ * 我的持仓 card. Lets the user record cost basis for this stock, then
+ * shows a 持仓对照 overlay: float P&L + distance to the AI's sell range +
+ * stop-loss cushion. All computed client-side from the holding + the
+ * (globally cached) analysis numbers — no extra LLM call.
+ */
+function HoldingCard({
+  code, price, keyTable,
+}: {
+  code: string;
+  price: number | null;
+  keyTable: KeyTable | null;
+}) {
+  const [holding, setHolding] = useState<Holding | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // form fields
+  const [costPrice, setCostPrice] = useState("");
+  const [shares, setShares] = useState("");
+  const [openedAt, setOpenedAt] = useState("");
+  const [note, setNote] = useState("");
+
+  useEffect(() => {
+    api.getHolding(code)
+      .then((h) => setHolding(h))
+      .catch(() => setHolding(null))
+      .finally(() => setLoading(false));
+  }, [code]);
+
+  function openEdit() {
+    setCostPrice(holding ? String(holding.cost_price) : "");
+    setShares(holding?.shares != null ? String(holding.shares) : "");
+    setOpenedAt(holding?.opened_at ?? "");
+    setNote(holding?.note ?? "");
+    setErr(null);
+    setEditing(true);
+  }
+
+  async function save() {
+    const cp = parseFloat(costPrice);
+    if (!(cp > 0)) { setErr("成本价必须大于 0"); return; }
+    setSaving(true);
+    setErr(null);
+    try {
+      const h = await api.upsertHolding(code, {
+        cost_price: cp,
+        shares: shares.trim() ? parseFloat(shares) : null,
+        opened_at: openedAt.trim() || null,
+        note: note.trim() || null,
+      });
+      setHolding(h);
+      setEditing(false);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove() {
+    if (!confirm("确认移除该股的持仓记录？")) return;
+    setSaving(true);
+    try {
+      await api.deleteHolding(code);
+      setHolding(null);
+      setEditing(false);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) return null;
+
+  const cardStyle: React.CSSProperties = {
+    marginTop: 16, padding: 14, border: "1px solid var(--border)",
+    borderRadius: 8, background: "var(--surface-alt)",
+  };
+
+  // ---- edit form ----
+  if (editing) {
+    const inp: React.CSSProperties = {
+      padding: "6px 8px", background: "var(--bg)",
+      border: "1px solid var(--border-mid)", borderRadius: 4,
+      color: "var(--text)", fontSize: 13, width: "100%",
+    };
+    return (
+      <section style={cardStyle}>
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
+          {holding ? "编辑持仓" : "记录我的持仓"}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          <label style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            成本价 *
+            <input type="number" inputMode="decimal" value={costPrice}
+              onChange={(e) => setCostPrice(e.target.value)}
+              placeholder="22.80" style={{ ...inp, marginTop: 3 }} />
+          </label>
+          <label style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            持仓数量（股，可选）
+            <input type="number" inputMode="numeric" value={shares}
+              onChange={(e) => setShares(e.target.value)}
+              placeholder="1000" style={{ ...inp, marginTop: 3 }} />
+          </label>
+          <label style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            建仓日期（可选）
+            <input type="date" value={openedAt}
+              onChange={(e) => setOpenedAt(e.target.value)}
+              style={{ ...inp, marginTop: 3 }} />
+          </label>
+          <label style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            备注（可选）
+            <input type="text" value={note} maxLength={100}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="加仓计划 / 心理价位…" style={{ ...inp, marginTop: 3 }} />
+          </label>
+        </div>
+        {err && <div style={{ color: "#ef4444", fontSize: 12, marginTop: 8 }}>{err}</div>}
+        <div style={{ display: "flex", gap: 8, marginTop: 10, justifyContent: "flex-end" }}>
+          {holding && (
+            <button onClick={remove} disabled={saving} style={{
+              padding: "5px 10px", background: "transparent", color: "#ef4444",
+              border: "1px solid var(--border-mid)", borderRadius: 4,
+              fontSize: 12, cursor: "pointer", marginRight: "auto",
+            }}>移除</button>
+          )}
+          <button onClick={() => setEditing(false)} disabled={saving} style={{
+            padding: "5px 10px", background: "transparent", color: "var(--text-soft)",
+            border: "1px solid var(--border-mid)", borderRadius: 4,
+            fontSize: 12, cursor: "pointer",
+          }}>取消</button>
+          <button onClick={save} disabled={saving} style={{
+            padding: "5px 12px", background: "var(--link)", color: "white",
+            border: "none", borderRadius: 4, fontSize: 12, cursor: "pointer",
+          }}>{saving ? "保存中…" : "保存"}</button>
+        </div>
+      </section>
+    );
+  }
+
+  // ---- empty state ----
+  if (!holding) {
+    return (
+      <section style={cardStyle}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 13, color: "var(--text-muted)" }}>
+            记录持仓后，可对照 AI 的买卖价 / 止损线看你的盈亏与安全垫
+          </span>
+          <button onClick={openEdit} style={{
+            padding: "5px 12px", background: "var(--link)", color: "white",
+            border: "none", borderRadius: 4, fontSize: 12, cursor: "pointer",
+            whiteSpace: "nowrap",
+          }}>记录我的持仓</button>
+        </div>
+      </section>
+    );
+  }
+
+  // ---- holding + 持仓对照 ----
+  const floatPct = price != null
+    ? (price - holding.cost_price) / holding.cost_price * 100
+    : null;
+  const floatColor = floatPct == null ? "var(--text)"
+    : floatPct >= 0 ? "#ef4444" : "#22c55e";
+  const marketValue = (price != null && holding.shares != null)
+    ? price * holding.shares : null;
+  const floatAmount = (price != null && holding.shares != null)
+    ? (price - holding.cost_price) * holding.shares : null;
+
+  // Stop-loss cushion vs the *most aggressive* (highest-priced) stop.
+  let stopNote: { text: string; color: string } | null = null;
+  if (keyTable?.stop_loss_levels?.length && price != null) {
+    const stop = Math.max(...keyTable.stop_loss_levels.map((l) => l.price));
+    if (price <= stop) {
+      stopNote = { text: `已跌破 AI 止损线 ${stop.toFixed(2)}`, color: "#ef4444" };
+    } else {
+      const cushion = (price - stop) / price * 100;
+      stopNote = {
+        text: `距 AI 止损线 ${stop.toFixed(2)} 还有 ${cushion.toFixed(1)}% 安全垫`,
+        color: cushion < 5 ? "#facc15" : "var(--text-soft)",
+      };
+    }
+  }
+  // Distance to the sell range.
+  let sellNote: { text: string; color: string } | null = null;
+  if (keyTable && price != null) {
+    if (price >= keyTable.sell_price_low) {
+      sellNote = { text: `已进入 AI 卖出区间（${keyTable.sell_price_low.toFixed(2)}–${keyTable.sell_price_high.toFixed(2)}），可考虑减仓`, color: "#facc15" };
+    } else {
+      const up = (keyTable.sell_price_low - price) / price * 100;
+      sellNote = { text: `距 AI 卖出区间下沿 ${keyTable.sell_price_low.toFixed(2)} 还需 +${up.toFixed(1)}%`, color: "var(--text-soft)" };
+    }
+  }
+
+  const fact: React.CSSProperties = { fontSize: 13 };
+  const factVal: React.CSSProperties = { fontFamily: "monospace", color: "var(--text)" };
+
+  return (
+    <section style={cardStyle}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
+        <span style={{ fontSize: 13, fontWeight: 600 }}>我的持仓</span>
+        <button onClick={openEdit} style={{
+          padding: "2px 8px", background: "transparent", color: "var(--text-soft)",
+          border: "1px solid var(--border-mid)", borderRadius: 4,
+          fontSize: 11, cursor: "pointer",
+        }}>编辑</button>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "6px 16px" }}>
+        <div style={fact}>
+          <span style={{ color: "var(--text-muted)" }}>成本价 </span>
+          <b style={factVal}>{holding.cost_price.toFixed(2)}</b>
+        </div>
+        <div style={fact}>
+          <span style={{ color: "var(--text-muted)" }}>现价 </span>
+          <b style={factVal}>{price != null ? price.toFixed(2) : "—"}</b>
+        </div>
+        <div style={fact}>
+          <span style={{ color: "var(--text-muted)" }}>浮动盈亏 </span>
+          <b style={{ fontFamily: "monospace", color: floatColor }}>
+            {floatPct != null ? `${floatPct >= 0 ? "+" : ""}${floatPct.toFixed(2)}%` : "—"}
+          </b>
+        </div>
+        {holding.shares != null && (
+          <div style={fact}>
+            <span style={{ color: "var(--text-muted)" }}>持仓数量 </span>
+            <b style={factVal}>{holding.shares.toLocaleString("zh-CN")}</b>
+          </div>
+        )}
+        {marketValue != null && (
+          <div style={fact}>
+            <span style={{ color: "var(--text-muted)" }}>市值 </span>
+            <b style={factVal}>{marketValue.toLocaleString("zh-CN", { maximumFractionDigits: 0 })}</b>
+          </div>
+        )}
+        {floatAmount != null && (
+          <div style={fact}>
+            <span style={{ color: "var(--text-muted)" }}>浮动金额 </span>
+            <b style={{ fontFamily: "monospace", color: floatColor }}>
+              {floatAmount >= 0 ? "+" : ""}{floatAmount.toLocaleString("zh-CN", { maximumFractionDigits: 0 })}
+            </b>
+          </div>
+        )}
+      </div>
+      {(sellNote || stopNote) && (
+        <div style={{ marginTop: 10, paddingTop: 8, borderTop: "1px solid var(--border-faint)", display: "flex", flexDirection: "column", gap: 4 }}>
+          {sellNote && <div style={{ fontSize: 12, color: sellNote.color }}>· {sellNote.text}</div>}
+          {stopNote && <div style={{ fontSize: 12, color: stopNote.color }}>· {stopNote.text}</div>}
+        </div>
+      )}
+      {holding.note && (
+        <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-faint)" }}>
+          备注：{holding.note}
+        </div>
+      )}
     </section>
   );
 }
