@@ -609,12 +609,12 @@ function ActionableCell({ analysis }: { analysis: AnalysisBrief | null }) {
         )}
       </div>
       {analysis.company_tag && (
-        <span style={{ color: "#9ca3af", fontSize: 11, lineHeight: 1.4 }}>
+        <span style={{ color: "var(--text)", fontSize: 13, fontWeight: 600, lineHeight: 1.5 }}>
           {analysis.company_tag}
         </span>
       )}
       {analysis.one_line_reason && (
-        <span style={{ color: "var(--text-muted)", fontSize: 11, lineHeight: 1.4 }}>
+        <span style={{ color: "var(--text-soft)", fontSize: 12, lineHeight: 1.5 }}>
           {analysis.one_line_reason}
         </span>
       )}
