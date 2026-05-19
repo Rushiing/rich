@@ -3,8 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 import readXlsxFile from "read-excel-file";
 import { api, WatchlistItem, ImportResult } from "../../lib/api";
-import UserChip from "../_components/UserChip";
-import ThemeToggle from "../_components/ThemeToggle";
 
 const exchangeLabel: Record<string, string> = {
   sh: "上交",
@@ -86,13 +84,7 @@ export default function WatchlistPage() {
     <main style={{ padding: 20, maxWidth: 880, margin: "0 auto" }}>
       <header style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
         <h1 style={{ fontSize: 18, margin: 0 }}>自选池管理</h1>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <ThemeToggle />
-          <UserChip />
-          <a href="/stocks" style={linkStyle}>盯盘</a>
-          <a href="/changelog" style={linkStyle}>更新日志</a>
-          <button onClick={() => setShowImport(true)} style={primaryBtn}>导入</button>
-        </div>
+        <button onClick={() => setShowImport(true)} style={primaryBtn}>导入</button>
       </header>
 
       {/* Toolbar row: count on left, bulk-delete affordance on right when
@@ -341,12 +333,6 @@ function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone: () => 
   );
 }
 
-const linkStyle: React.CSSProperties = {
-  color: "#9ca3af",
-  fontSize: 13,
-  textDecoration: "none",
-  padding: "6px 10px",
-};
 const primaryBtn: React.CSSProperties = {
   padding: "6px 12px",
   background: "var(--link)",

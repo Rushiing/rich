@@ -10,19 +10,12 @@
  */
 
 import { CHANGELOG } from "../../lib/changelog";
-import UserChip from "../_components/UserChip";
-import ThemeToggle from "../_components/ThemeToggle";
 
 export default function ChangelogPage() {
   return (
     <main style={{ padding: 20, maxWidth: 880, margin: "0 auto" }}>
-      <header style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
+      <header style={{ display: "flex", alignItems: "baseline" }}>
         <h1 style={{ fontSize: 18, margin: 0 }}>更新日志</h1>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <ThemeToggle />
-          <UserChip />
-          <a href="/stocks" style={linkStyle}>盯盘</a>
-        </div>
       </header>
 
       <p style={{ color: "var(--text-muted)", fontSize: 12, marginTop: 12 }}>
@@ -74,10 +67,3 @@ export default function ChangelogPage() {
     </main>
   );
 }
-
-const linkStyle: React.CSSProperties = {
-  color: "var(--text-soft)",
-  fontSize: 13,
-  textDecoration: "none",
-  padding: "6px 10px",
-};

@@ -2,8 +2,6 @@
 
 import { Fragment, useEffect, useRef, useState } from "react";
 import { api, AnalysisBrief, StockRow } from "../../lib/api";
-import UserChip from "../_components/UserChip";
-import ThemeToggle from "../_components/ThemeToggle";
 import Tooltip from "../_components/Tooltip";
 
 // While a snapshot job is running we re-pull /api/stocks at this cadence so
@@ -351,11 +349,6 @@ export default function StocksPage() {
       <header style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
         <h1 style={{ fontSize: 18, margin: 0 }}>盯盘</h1>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <ThemeToggle />
-          <UserChip />
-          <a href="/sectors" style={primaryLinkBtn}>板块</a>
-          <a href="/watchlist" style={primaryLinkBtn}>自选池管理</a>
-          <a href="/changelog" style={primaryLinkBtn}>更新日志</a>
           <button onClick={batchAnalyze} disabled={analyzing} style={ghostBtn}>
             {analyzing
               ? "解析中…"
@@ -803,20 +796,6 @@ function fmtFlow(yuan: number | null): string {
   return `${sign}${abs.toFixed(0)}`;
 }
 
-// "自选池" is the primary CTA on the 盯盘 page now — paint it as the
-// highlighted action; batch-analyze / manual-snapshot drop to ghost.
-const primaryLinkBtn: React.CSSProperties = {
-  display: "inline-block",
-  padding: "6px 14px",
-  background: "var(--link)",
-  color: "white",
-  border: "none",
-  borderRadius: 6,
-  fontSize: 13,
-  textDecoration: "none",
-  cursor: "pointer",
-  fontWeight: 500,
-};
 const ghostBtn: React.CSSProperties = {
   padding: "6px 12px",
   background: "transparent",

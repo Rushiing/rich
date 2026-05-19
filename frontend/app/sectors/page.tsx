@@ -2,8 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { api, Sector, SectorPicksResponse } from "../../lib/api";
-import UserChip from "../_components/UserChip";
-import ThemeToggle from "../_components/ThemeToggle";
 import Tooltip from "../_components/Tooltip";
 
 /**
@@ -46,15 +44,8 @@ export default function SectorsPage() {
 
   return (
     <main style={{ padding: 20, maxWidth: 1600, margin: "0 auto" }}>
-      <header style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
+      <header style={{ display: "flex", alignItems: "baseline" }}>
         <h1 style={{ fontSize: 18, margin: 0 }}>板块</h1>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <ThemeToggle />
-          <UserChip />
-          <a href="/stocks" style={linkStyle}>盯盘</a>
-          <a href="/watchlist" style={linkStyle}>自选池管理</a>
-          <a href="/changelog" style={linkStyle}>更新日志</a>
-        </div>
       </header>
 
       <PicksHero
@@ -312,12 +303,6 @@ function fmtTurnover(yuan: number | null): string {
   return yuan.toFixed(0);
 }
 
-const linkStyle: React.CSSProperties = {
-  color: "#9ca3af",
-  fontSize: 13,
-  textDecoration: "none",
-  padding: "6px 10px",
-};
 const tableStyle: React.CSSProperties = {
   width: "100%",
   borderCollapse: "collapse",

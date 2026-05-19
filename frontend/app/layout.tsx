@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import ChangelogModal from "./_components/ChangelogModal";
+import TopNav from "./_components/TopNav";
 
 export const metadata: Metadata = {
   title: "rich",
@@ -60,6 +61,7 @@ export default function RootLayout({
           minHeight: "100vh",
         }}
       >
+        <TopNav />
         {children}
         <ChangelogModal />
       </body>
