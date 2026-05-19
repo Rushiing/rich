@@ -706,6 +706,22 @@ def generate(
         db.add(row)
     db.commit()
     db.refresh(row)
+
+    # Drop an outcome anchor for the feedback loop — verdict + reference
+    # price now, forward returns filled later by _outcomes_tick. Best-effort:
+    # a failure here must not fail the analysis itself.
+    try:
+        from .outcomes import record_anchor
+        kt = payload.get("key_table") or {}
+        record_anchor(
+            db, code=code, generated_at=row.created_at,
+            actionable=str(kt.get("actionable") or ""),
+            prompt_version=PROMPT_VERSION, mode=mode,
+            anchor_price=(s.price if s else None),
+        )
+    except Exception:
+        logger.exception("outcome anchor failed for %s (non-fatal)", code)
+
     return row
 
 

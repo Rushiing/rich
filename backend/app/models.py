@@ -302,6 +302,82 @@ class Financial(Base):
     )
 
 
+class AnalysisOutcome(Base):
+    """Tracks how an analysis verdict played out over the following N
+    trading days. One row per analysis *generation* (a regenerate creates
+    a new row, so we accumulate a history).
+
+    Anchor (code, generated_at, actionable, anchor_price) is written at
+    generation time; the forward close_dN / return_dN columns are filled
+    in by the daily _outcomes_tick cron as enough trading days elapse.
+
+    Purpose: a feedback loop to measure whether prompt / pipeline changes
+    actually improve hit rate (compare grouped by prompt_version / mode).
+    """
+    __tablename__ = "analysis_outcomes"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    code: Mapped[str] = mapped_column(String(6), nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+    )
+    actionable: Mapped[str] = mapped_column(String(20), nullable=False)
+    prompt_version: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    mode: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Reference price at generation time (snapshot price).
+    anchor_price: Mapped[float] = mapped_column(Float, nullable=False)
+
+    # Forward closing prices — filled by cron once N trading days pass.
+    close_d1: Mapped[float | None] = mapped_column(Float, nullable=True)
+    close_d3: Mapped[float | None] = mapped_column(Float, nullable=True)
+    close_d5: Mapped[float | None] = mapped_column(Float, nullable=True)
+    close_d20: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Forward returns (%), = (close_dN - anchor_price) / anchor_price * 100.
+    return_d1: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_d3: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_d5: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_d20: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+
+    __table_args__ = (
+        Index("ix_analysis_outcomes_code", "code"),
+        Index("ix_analysis_outcomes_generated", "generated_at"),
+    )
+
+
+class Holding(Base):
+    """A user's recorded position in a stock — cost basis + share count.
+
+    Composite PK (user_id, code): one position per code per user. The
+    analysis stays globally cached (not per-user) — holdings drive a
+    computed "持仓对照" overlay on the detail page rather than feeding the
+    LLM prompt, so cost-basis personalization doesn't multiply LLM spend
+    or break the shared analysis cache.
+    """
+    __tablename__ = "holdings"
+
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True,
+    )
+    code: Mapped[str] = mapped_column(String(6), primary_key=True)
+    # 买入均价 (元/股)
+    cost_price: Mapped[float] = mapped_column(Float, nullable=False)
+    # 持仓数量 (股) — optional; cost_price alone delivers most of the value
+    shares: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 建仓日期 YYYY-MM-DD — optional
+    opened_at: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    note: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+
+
 class SectorPicks(Base):
     """LLM-curated daily sector recommendations.
 

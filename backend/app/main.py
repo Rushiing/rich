@@ -23,8 +23,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
 from .db import Base, engine, ensure_extra_columns, migrate_watchlist_pk, snapshot_columns
 from .models import (  # noqa: F401  (register tables with metadata)
-    Analysis, Financial, IndustryMeta, InviteCode, Kline, SectorPicks,
-    Snapshot, User, Watchlist,
+    Analysis, AnalysisOutcome, Financial, Holding, IndustryMeta, InviteCode,
+    Kline, SectorPicks, Snapshot, User, Watchlist,
 )
 from .routes import auth as auth_routes
 from .routes import sectors as sectors_routes
@@ -140,6 +140,25 @@ def diag_refresh_financials_status():
         "progress": get_progress(),
         "last_result": _financials_running["last_result"],
     }
+
+
+@app.post("/api/_diag/backfill-outcomes")
+def diag_backfill_outcomes():
+    """Manually run the analysis-outcome backfill (fills forward returns
+    from klines). Normally runs daily at 17:00 BJT via _outcomes_tick;
+    this is for ad-hoc runs."""
+    from .services import outcomes as outcomes_svc
+    return outcomes_svc.backfill_outcomes()
+
+
+@app.get("/api/_diag/outcomes-stats")
+def diag_outcomes_stats():
+    """Hit-rate summary grouped by prompt_version + actionable verdict.
+    A 'hit' = 建议买入 with return_d5 > 0, or 建议卖出 with return_d5 < 0.
+    Public on purpose — no secrets, lets us watch quality without shell
+    access."""
+    from .services import outcomes as outcomes_svc
+    return outcomes_svc.hit_rate_stats()
 
 
 @app.post("/api/_diag/refresh-klines")

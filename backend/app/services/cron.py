@@ -570,6 +570,16 @@ def _financials_tick():
         logger.exception("financials tick failed")
 
 
+def _outcomes_tick():
+    """Daily post-close: fill forward returns on analysis outcomes. Runs
+    after _kline_tick (16:30) so the latest close is already in the DB."""
+    try:
+        from . import outcomes as outcomes_svc
+        outcomes_svc.backfill_outcomes()
+    except Exception:
+        logger.exception("outcomes tick failed")
+
+
 def start_scheduler() -> None:
     """Idempotent. Called from FastAPI lifespan."""
     global scheduler
@@ -627,6 +637,15 @@ def start_scheduler() -> None:
         _financials_tick,
         CronTrigger(day_of_week="mon", hour=8, minute=0, timezone="Asia/Shanghai"),
         id="financials_mon_08_00",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+    # Analysis-outcome backfill — daily 17:00 BJT, after the 16:30 kline
+    # tick so the latest close is available.
+    sched.add_job(
+        _outcomes_tick,
+        CronTrigger(day_of_week="mon-fri", hour=17, minute=0, timezone="Asia/Shanghai"),
+        id="outcomes_17_00",
         replace_existing=True,
         misfire_grace_time=3600,
     )
