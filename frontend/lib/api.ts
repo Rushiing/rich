@@ -222,6 +222,13 @@ export type SectorPicksResponse = {
   is_fresh: boolean;
 };
 
+export type IndexQuote = {
+  symbol: string;
+  name: string;
+  point: number;
+  change_pct: number;
+};
+
 export type Holding = {
   code: string;
   cost_price: number;
@@ -241,6 +248,8 @@ export type HoldingUpsert = {
 export const api = {
   // ---- auth ----
   me: () => request<Me>("/api/auth/me"),
+  // ---- market ----
+  listIndices: () => request<IndexQuote[]>("/api/market/indices"),
   // ---- sectors ----
   listSectors: () => request<Sector[]>("/api/sectors"),
   getSectorPicks: () => request<SectorPicksResponse>("/api/sectors/picks"),

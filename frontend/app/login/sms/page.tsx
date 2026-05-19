@@ -94,7 +94,7 @@ export default function SmsLoginPage() {
         setError(body.detail || "验证失败");
         return;
       }
-      router.push("/stocks");
+      router.push("/");
     } catch {
       setError("网络错误");
     } finally {

@@ -54,7 +54,7 @@ export default function RegisterPage() {
         setError(body.detail || "注册失败");
         return;
       }
-      router.push("/stocks");
+      router.push("/");
     } catch {
       setError("网络错误");
     } finally {

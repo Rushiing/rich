@@ -28,6 +28,7 @@ from .models import (  # noqa: F401  (register tables with metadata)
 )
 from .routes import auth as auth_routes
 from .routes import holdings as holdings_routes
+from .routes import market as market_routes
 from .routes import sectors as sectors_routes
 from .routes import stocks as stocks_routes
 from .routes import watchlist as watchlist_routes
@@ -75,6 +76,7 @@ app.include_router(watchlist_routes.router)
 app.include_router(stocks_routes.router)
 app.include_router(sectors_routes.router)
 app.include_router(holdings_routes.router)
+app.include_router(market_routes.router)
 
 
 @app.post("/api/_diag/refresh-industry-meta")

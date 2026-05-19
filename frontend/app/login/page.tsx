@@ -43,7 +43,7 @@ export default function LoginPage() {
         setError(body.detail || "登录失败");
         return;
       }
-      router.push("/stocks");
+      router.push("/");
     } catch {
       setError("网络错误");
     } finally {
