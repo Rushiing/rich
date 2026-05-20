@@ -98,7 +98,7 @@ export default function StockDetailPage({
             </span>
           )}
         </h1>
-        <a href="/stocks" style={{ color: "#9ca3af", fontSize: 13, textDecoration: "none" }}>
+        <a href="/stocks" style={{ color: "var(--text-soft)", fontSize: 13, textDecoration: "none" }}>
           ← 返回盯盘
         </a>
       </header>
@@ -615,13 +615,13 @@ function KeyTableCard({ kt }: { kt: KeyTable }) {
         <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
           <div style={{ fontSize: 22, fontWeight: 600, color: actionableColor }}>{view.action}</div>
           {kt.company_tag && (
-            <div style={{ color: "#9ca3af", fontSize: 13 }}>{kt.company_tag}</div>
+            <div style={{ color: "var(--text-soft)", fontSize: 13 }}>{kt.company_tag}</div>
           )}
         </div>
         {/* Show the per-tier reason when the tier toggle exists; otherwise
             fall back to the global one_line_reason. */}
         {(tiers ? view.reason : kt.one_line_reason) && (
-          <div style={{ marginTop: 6, color: "#d4d4d4", fontSize: 14 }}>
+          <div style={{ marginTop: 6, color: "var(--text)", fontSize: 14 }}>
             {tiers ? view.reason : kt.one_line_reason}
           </div>
         )}
@@ -753,7 +753,7 @@ function NextDayOutlookCard({ outlook }: { outlook: NextDayOutlook }) {
           </span>
         </div>
         {outlook.reasoning && (
-          <p style={{ color: "#d4d4d4", fontSize: 13, marginTop: 8, marginBottom: 0, lineHeight: 1.5 }}>
+          <p style={{ color: "var(--text)", fontSize: 13, marginTop: 8, marginBottom: 0, lineHeight: 1.5 }}>
             {outlook.reasoning}
           </p>
         )}
@@ -827,7 +827,7 @@ function ScenarioAdviceCard({ advice }: { advice: ScenarioAdvice }) {
             }}
           >
             <span style={{ color: "var(--text-muted)", fontSize: 13, minWidth: 130 }}>{it.label}</span>
-            <span style={{ color: "#d4d4d4", fontSize: 13, lineHeight: 1.5, flex: 1 }}>{it.text}</span>
+            <span style={{ color: "var(--text)", fontSize: 13, lineHeight: 1.5, flex: 1 }}>{it.text}</span>
           </div>
         ))}
       </div>
@@ -1024,7 +1024,7 @@ function renderMarkdown(md: string): ReactNode[] {
     }
     if (b.kind === "p") {
       return (
-        <p key={i} style={{ margin: "8px 0", color: "#d4d4d4" }}>
+        <p key={i} style={{ margin: "8px 0", color: "var(--text)" }}>
           {inline(b.text)}
         </p>
       );
@@ -1050,7 +1050,7 @@ function renderMarkdown(md: string): ReactNode[] {
             {b.rows.map((row, ri) => (
               <tr key={ri}>
                 {row.map((cell, ci) => (
-                  <td key={ci} style={{ padding: "6px 12px", borderBottom: "1px solid var(--border-faint)", color: "#d4d4d4" }}>
+                  <td key={ci} style={{ padding: "6px 12px", borderBottom: "1px solid var(--border-faint)", color: "var(--text)" }}>
                     {inline(cell)}
                   </td>
                 ))}
@@ -1080,7 +1080,7 @@ function renderList(
   }
   const Tag = b.kind === "ol" ? "ol" : "ul";
   return (
-    <Tag key={key} style={{ margin: "8px 0 8px 24px", padding: 0, color: "#d4d4d4" }}>
+    <Tag key={key} style={{ margin: "8px 0 8px 24px", padding: 0, color: "var(--text)" }}>
       {top.map((n, i) => (
         <li key={i} style={{ marginBottom: 4, lineHeight: 1.65 }}>
           {inline(n.text)}
@@ -1103,7 +1103,7 @@ function inline(s: string): ReactNode {
   const parts = s.split(/(\*\*[^*]+\*\*)/g);
   return parts.map((p, i) => {
     if (p.startsWith("**") && p.endsWith("**")) {
-      return <strong key={i} style={{ color: "#fff" }}>{p.slice(2, -2)}</strong>;
+      return <strong key={i} style={{ color: "var(--text)" }}>{p.slice(2, -2)}</strong>;
     }
     return <span key={i}>{p}</span>;
   });
