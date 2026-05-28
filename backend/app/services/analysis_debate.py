@@ -213,7 +213,8 @@ def render_debate_for_judge(bull: dict[str, Any], bear: dict[str, Any]) -> str:
         "- 哪方论据更扎实、更接地气，向哪方倾斜\n"
         "- 双方都提到的风险点优先反映到 red_flags\n"
         "- 看多/看空都不充分时给 '观望'\n"
-        "- confidence: 双方论据都强 → 高；一方明显占优 → 中；双方都弱 → 低\n"
+        "- confidence (0-100 整数)：双方论据都强 → ≥80；一方明显占优 → 60-79；"
+        "双方都弱 → <60\n"
     )
 
 
@@ -225,6 +226,6 @@ def judge_system_prompt_suffix() -> str:
         "\n\n# 辩论模式补充\n"
         "本次分析走的是辩论模式：你已经看过看多和看空分析师的视角。"
         "你的工作是**裁判**——不要简单复述任何一方，而是基于双方证据 + "
-        "原始 snapshot 做综合判断。如果双方论据都偏弱，confidence 给 '低'；"
+        "原始 snapshot 做综合判断。如果双方论据都偏弱，confidence 给 <60；"
         "如果一方明显占优，向其倾斜并解释为什么对方论据不成立。"
     )

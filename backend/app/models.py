@@ -417,6 +417,13 @@ class Analysis(Base):
     # whether this result came from the deeper path and adjust UX (banner,
     # auto-scroll to 看多 vs 看空 section, etc.)
     mode: Mapped[str | None] = mapped_column(String(20), nullable=True, default="single")
+    # Backend-computed data completeness score (0-100) for the input snapshot
+    # at the time this analysis was generated. Stored so we can later
+    # correlate input quality with hit_rate (e.g. "low data_completeness →
+    # higher miss rate" would justify gating analyses on minimum input
+    # quality). See compute_data_completeness() in services/analysis.py for
+    # the rubric (4 dynamic dimensions, 25 pts each).
+    data_completeness: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

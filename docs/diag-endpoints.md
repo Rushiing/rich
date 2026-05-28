@@ -153,6 +153,24 @@ using the `mode` column:
 Touches both `analyses` and `analysis_outcomes`. Returns row counts.
 Already run on prod 2026-05-28; re-running is a no-op.
 
+### `POST /api/_diag/migrate-confidence-to-int`
+**Idempotent** migration tied to the confidence-as-integer rollout.
+Pre-5/28 `key_table.confidence` was an enum `"高"/"中"/"低"`; from this
+deploy on it's a 0-100 integer. This endpoint rewrites the JSON in
+place using `jsonb_set`:
+- `"高"` → `85`
+- `"中"` → `65`
+- `"低"` → `45`
+- integer or null → untouched
+
+WHERE clause only catches the enum strings, so re-running is safe.
+Postgres only (skipped on SQLite smoke tests). Returns `{rows_updated: N}`.
+
+Call once after the deploy that ships the integer schema. Frontend reads
+`confidence: string | number` and uses `confidenceBucket()` so old rows
+still render correctly even before this is run — but running it lets
+the detail page show the actual number instead of just a bucket label.
+
 ---
 
 ## Pattern reference

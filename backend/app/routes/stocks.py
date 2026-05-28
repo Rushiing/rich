@@ -64,6 +64,12 @@ class AnalysisBrief(BaseModel):
     red_flags: list[str]       # hard-detected risk markers
     created_at: str
     is_fresh: bool             # < 4h old
+    # 5/28: top-level confidence + reason. confidence is `int | str | None`
+    # — int for new rows, legacy "高"/"中"/"低" enum until migrate-
+    # confidence-to-int has run, None for very old rows that never had it.
+    # Frontend's confidenceBucket() normalizes all three.
+    confidence: int | str | None = None
+    confidence_reason: str | None = None
 
 
 class StockRow(BaseModel):
@@ -172,6 +178,14 @@ def list_stocks(
         created = a.created_at
         if created and created.tzinfo is None:
             created = created.replace(tzinfo=timezone.utc)
+        # confidence may be int (new), str (legacy enum), or missing.
+        # Pass through as-is; frontend normalizes via confidenceBucket().
+        raw_conf = kt.get("confidence")
+        conf_val: int | str | None
+        if isinstance(raw_conf, (int, str)) and raw_conf != "":
+            conf_val = raw_conf
+        else:
+            conf_val = None
         return AnalysisBrief(
             actionable=str(kt.get("actionable") or ""),
             one_line_reason=str(kt.get("one_line_reason") or ""),
@@ -179,6 +193,9 @@ def list_stocks(
             red_flags=list(kt.get("red_flags") or []),
             created_at=created.isoformat() if created else "",
             is_fresh=bool(created and created >= fresh_cutoff),
+            confidence=conf_val,
+            confidence_reason=(str(kt["confidence_reason"])
+                               if kt.get("confidence_reason") else None),
         )
 
     rows: list[StockRow] = []
@@ -427,6 +444,10 @@ class AnalysisOut(BaseModel):
     # "single" | "debate" — drives the 🔬 深度解析结果 banner + scroll-to
     # behavior on the detail page. None for legacy rows pre-Phase 10.5.
     mode: str | None = None
+    # 5/28: data completeness score (0-100) computed at analysis time. None
+    # for legacy rows pre-this-schema-bump. Detail page shows it in the
+    # footnote so users can mentally weight the verdict.
+    data_completeness: int | None = None
 
     @classmethod
     def from_row(cls, row: Analysis, is_fresh: bool) -> "AnalysisOut":
@@ -440,6 +461,7 @@ class AnalysisOut(BaseModel):
             snapshot_id=row.snapshot_id,
             is_fresh=is_fresh,
             mode=getattr(row, "mode", None) or "single",
+            data_completeness=getattr(row, "data_completeness", None),
         )
 
 

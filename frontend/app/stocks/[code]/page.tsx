@@ -4,6 +4,7 @@ import { use, useEffect, useState, type ReactNode } from "react";
 import {
   api, ActionableTier, ActionableTiers, Holding, KeyTable, NextDayOutlook,
   ScenarioAdvice, StockAnalysis, StockDetail, StopLossLevel,
+  confidenceBucket, confidenceLabel,
 } from "../../../lib/api";
 import Tooltip from "../../_components/Tooltip";
 
@@ -646,6 +647,16 @@ function KeyTableCard({ kt }: { kt: KeyTable }) {
         )}
       </div>
 
+      {/* 5/28: 置信度独立块. Moved out of the KtRow table (where it was
+          a buried one-line cell) so users can see at a glance how much
+          weight to give this verdict. Low confidence + 买/卖 ⇒ dashed
+          yellow border to flag "model said this but isn't sure". */}
+      <ConfidenceCard
+        confidence={kt.confidence}
+        reason={kt.confidence_reason}
+        actionable={view.action}
+      />
+
       {/* Tier toggle — only renders when the model actually emitted three
           tiers. Legacy rows (no actionable_tiers) skip the segmented
           control entirely so the layout stays the same. */}
@@ -698,7 +709,10 @@ function KeyTableCard({ kt }: { kt: KeyTable }) {
             <KtRow label="合理卖出价" value={`${kt.sell_price_low.toFixed(2)} – ${kt.sell_price_high.toFixed(2)}`} />
             <KtRow label="建议仓位" value={`${view.position_pct.toFixed(0)}%`} />
             <KtRow label="持有时间" value={view.hold_period} />
-            <KtRow label="置信度" value={kt.confidence} />
+            {/* 置信度 has moved to its own ConfidenceCard above — was a
+                low-impact row buried in the table. Kept overall here since
+                it's the one synthesized rating that varies and reads well
+                as a one-cell value. */}
             {kt.risk_scores?.overall && (
               <KtRow label="综合评级" value={kt.risk_scores.overall} />
             )}
@@ -768,6 +782,72 @@ function KtRow({ label, value }: { label: string; value: string }) {
       <td style={{ padding: "8px 14px", color: "var(--text-muted)", fontSize: 13, width: "45%", borderBottom: "1px solid var(--border-faint)" }}>{label}</td>
       <td style={{ padding: "8px 14px", fontSize: 14, fontFamily: "monospace", borderBottom: "1px solid var(--border-faint)" }}>{value}</td>
     </tr>
+  );
+}
+
+// 置信度卡片. 三种视觉状态:
+//   high → 绿底浅边
+//   med  → 中性灰
+//   low (+ actionable=买/卖) → dashed 黄边 + "慎跟" 提示 (视觉降级,但
+//     不改 actionable —— 让 LLM 自己的判断保留,用户看到 + 警示足矣)
+//   confidence 为 null → 完全不渲染 (legacy row before this schema bump)
+function ConfidenceCard({
+  confidence, reason, actionable,
+}: {
+  confidence: string | number | null | undefined;
+  reason?: string;
+  actionable: string;
+}) {
+  if (confidence == null) return null;
+  const bucket = confidenceBucket(confidence);
+  const isActionable = actionable === "建议买入" || actionable === "建议卖出";
+  const degraded = bucket === "low" && isActionable;
+  const numericValue = typeof confidence === "number" ? confidence : null;
+  const bg =
+    bucket === "high" ? "rgba(34, 197, 94, 0.08)" :
+    bucket === "low"  ? "rgba(245, 158, 11, 0.10)" :
+                        "var(--surface)";
+  const borderColor =
+    bucket === "high" ? "rgba(34, 197, 94, 0.4)" :
+    bucket === "low"  ? "#f59e0b" :
+                        "var(--border)";
+  const labelColor =
+    bucket === "high" ? "#22c55e" :
+    bucket === "low"  ? "#f59e0b" :
+                        "#9ca3af";
+  return (
+    <div style={{
+      padding: "12px 16px",
+      background: bg,
+      border: degraded ? `1px dashed ${borderColor}` : `1px solid ${borderColor}`,
+      borderRadius: 8,
+    }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+        <span style={{ color: "var(--text-muted)", fontSize: 13 }}>置信度</span>
+        <span style={{ fontSize: 22, fontWeight: 600, color: labelColor, fontFamily: "monospace" }}>
+          {numericValue != null ? `${numericValue}` : ""}
+          {numericValue != null && <span style={{ fontSize: 13, color: "var(--text-faint)" }}> / 100</span>}
+        </span>
+        <span style={{
+          padding: "2px 8px",
+          borderRadius: 4,
+          background: `${labelColor}22`,
+          color: labelColor,
+          fontSize: 11,
+          fontWeight: 600,
+        }}>
+          {confidenceLabel(confidence)}
+        </span>
+        {degraded && (
+          <span style={{ color: "#f59e0b", fontSize: 12 }}>⚠️ 低置信，慎跟</span>
+        )}
+      </div>
+      {reason && (
+        <div style={{ marginTop: 6, color: "var(--text-soft)", fontSize: 13, lineHeight: 1.5 }}>
+          {reason}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -888,6 +968,12 @@ function Footnote({ analysis }: { analysis: StockAnalysis }) {
     <p style={{ marginTop: 16, color: "var(--text-faint)", fontSize: 11, textAlign: "center" }}>
       策略 {analysis.strategy}
       {analysis.snapshot_id != null && <> · 基于 snapshot #{analysis.snapshot_id}</>}
+      {/* 5/28: data_completeness 元信息. Surface the input quality the
+          LLM had so users can mentally weight the verdict. Optional —
+          missing on legacy rows. */}
+      {analysis.data_completeness != null && (
+        <> · 输入完整度 {analysis.data_completeness}/100</>
+      )}
       <br />
       仅供参考，投资有风险，决策请独立判断。
     </p>

@@ -71,6 +71,10 @@ _POSTGRES_BACKFILL = [
     # Generation mode (single|debate) so frontend can surface a
     # "🔬 深度解析结果" banner and scroll-to behavior.
     ("analyses",  "mode",                     "VARCHAR(20) DEFAULT 'single'"),
+    # Data completeness score (0-100) computed at analysis time, stored so
+    # we can later correlate input quality with hit-rate. See
+    # compute_data_completeness() in services/analysis.py.
+    ("analyses",  "data_completeness",        "INTEGER"),
 ]
 
 

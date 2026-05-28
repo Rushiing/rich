@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useEffect, useRef, useState } from "react";
-import { api, AnalysisBrief, StockRow } from "../../lib/api";
+import { api, AnalysisBrief, StockRow, confidenceBucket, confidenceLabel } from "../../lib/api";
 import Tooltip from "../_components/Tooltip";
 
 // While a snapshot job is running we re-pull /api/stocks at this cadence so
@@ -38,6 +38,23 @@ const ACTIONABLE_EXPLAIN: Record<string, string> = {
   "观望":       "信号不充分或风险未消化，建议先按兵不动。",
   "建议卖出":   "估值偏贵、动能转弱或基本面恶化，建议减仓或离场。",
   "不建议入手": "命中负面规则（如 ST、业绩塌方等），不在可选池里。",
+};
+
+// Confidence chip palette. Three buckets, mapped from confidenceBucket():
+//   high → 绿 (有把握)
+//   med  → 灰 (中等)
+//   low  → 橙 (信号弱)
+// Kept muted (low-saturation backgrounds) so they don't compete visually
+// with the actionable badge — which is the primary signal.
+const CONFIDENCE_BG: Record<"high" | "med" | "low", string> = {
+  high: "rgba(34, 197, 94, 0.15)",
+  med:  "rgba(156, 163, 175, 0.15)",
+  low:  "rgba(245, 158, 11, 0.18)",
+};
+const CONFIDENCE_FG: Record<"high" | "med" | "low", string> = {
+  high: "#22c55e",
+  med:  "#9ca3af",
+  low:  "#f59e0b",
 };
 
 const SIGNAL_LABEL: Record<string, string> = {
@@ -600,6 +617,14 @@ function ActionableCell({ analysis }: { analysis: AnalysisBrief | null }) {
   };
   const flagCount = analysis.red_flags?.length ?? 0;
   const explainBlurb = ACTIONABLE_EXPLAIN[analysis.actionable] ?? "";
+  // 5/28: low-confidence visual degradation. Only applied when actionable
+  // is one of the directional verdicts (买/卖) — observing/不入手 are
+  // already "no action" so a confidence bucket doesn't change their
+  // weight visually. Dashed border + reduced opacity is the signal:
+  // "the model said this but isn't sure, slow down".
+  const confBucket = confidenceBucket(analysis.confidence);
+  const isActionable = analysis.actionable === "建议买入" || analysis.actionable === "建议卖出";
+  const degraded = confBucket === "low" && isActionable;
   return (
     // Wider on desktop (ultrawide-friendly), still capped so a single line of
     // 操作建议 doesn't run forever on huge screens. minWidth keeps the cell
@@ -611,6 +636,11 @@ function ActionableCell({ analysis }: { analysis: AnalysisBrief | null }) {
             <div>
               <div style={{ fontWeight: 600, marginBottom: 4 }}>{analysis.actionable}</div>
               <div style={{ color: "var(--text-soft)" }}>{explainBlurb}</div>
+              {degraded && (
+                <div style={{ marginTop: 4, color: "#f59e0b", fontSize: 11 }}>
+                  ⚠️ 低置信，慎跟
+                </div>
+              )}
             </div>
           }
         >
@@ -619,15 +649,49 @@ function ActionableCell({ analysis }: { analysis: AnalysisBrief | null }) {
               display: "inline-block",
               padding: "1px 6px",
               borderRadius: 3,
-              background: hexA(style.color, 0.15),
+              background: hexA(style.color, degraded ? 0.08 : 0.15),
               color: style.color,
               fontSize: 11,
               fontWeight: 600,
+              opacity: degraded ? 0.65 : 1,
+              border: degraded ? `1px dashed ${style.color}` : "none",
             }}
           >
             {style.label}
           </span>
         </Tooltip>
+        {analysis.confidence != null && (
+          <Tooltip
+            content={
+              <div>
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                  置信度：{typeof analysis.confidence === "number"
+                    ? `${analysis.confidence} / 100`
+                    : analysis.confidence}
+                </div>
+                {analysis.confidence_reason && (
+                  <div style={{ color: "var(--text-soft)" }}>
+                    {analysis.confidence_reason}
+                  </div>
+                )}
+              </div>
+            }
+          >
+            <span
+              style={{
+                display: "inline-block",
+                padding: "1px 5px",
+                borderRadius: 3,
+                background: CONFIDENCE_BG[confBucket],
+                color: CONFIDENCE_FG[confBucket],
+                fontSize: 10,
+                fontWeight: 600,
+              }}
+            >
+              {confidenceLabel(analysis.confidence)}
+            </span>
+          </Tooltip>
+        )}
         {flagCount > 0 && (
           <Tooltip
             content={

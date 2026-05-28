@@ -23,6 +23,10 @@ export type AnalysisBrief = {
   red_flags: string[];         // hard-detected risk markers
   created_at: string;
   is_fresh: boolean;           // < 4h
+  // 5/28: confidence is int (new), legacy enum string ("高"/"中"/"低"), or
+  // null for very old rows. Use confidenceBucket() to bucket.
+  confidence?: number | string | null;
+  confidence_reason?: string | null;
 };
 
 export type StopLossLevel = {
@@ -147,7 +151,15 @@ export type KeyTable = {
   // Phase 9: same — present on freshly generated rows, absent on legacy.
   next_day_outlook?: NextDayOutlook;
   risk_scores: RiskScores;
-  confidence: string;
+  // Top-level confidence. Pre-5/28: enum "高"/"中"/"低" (legacy rows).
+  // Post-5/28: integer 0-100 (set via tool schema). Old rows are
+  // backfilled via /api/_diag/migrate-confidence-to-int to 85/65/45 but
+  // we keep the union type for graceful degradation if the migration
+  // hasn't run yet. Use `confidenceBucket()` to normalize.
+  confidence: string | number;
+  // New 5/28: 1-sentence reason for the confidence score (≤30 字).
+  // Optional because legacy rows pre-this-schema-bump don't carry it.
+  confidence_reason?: string;
 };
 
 export type StockAnalysis = {
@@ -162,7 +174,39 @@ export type StockAnalysis = {
   // "single" | "debate" — when "debate" the detail page shows a banner +
   // auto-scrolls to the 看多 vs 看空 section.
   mode?: string | null;
+  // 0-100 data completeness score computed by the backend at analysis
+  // time. Surfaced on the detail page as a small meta line so the user
+  // knows how much input the LLM had. Optional for legacy rows.
+  data_completeness?: number | null;
 };
+
+// ---------------------------------------------------------------------------
+// confidence display utilities. Backend sometimes returns the legacy enum
+// (老 analyses 直到 migrate-confidence-to-int 跑完前可能还是 "高"/"中"/"低"),
+// sometimes a 0-100 integer. UI需要一个稳定的"3 档桶"做染色 + 视觉降级。
+// ---------------------------------------------------------------------------
+
+export type ConfidenceBucket = "high" | "med" | "low";
+
+export function confidenceBucket(c: string | number | null | undefined): ConfidenceBucket {
+  if (c == null) return "med"; // unknown → neutral
+  if (typeof c === "number") {
+    if (c >= 80) return "high";
+    if (c >= 60) return "med";
+    return "low";
+  }
+  // Legacy enum strings
+  if (c === "高") return "high";
+  if (c === "低") return "low";
+  return "med";
+}
+
+// Short label shown in lists (1 char to keep cells compact). Detail
+// pages show the number + bucket together.
+export function confidenceLabel(c: string | number | null | undefined): string {
+  const b = confidenceBucket(c);
+  return b === "high" ? "高" : b === "low" ? "低" : "中";
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {

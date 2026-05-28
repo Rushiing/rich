@@ -466,6 +466,46 @@ def diag_migrate_prompt_version():
     }
 
 
+@app.post("/api/_diag/migrate-confidence-to-int")
+def diag_migrate_confidence_to_int():
+    """One-off migration: key_table.confidence enum → integer.
+
+    Pre-5/28 confidence was an enum "高"/"中"/"低" inside the key_table JSON.
+    From now on it's a 0-100 integer (more granular for visual degradation
+    + hit-rate correlation). To keep historical rows usable, we rewrite
+    the JSON in place: 高→85, 中→65, 低→45 (rough midpoints of each
+    bucket). Idempotent — the WHERE clause only catches enum strings, and
+    new integer values are left alone.
+
+    Postgres only (uses jsonb_set). Returns rows_updated.
+    """
+    from sqlalchemy import text
+    from .db import engine
+    if engine.dialect.name != "postgresql":
+        return {"skipped": True, "reason": "non-postgres backend"}
+    with engine.begin() as conn:
+        # Note: key_table is stored as JSON (not JSONB), so we cast to
+        # jsonb for jsonb_set then back to json for the column. The CASE
+        # produces a jsonb numeric value via the explicit ::jsonb cast.
+        rows_n = conn.execute(text(
+            """
+            UPDATE analyses
+            SET key_table = jsonb_set(
+                key_table::jsonb,
+                '{confidence}',
+                CASE key_table->>'confidence'
+                    WHEN '高' THEN '85'::jsonb
+                    WHEN '中' THEN '65'::jsonb
+                    WHEN '低' THEN '45'::jsonb
+                    ELSE key_table->'confidence'
+                END
+            )::json
+            WHERE key_table->>'confidence' IN ('高', '中', '低')
+            """
+        )).rowcount
+    return {"rows_updated": rows_n}
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}

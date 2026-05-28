@@ -64,6 +64,167 @@ def prompt_version_for(mode: str | None) -> str:
 # Defaults to the single-mode tag (the path that runs 99% of the time).
 PROMPT_VERSION = prompt_version_for("single")
 
+
+# ---------------------------------------------------------------------------
+# Data completeness + market context
+#
+# Two pieces of upstream context fed to every analysis so the LLM can
+# self-calibrate its confidence:
+#
+#   1. data_completeness — does the snapshot have what it needs? Four
+#      dynamic dimensions, equally weighted (25 pts each). industry_name
+#      is intentionally excluded — it's setup-level metadata (admin runs
+#      /refresh-industry-meta once), not "today's input quality".
+#
+#   2. market context — 大盘 + 所属板块的今日表现. Pulled from existing
+#      market_svc / sectors services (60s + 5min cache, no extra fetch
+#      pressure). 板块匹配走 strict name compare; not matched → silent
+#      skip that line (fail-safe so a missing sector entry doesn't bork
+#      the whole analysis).
+#
+# Both are also persisted (data_completeness as a column on Analysis) so
+# we can later correlate them with hit-rate.
+# ---------------------------------------------------------------------------
+
+# Max age (days) for the latest financial report before we tag it "stale".
+# 60d ≈ one quarter of grace — most A-share companies file within 60d of
+# quarter-end; older means we're between filings.
+_FINANCIAL_STALE_DAYS = 60
+
+
+def compute_data_completeness(s: Snapshot | None, code: str) -> dict[str, Any]:
+    """Score the input quality for this analysis run.
+
+    Returns {score: int 0-100, missing: list[str], stale: list[str]}.
+
+    Four equally-weighted dimensions (25 pts each):
+      - 实时行情:  Snapshot.{price, change_pct, volume, turnover}
+      - 技术指标:  Kline.latest_for_code(code) present + MA5/10/20/60 all non-null
+      - 资金流向:  Snapshot.{main_net_flow, net_flow_3d, north_hold_change}
+      - 财务数据:  Financial.latest_for_code(code, n=1) present + report ≤60d old
+
+    If snapshot is None we score 0 with everything missing — caller is
+    free to skip the prompt section entirely (the existing fallback path
+    in _user_prompt already tells the LLM to drop confidence).
+    """
+    missing: list[str] = []
+    stale: list[str] = []
+    score = 0
+
+    if s is None:
+        return {"score": 0, "missing": ["snapshot"], "stale": []}
+
+    # 1. 实时行情 (25 pts)
+    rt_fields = [("price", s.price), ("change_pct", s.change_pct),
+                 ("volume", s.volume), ("turnover", s.turnover)]
+    rt_missing = [name for name, v in rt_fields if v is None]
+    if not rt_missing:
+        score += 25
+    else:
+        missing.append(f"实时行情:{','.join(rt_missing)}")
+
+    # 2. 技术指标 (25 pts) — late import to dodge any circular risk
+    from . import kline as kline_svc
+    latest_k = kline_svc.latest_for_code(code)
+    if latest_k is None:
+        missing.append("技术指标:K线未拉到")
+    else:
+        ma_fields = [("MA5", latest_k.ma5), ("MA10", latest_k.ma10),
+                     ("MA20", latest_k.ma20), ("MA60", latest_k.ma60)]
+        ma_missing = [name for name, v in ma_fields if v is None]
+        if not ma_missing:
+            score += 25
+        else:
+            missing.append(f"技术指标:{','.join(ma_missing)}")
+
+    # 3. 资金流向 (25 pts)
+    fund_fields = [("main_net_flow", s.main_net_flow),
+                   ("net_flow_3d", s.net_flow_3d),
+                   ("north_hold_change", s.north_hold_change)]
+    fund_missing = [name for name, v in fund_fields if v is None]
+    if not fund_missing:
+        score += 25
+    else:
+        missing.append(f"资金流向:{','.join(fund_missing)}")
+
+    # 4. 财务数据 (25 pts) — has row + ≤ _FINANCIAL_STALE_DAYS old
+    from . import financials as fin_svc
+    fin_rows = fin_svc.latest_for_code(code, n=1)
+    if not fin_rows:
+        missing.append("财务数据:未拉到")
+    else:
+        report_date = fin_rows[0].report_date
+        # report_date may be datetime or date depending on column type; both
+        # work with timedelta arithmetic against datetime.now().date()
+        try:
+            today = datetime.now(timezone.utc).date()
+            rd = report_date if not hasattr(report_date, "date") else report_date.date()
+            age_days = (today - rd).days
+            if age_days <= _FINANCIAL_STALE_DAYS:
+                score += 25
+            else:
+                stale.append(f"财务数据:最近季报截止 {age_days} 天前")
+        except Exception:
+            # Defensive: bad date format shouldn't crash the analysis
+            stale.append("财务数据:报告日期解析失败")
+
+    return {"score": score, "missing": missing, "stale": stale}
+
+
+def _market_and_sector_context(industry_name: str | None) -> str:
+    """Build the 大盘+板块 prompt section. Fail-safe: returns '' on any
+    upstream error so a transient sector/index fetch failure doesn't
+    abort the analysis."""
+    from . import market as market_svc
+    from . import sectors as sectors_svc
+    try:
+        indices = market_svc.get_indices()
+    except Exception as e:
+        logger.warning("market context: get_indices failed (%s); skipping", e)
+        indices = []
+
+    sector_line = ""
+    if industry_name:
+        try:
+            sectors_list = sectors_svc.get_sectors()
+            match = next((s for s in sectors_list if s.get("name") == industry_name), None)
+            if match and match.get("change_pct") is not None:
+                cp = match["change_pct"]
+                sector_line = f"- 所属板块「{industry_name}」: {cp:+.2f}%\n"
+        except Exception as e:
+            logger.warning("market context: get_sectors failed (%s); skipping sector line", e)
+
+    if not indices and not sector_line:
+        return ""
+
+    lines = ["\n## 大盘与板块表现(今日)"]
+    for ix in indices:
+        lines.append(
+            f"- {ix['name']}: {ix['point']:.2f} 点 ({ix['change_pct']:+.2f}%)"
+        )
+    if sector_line:
+        lines.append(sector_line.rstrip())
+    return "\n".join(lines) + "\n"
+
+
+def _data_completeness_prompt_section(comp: dict[str, Any]) -> str:
+    """Render the data-completeness section so the LLM can self-calibrate
+    confidence. Always rendered (even at score=100) so the LLM is
+    consistently aware of this signal."""
+    lines = [f"\n## 数据完整度\n本次输入完整度: {comp['score']}/100"]
+    if comp.get("missing"):
+        lines.append(f"缺失: {' · '.join(comp['missing'])}")
+    if comp.get("stale"):
+        lines.append(f"过期: {' · '.join(comp['stale'])}")
+    if comp["score"] >= 90:
+        lines.append("(数据充分,可正常打分)")
+    elif comp["score"] >= 60:
+        lines.append("(数据部分缺失,confidence 应相应折扣)")
+    else:
+        lines.append("(数据严重不全,confidence 应该<60,并在 one_line_reason 体现)")
+    return "\n".join(lines) + "\n"
+
+
 # Tool schema. Claude is forced to call this; we read the structured input
 # back as our analysis. The `additionalProperties: False` constraint + enums
 # keep the model from drifting out of contract.
@@ -113,6 +274,7 @@ ANALYSIS_TOOL = {
                     "next_day_outlook",
                     "risk_scores",
                     "confidence",
+                    "confidence_reason",
                 ],
                 "properties": {
                     "company_tag": {
@@ -312,7 +474,36 @@ ANALYSIS_TOOL = {
                             },
                         },
                     },
-                    "confidence": {"type": "string", "enum": ["高", "中", "低"]},
+                    # Top-level confidence: 0-100. Was enum 高/中/低 pre-5/28;
+                    # split into a numeric value + separate reason so we can
+                    # do continuous visual degradation (e.g. <60 = dashed
+                    # border + "慎跟" hint) and later correlate with hit_rate
+                    # at finer granularity. Historical rows migrated via
+                    # /api/_diag/migrate-confidence-to-int (高→85, 中→65,
+                    # 低→45). next_day_outlook.confidence below remains an
+                    # enum — different semantic (次日走势的把握), no need
+                    # to unify.
+                    "confidence": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 100,
+                        "description": (
+                            "对当前 actionable 判断的把握程度，0-100 整数。"
+                            "综合：数据完整度（见 prompt 末尾的「## 数据完整度」段）"
+                            "+ 信号方向一致性（技术/资金/基本面是否互相佐证）"
+                            "+ 量价是否极端。常见档位参考：≥80 高把握；60-79 中等；"
+                            "<60 信号弱或冲突。低于 60 时 one_line_reason 应措辞谨慎，"
+                            "或考虑把 actionable 降为「观望」。"
+                        ),
+                    },
+                    "confidence_reason": {
+                        "type": "string",
+                        "description": (
+                            "1 句话说明置信打分依据，≤30 字。例：'量价齐升+财报新鲜' / "
+                            "'资金流缺失，仅技术面' / '行业逆风，方向冲突'。"
+                            "目的是让用户/复盘者看到这个分数是怎么来的。"
+                        ),
+                    },
                 },
             },
             "deep_analysis": {
@@ -369,7 +560,7 @@ def _system_prompt(strategy: Strategy) -> list[dict[str, Any]]:
         "# 数据原则\n"
         "\n"
         "- 完全基于提供的 snapshot 与新闻 / 公告做判断，**不要编造**未在输入中的信息\n"
-        "- 信息缺失就直说 '信息不全，无法判断'，并把 confidence 降到 '低'\n"
+        "- 信息缺失就直说 '信息不全，无法判断'，并把 confidence 降到 <60（数据严重不全直接 <40）\n"
         "- 始终调用 submit_analysis 工具**一次**，不要给出其他文本\n"
         "- **先填 analysis_thinking 字段把推理写完，再填 key_table 和 deep_analysis 的结构化结果**。\n"
         "  不允许跳过 analysis_thinking 直接给结论。这是为了让你思考更充分，质量更高。\n"
@@ -411,7 +602,23 @@ def _system_prompt(strategy: Strategy) -> list[dict[str, Any]]:
     }]
 
 
-def _user_prompt(w: Watchlist, s: Snapshot | None) -> str:
+def _user_prompt(
+    w: Watchlist,
+    s: Snapshot | None,
+    data_completeness: dict[str, Any] | None = None,
+) -> str:
+    """Build the user message.
+
+    `data_completeness` is the dict from compute_data_completeness(); when
+    passed (the normal path from generate()), we append a 数据完整度 section
+    so the LLM can self-calibrate. The 大盘/板块 section is also appended
+    here unconditionally (fail-safe inside _market_and_sector_context).
+
+    Kept as a default-None param rather than a required one so callers
+    that just need the base snapshot rendering (e.g. analysis_debate's
+    bull/bear roles which reuse the base prompt) don't have to compute
+    completeness separately. They still get the market/sector context.
+    """
     if s is None:
         snap_section = "（暂无 snapshot 数据，请基于代码、名称、市场常识做最低限度的判断，并显著降低置信度。）"
     else:
@@ -581,9 +788,22 @@ def _user_prompt(w: Watchlist, s: Snapshot | None) -> str:
             f"## 龙虎榜\n{lhb}\n"
         )
 
+    # 大盘+板块 context. Fail-safe internally — returns '' on upstream error.
+    market_ctx = _market_and_sector_context(s.industry_name if s else None)
+
+    # Data completeness section (only when caller provided the dict — i.e.
+    # the normal generate() path; debate sub-roles reuse base_user and
+    # don't need it duplicated).
+    data_comp_section = (
+        _data_completeness_prompt_section(data_completeness)
+        if data_completeness is not None else ""
+    )
+
     return (
         f"## 标的\n代码: {w.code}\n名称: {w.name}\n市场: {w.exchange}\n\n"
-        f"## 最新 snapshot\n{snap_section}\n\n"
+        f"## 最新 snapshot\n{snap_section}\n"
+        f"{market_ctx}"
+        f"{data_comp_section}\n"
         f"请基于上面的信息调用 submit_analysis 一次。"
     )
 
@@ -631,10 +851,19 @@ def generate(
 
     model = settings.ANALYSIS_MODEL or DEFAULT_MODEL
 
+    # Compute data completeness once — fed into the prompt AND persisted on
+    # the Analysis row so we can later correlate input quality with
+    # hit-rate (e.g. low completeness analyses might be systematically off).
+    data_comp = compute_data_completeness(s, code)
+    logger.info(
+        "data_completeness[%s] %d/100  missing=%s  stale=%s",
+        code, data_comp["score"], data_comp["missing"], data_comp["stale"],
+    )
+
     # Build the user message. In debate mode the bull/bear views are
     # appended after the base snapshot block so the judge sees both sides
     # without re-deriving them.
-    base_user = _user_prompt(w, s)
+    base_user = _user_prompt(w, s, data_completeness=data_comp)
     debate_suffix = ""
     if mode == "debate":
         from .analysis_debate import run_debate, render_debate_for_judge, judge_system_prompt_suffix
@@ -710,6 +939,7 @@ def generate(
         existing.strategy = strat.name
         existing.prompt_version = prompt_version_for(mode)
         existing.mode = mode
+        existing.data_completeness = data_comp["score"]
         existing.created_at = datetime.now(timezone.utc)
         row = existing
     else:
@@ -722,6 +952,7 @@ def generate(
             strategy=strat.name,
             prompt_version=prompt_version_for(mode),
             mode=mode,
+            data_completeness=data_comp["score"],
         )
         db.add(row)
     db.commit()
