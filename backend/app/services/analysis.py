@@ -39,10 +39,30 @@ logger = logging.getLogger(__name__)
 # no protocol change. Tone matches the user's "克制研究员" preference.
 DEFAULT_MODEL = "kimi-k2.5"
 
-# Prompt version — bump whenever the tool schema or system prompt changes
-# in a way that affects output content. Stored on each Analysis row so we
-# can compare hit rates across versions later. Format: "vMAJOR.MINOR-shortdesc".
-PROMPT_VERSION = "v2.5-debate"
+# Prompt-version prefix. Bump when the tool schema or system prompt
+# changes in a way that affects output content. We append the runtime
+# `mode` to produce the actual stored value via prompt_version_for() —
+# single and debate are categorically different output paths and need
+# separate hit-rate buckets to A/B against each other.
+#
+# Historical note: until 5/28 this was hardcoded to "v2.5-debate"
+# regardless of mode (bug), so all 1146 prod outcome rows are tagged
+# "v2.5-debate" even though half were single-mode. Fix it on new
+# anchors via prompt_version_for(); old rows can be retroactively
+# corrected with a one-off UPDATE keyed on `mode` if needed.
+PROMPT_VERSION_BASE = "v2.5"
+
+
+def prompt_version_for(mode: str | None) -> str:
+    """Stable prompt-version ID per (base, mode). Used by both the
+    Analysis row tag and the outcome anchor — they must agree so
+    hit_rate_stats can group consistently."""
+    return f"{PROMPT_VERSION_BASE}-{mode or 'single'}"
+
+
+# Back-compat shim: some external imports may still reach for PROMPT_VERSION.
+# Defaults to the single-mode tag (the path that runs 99% of the time).
+PROMPT_VERSION = prompt_version_for("single")
 
 # Tool schema. Claude is forced to call this; we read the structured input
 # back as our analysis. The `additionalProperties: False` constraint + enums
@@ -688,7 +708,7 @@ def generate(
         existing.snapshot_id = s.id if s else None
         existing.model = model
         existing.strategy = strat.name
-        existing.prompt_version = PROMPT_VERSION
+        existing.prompt_version = prompt_version_for(mode)
         existing.mode = mode
         existing.created_at = datetime.now(timezone.utc)
         row = existing
@@ -700,7 +720,7 @@ def generate(
             snapshot_id=s.id if s else None,
             model=model,
             strategy=strat.name,
-            prompt_version=PROMPT_VERSION,
+            prompt_version=prompt_version_for(mode),
             mode=mode,
         )
         db.add(row)
@@ -716,7 +736,7 @@ def generate(
         record_anchor(
             db, code=code, generated_at=row.created_at,
             actionable=str(kt.get("actionable") or ""),
-            prompt_version=PROMPT_VERSION, mode=mode,
+            prompt_version=prompt_version_for(mode), mode=mode,
             anchor_price=(s.price if s else None),
         )
     except Exception:
