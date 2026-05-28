@@ -157,6 +157,21 @@ rich/
             └── stocks.py       ← /api/stocks (list, detail, manual snapshot, analysis)
 ```
 
+## Diagnostic endpoints
+
+`/api/_diag/*` carries health checks, manual backfills, and one-off
+migrations. **Public** (no auth), idempotent unless noted, async when the
+work exceeds ~30 s (Railway's HTTP proxy kills longer requests). Full
+reference + curl examples in [docs/diag-endpoints.md](docs/diag-endpoints.md)
+— check there first before adding a new one; the pattern (sync vs async,
+lock conventions, naming) is documented.
+
+Most-frequently-touched:
+- `GET /api/_diag/snapshot-schema` — verify the snapshots table columns
+- `GET /api/_diag/outcomes-stats` — current LLM hit-rate report
+- `GET /api/_diag/outcomes-detail` — why is hit-rate sparse? (raw distribution)
+- `POST /api/_diag/refresh-financials` (async) — bootstrap or re-pull 财报 data
+
 ## Local development
 
 Prereqs: Node 20+, Python 3.11+, Docker (for Postgres).

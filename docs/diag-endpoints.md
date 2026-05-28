@@ -1,0 +1,171 @@
+# Diagnostic & Migration Endpoints
+
+All under `/api/_diag/*` on the backend. Three traits in common:
+
+- **Public** — no auth required, intentional. They surface schema / counts /
+  config, never user data, and `AUTH_DISABLED=true` is on in prod anyway.
+  Each endpoint's docstring re-states this.
+- **Idempotent** unless docstring says otherwise. Re-running is safe.
+- **Long-running ones are async** — they fire a daemon thread and return
+  `{started: true}` immediately, with a sibling `/status` endpoint for
+  progress. Pattern was forced by Railway's HTTP proxy killing requests
+  past ~30 s.
+
+Prod base URL: `https://pure-emotion-production-6722.up.railway.app`
+
+---
+
+## Snapshot / schema
+
+### `GET /api/_diag/snapshot-schema`
+Lists the actual columns on the `snapshots` table from `information_schema`,
+checks that the expected post-4/27 extras are present. First thing to call
+when a field-related bug looks like a missing-column issue.
+
+```bash
+curl -s "$BASE/api/_diag/snapshot-schema" | python3 -m json.tool
+```
+
+Expected `{ok: true, missing_extras: []}`. If `missing_extras` is non-empty,
+`ensure_extra_columns()` didn't run or failed — check startup logs.
+
+---
+
+## K-line cache
+
+### `POST /api/_diag/refresh-klines`
+One-shot manual run of the post-close `_kline_tick`. Synchronous,
+~1 minute for a 60-code watchlist. Use when:
+- First-time bootstrap before the 16:30 BJT cron has fired
+- After adding new codes to the watchlist that need historical bars before
+  the next post-close tick
+
+### `GET /api/_diag/klines-status`
+Per-code coverage stats on the `klines` table — total rows, distinct codes,
+date window, min/median/max rows per code. **Health check** for anything
+downstream that depends on K-line history (technical analysis, outcomes
+backfill, 3-day rolling metrics).
+
+```bash
+curl -s "$BASE/api/_diag/klines-status" | python3 -m json.tool
+```
+
+If `rows_per_code_min` << `rows_per_code_median`, some codes are starved
+(usually newly-added; kline_tick hasn't caught up yet).
+
+---
+
+## Financials
+
+### `POST /api/_diag/refresh-financials`
+Async one-shot bootstrap. Pulls 8 quarters per watchlist code via
+akshare's sina endpoint. ~90 s for 60 codes — runs in a background
+thread to dodge Railway's HTTP proxy timeout. Safe to re-run (upsert).
+
+Returns `{started: true}` or `{started: false, already_running: true}`.
+
+### `GET /api/_diag/refresh-financials/status`
+Status of the most recent `/refresh-financials` run. Returns
+`{running, progress: {done, ok, failed, total, current}, last_result}`.
+`progress` is live; client can show "5/61 done, currently fetching
+600519" instead of a black-box spinner.
+
+---
+
+## Industry
+
+### `POST /api/_diag/refresh-industry-meta`
+One-shot industry mapping pull. Phase 7 stores per-stock 行业 in the
+`industry_meta` table; without this, snapshot jobs can't compute
+industry-percentile chips. Call once after deploy or after adding new
+stocks to the watchlist.
+
+---
+
+## Outcomes (analysis hit-rate feedback loop)
+
+### `GET /api/_diag/outcomes-stats`
+**Public hit-rate summary**, grouped by `(prompt_version, actionable)`.
+A "hit" = 建议买入 with `return_d5 > 0`, or 建议卖出 with `return_d5 < 0`.
+"观望" / "不建议入手" are not scored (no directional claim) — `hit_rate: null`.
+
+```bash
+curl -s "$BASE/api/_diag/outcomes-stats" | python3 -m json.tool
+```
+
+This is the *user-facing* report. If you only need a single dashboard
+number, use this.
+
+### `GET /api/_diag/outcomes-detail`
+Raw distribution of the `analysis_outcomes` table — diagnoses why
+`outcomes-stats` is sparse. Shows total / scored split by actionable,
+distinct modes / prompt_versions, time window, fill counts per
+horizon (`close_d1` / `d3` / `d5` / `d20`).
+
+**Call when**: `outcomes-stats` reports `total_scored` lower than
+expected, and you need to know whether the gap is on the write side
+(anchors not being recorded) or the fill side (backfill cron not
+keeping up).
+
+### `GET /api/_diag/outcomes-kline-coverage`
+Cross-table sanity check: do anchor `code` values have matching klines?
+Returns:
+- `orphan_codes` — codes with anchors but no klines (deleted from
+  watchlist → `_kline_tick` stopped tracking them)
+- `fill_stats` — per-horizon fill counts across all anchors
+- `sample_unscored` — 5 oldest + 5 newest unfilled anchors with their
+  `close_dN` values + `future_bars_after_gen_day` count
+
+**Call when**: backfill reports `filled=0` but the data looks like it
+should fill. This separates "anchor code disappeared from klines" from
+"future bars don't exist yet" from "real algorithm bug".
+
+### `POST /api/_diag/backfill-outcomes`
+**Async** manual backfill. Walks `analysis_outcomes` rows where
+`close_d20 IS NULL`, looks up future kline closes per row, fills
+`close_dN` + `return_dN` for any horizon now satisfied. Daily cron at
+17:00 BJT (`_outcomes_tick`) does this automatically — manual call is
+for ad-hoc catch-up after a long outage or a kline_tick miss.
+
+Returns `{started: true}` immediately. ~30-60 s for 1000+ anchors.
+
+### `GET /api/_diag/backfill-outcomes/status`
+Status of the most recent `/backfill-outcomes` run. Returns
+`{running, last_result: {scanned, filled}}`.
+
+`scanned` = anchors examined; `filled` = anchors where at least one
+new horizon got a value. `filled` can legitimately be 0 if every
+in-flight anchor has already filled to the farthest horizon possible
+given current kline data.
+
+---
+
+## Migrations (one-off)
+
+### `POST /api/_diag/migrate-prompt-version`
+**Idempotent** retroactive fix for the pre-c231b60 hardcode bug:
+`PROMPT_VERSION` was a module constant `"v2.5-debate"`, so every row
+was tagged the same regardless of mode. This endpoint splits the bucket
+using the `mode` column:
+- `prompt_version='v2.5-debate'` AND `mode='debate'` → unchanged
+- `prompt_version='v2.5-debate'` AND `mode!='debate'` → `'v2.5-single'`
+
+Touches both `analyses` and `analysis_outcomes`. Returns row counts.
+Already run on prod 2026-05-28; re-running is a no-op.
+
+---
+
+## Pattern reference
+
+When adding a new diag endpoint, mirror the existing shape:
+
+- **GET** for read-only inspection (returns JSON dict, no side effects)
+- **POST** for actions (`refresh-*`, `backfill-*`, `migrate-*`)
+- If the action can exceed ~30 s, **always async**: thread + module-level
+  `{v: bool, last_result: ...}` + sibling `/status` endpoint. Synchronous
+  long calls get killed by Railway's proxy.
+- Add a module-level `_<name>_lock = threading.Lock()` if multiple
+  concurrent runs would corrupt state.
+- Public on purpose — `/_diag/*` is the convention. Don't put PII or
+  secrets in responses.
+- Document in this file with: path, method, what it does, when to call.
