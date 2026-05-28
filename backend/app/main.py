@@ -216,14 +216,25 @@ def diag_outcomes_kline_coverage():
         orphan_codes = sorted(outcome_codes - kline_codes)
         covered_codes = sorted(outcome_codes & kline_codes)
 
-        # Sample 10 recent unscored outcomes — for each, count future bars
-        sample = (
+        # Sample 5 EARLIEST + 5 LATEST unscored outcomes — earliest ones
+        # have had the most time for future bars to accumulate, so if even
+        # those show future_bars=0 we've found a real bug (not just "kline
+        # not yet caught up for fresh anchors").
+        oldest = (
+            db.query(AnalysisOutcome)
+            .filter(AnalysisOutcome.return_d5.is_(None))
+            .order_by(AnalysisOutcome.generated_at.asc())
+            .limit(5)
+            .all()
+        )
+        latest = (
             db.query(AnalysisOutcome)
             .filter(AnalysisOutcome.return_d5.is_(None))
             .order_by(AnalysisOutcome.generated_at.desc())
-            .limit(10)
+            .limit(5)
             .all()
         )
+        sample = list(oldest) + list(latest)
         sample_detail = []
         for o in sample:
             gen_day = o.generated_at.date().isoformat()
