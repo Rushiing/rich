@@ -252,7 +252,20 @@ def diag_outcomes_kline_coverage():
                 "gen_day_utc": gen_day,
                 "kline_rows_for_code": kline_for_code,
                 "future_bars_after_gen_day": future_bars,
+                "close_d1": o.close_d1,
+                "close_d3": o.close_d3,
+                "close_d5": o.close_d5,
+                "close_d20": o.close_d20,
             })
+
+        # Per-horizon fill counts across the WHOLE table — orthogonal to the
+        # sample. Tells us if backfill ever ran d1/d3 successfully.
+        fill_stats = {}
+        for col in ("close_d1", "close_d3", "close_d5", "close_d20"):
+            n = db.query(sa_func.count(AnalysisOutcome.id)).filter(
+                getattr(AnalysisOutcome, col).isnot(None)
+            ).scalar() or 0
+            fill_stats[col] = n
 
         return {
             "outcome_distinct_codes": len(outcome_codes),
@@ -260,6 +273,7 @@ def diag_outcomes_kline_coverage():
             "orphan_codes_count": len(orphan_codes),
             "orphan_codes": orphan_codes[:30],   # truncate for readability
             "covered_codes_count": len(covered_codes),
+            "fill_stats": fill_stats,
             "sample_unscored": sample_detail,
         }
     finally:
