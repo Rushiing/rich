@@ -146,13 +146,89 @@ def diag_refresh_financials_status():
     }
 
 
+_outcomes_backfill_lock = __import__("threading").Lock()
+_outcomes_backfill_running = {"v": False, "last_result": None}
+
+
 @app.post("/api/_diag/backfill-outcomes")
 def diag_backfill_outcomes():
-    """Manually run the analysis-outcome backfill (fills forward returns
-    from klines). Normally runs daily at 17:00 BJT via _outcomes_tick;
-    this is for ad-hoc runs."""
+    """Manually run the analysis-outcome backfill, ASYNC. Backfill walks
+    the entire outcomes table (1k+ rows in prod) and runs a kline query
+    per row — easily 60+ seconds, which Railway's HTTP proxy kills. So
+    we fire a background thread and surface progress via the status
+    endpoint, same shape as refresh-financials. Normal cadence is
+    daily 17:00 BJT via _outcomes_tick; this endpoint is for ad-hoc
+    catch-up runs after a long backend outage or schema change."""
+    import threading
     from .services import outcomes as outcomes_svc
-    return outcomes_svc.backfill_outcomes()
+
+    with _outcomes_backfill_lock:
+        if _outcomes_backfill_running["v"]:
+            return {"started": False, "already_running": True}
+        _outcomes_backfill_running["v"] = True
+        _outcomes_backfill_running["last_result"] = None
+
+    def _worker():
+        try:
+            result = outcomes_svc.backfill_outcomes()
+            _outcomes_backfill_running["last_result"] = result
+        except Exception as e:
+            _outcomes_backfill_running["last_result"] = {"error": str(e)}
+        finally:
+            with _outcomes_backfill_lock:
+                _outcomes_backfill_running["v"] = False
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return {"started": True}
+
+
+@app.get("/api/_diag/backfill-outcomes/status")
+def diag_backfill_outcomes_status():
+    """Status of the most recent /backfill-outcomes run."""
+    return {
+        "running": _outcomes_backfill_running["v"],
+        "last_result": _outcomes_backfill_running["last_result"],
+    }
+
+
+@app.get("/api/_diag/klines-status")
+def diag_klines_status():
+    """Quick health check on the klines table — backfill_outcomes depends
+    on it, so when scored_d5 stays at zero this is the first thing to
+    inspect. Returns per-code coverage stats."""
+    from sqlalchemy import func as sa_func
+    from .db import SessionLocal
+    from .models import Kline
+    db = SessionLocal()
+    try:
+        total = db.query(sa_func.count(Kline.id)).scalar() or 0
+        distinct_codes = db.query(
+            sa_func.count(sa_func.distinct(Kline.code))
+        ).scalar() or 0
+        first = db.query(sa_func.min(Kline.date)).scalar()
+        last = db.query(sa_func.max(Kline.date)).scalar()
+        # Per-code row count distribution (min / median-ish / max)
+        per_code = sorted([
+            n for (code, n) in db.query(
+                Kline.code, sa_func.count(Kline.id),
+            ).group_by(Kline.code).all()
+        ])
+        median_per_code = per_code[len(per_code) // 2] if per_code else 0
+        return {
+            "total_rows": total,
+            "distinct_codes": distinct_codes,
+            "first_date": str(first) if first else None,
+            "last_date": str(last) if last else None,
+            "rows_per_code_min": per_code[0] if per_code else 0,
+            "rows_per_code_median": median_per_code,
+            "rows_per_code_max": per_code[-1] if per_code else 0,
+            # If max != median, some codes are missing days — likely the
+            # ones added to watchlist most recently. Backfill_outcomes
+            # for those codes' anchors will keep returning "not enough
+            # future bars yet" until kline_tick catches up.
+        }
+    finally:
+        db.close()
 
 
 @app.get("/api/_diag/outcomes-stats")
