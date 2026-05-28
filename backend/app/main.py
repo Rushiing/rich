@@ -198,6 +198,74 @@ def diag_snapshot_schema():
     }
 
 
+@app.get("/api/_diag/outcomes-detail")
+def diag_outcomes_detail():
+    """Raw distribution of the analysis_outcomes table — diagnoses why
+    hit_rate_stats is sparse. Breaks down total / scorable / actually-
+    scored counts by actionable, plus distinct modes/prompt_versions and
+    the time window of recorded anchors.
+
+    Hit-rate-stats alone hides the fact that "scored" (return_d5 not null)
+    might be 4% of total because either record_anchor is silently skipping
+    most calls, or the daily backfill cron isn't keeping up. This endpoint
+    shows the two layers separately."""
+    from sqlalchemy import func as sa_func
+    from .db import SessionLocal
+    from .models import AnalysisOutcome
+    db = SessionLocal()
+    try:
+        total = db.query(sa_func.count(AnalysisOutcome.id)).scalar() or 0
+        scored = db.query(sa_func.count(AnalysisOutcome.id)).filter(
+            AnalysisOutcome.return_d5.isnot(None)
+        ).scalar() or 0
+
+        # Group by actionable (total vs scored)
+        by_action: dict[str, dict] = {}
+        for actionable, n in db.query(
+            AnalysisOutcome.actionable, sa_func.count(AnalysisOutcome.id),
+        ).group_by(AnalysisOutcome.actionable).all():
+            by_action[actionable] = {"total": n, "scored": 0}
+        for actionable, n in db.query(
+            AnalysisOutcome.actionable, sa_func.count(AnalysisOutcome.id),
+        ).filter(AnalysisOutcome.return_d5.isnot(None)).group_by(
+            AnalysisOutcome.actionable,
+        ).all():
+            by_action.setdefault(actionable, {"total": 0, "scored": 0})
+            by_action[actionable]["scored"] = n
+
+        # Distinct mode / prompt_version
+        modes = sorted({m for (m,) in db.query(AnalysisOutcome.mode).distinct().all() if m})
+        prompts = sorted({p for (p,) in db.query(
+            AnalysisOutcome.prompt_version,
+        ).distinct().all() if p})
+
+        # Time window
+        first = db.query(sa_func.min(AnalysisOutcome.generated_at)).scalar()
+        last = db.query(sa_func.max(AnalysisOutcome.generated_at)).scalar()
+
+        # NULL anchor_price guard — record_anchor() skips when price is
+        # None, so this should always be zero. If it isn't, the schema
+        # has nullable=True (which it shouldn't given record_anchor's
+        # behavior) and we have phantom rows.
+        null_anchor = db.query(sa_func.count(AnalysisOutcome.id)).filter(
+            AnalysisOutcome.anchor_price.is_(None)
+        ).scalar() or 0
+
+        return {
+            "total_anchors": total,
+            "scored_d5": scored,
+            "scored_pct": round(scored / total * 100, 1) if total else None,
+            "by_actionable": by_action,
+            "distinct_modes": modes,
+            "distinct_prompt_versions": prompts,
+            "first_anchor": first.isoformat() if first else None,
+            "last_anchor": last.isoformat() if last else None,
+            "null_anchor_price_count": null_anchor,
+        }
+    finally:
+        db.close()
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
