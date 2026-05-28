@@ -431,6 +431,41 @@ def diag_outcomes_detail():
         db.close()
 
 
+@app.post("/api/_diag/migrate-prompt-version")
+def diag_migrate_prompt_version():
+    """One-off retroactive fix for the pre-c231b60 hardcode bug.
+
+    Before c231b60 every Analysis / AnalysisOutcome row got tagged
+    prompt_version='v2.5-debate' regardless of whether it ran in single
+    or debate mode — so a year of accumulated hit-rate data is filed
+    under one bucket instead of two. This endpoint repairs the existing
+    rows by splitting on the `mode` column:
+      - prompt_version='v2.5-debate' AND mode='debate' → unchanged
+      - prompt_version='v2.5-debate' AND mode!='debate' (or NULL) → 'v2.5-single'
+
+    Idempotent and safe to re-run: the WHERE clause only catches the
+    buggy tag, and post-fix rows already carry the correct value.
+    Applies to both `analyses` and `analysis_outcomes` tables.
+    """
+    from sqlalchemy import text
+    from .db import engine
+    with engine.begin() as conn:
+        # COALESCE handles rows where mode is NULL — default them to single
+        # since that's the path that runs 99% of the time.
+        analyses_n = conn.execute(text(
+            "UPDATE analyses SET prompt_version = 'v2.5-' || COALESCE(NULLIF(mode, ''), 'single') "
+            "WHERE prompt_version = 'v2.5-debate'"
+        )).rowcount
+        outcomes_n = conn.execute(text(
+            "UPDATE analysis_outcomes SET prompt_version = 'v2.5-' || COALESCE(NULLIF(mode, ''), 'single') "
+            "WHERE prompt_version = 'v2.5-debate'"
+        )).rowcount
+    return {
+        "analyses_updated": analyses_n,
+        "outcomes_updated": outcomes_n,
+    }
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
