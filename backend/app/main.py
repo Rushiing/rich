@@ -191,6 +191,70 @@ def diag_backfill_outcomes_status():
     }
 
 
+@app.get("/api/_diag/outcomes-kline-coverage")
+def diag_outcomes_kline_coverage():
+    """Per-anchor inspection: for a sample of recent unscored outcomes,
+    how many future kline bars are available? If most show future_bars=0,
+    the kline_tick is not keeping their codes alive (e.g., user removed
+    the stock from watchlist after the anchor was recorded).
+
+    Returns the set of codes that have outcomes but no klines, and a
+    small sample of (code, generated_at, future_bars) tuples."""
+    from sqlalchemy import func as sa_func
+    from .db import SessionLocal
+    from .models import AnalysisOutcome, Kline
+    db = SessionLocal()
+    try:
+        # All distinct codes the outcomes table tracks
+        outcome_codes = {
+            c for (c,) in db.query(AnalysisOutcome.code).distinct().all()
+        }
+        # All distinct codes that have any kline row
+        kline_codes = {
+            c for (c,) in db.query(Kline.code).distinct().all()
+        }
+        orphan_codes = sorted(outcome_codes - kline_codes)
+        covered_codes = sorted(outcome_codes & kline_codes)
+
+        # Sample 10 recent unscored outcomes — for each, count future bars
+        sample = (
+            db.query(AnalysisOutcome)
+            .filter(AnalysisOutcome.return_d5.is_(None))
+            .order_by(AnalysisOutcome.generated_at.desc())
+            .limit(10)
+            .all()
+        )
+        sample_detail = []
+        for o in sample:
+            gen_day = o.generated_at.date().isoformat()
+            future_bars = db.query(sa_func.count(Kline.id)).filter(
+                Kline.code == o.code,
+                Kline.date > gen_day,
+            ).scalar() or 0
+            kline_for_code = db.query(sa_func.count(Kline.id)).filter(
+                Kline.code == o.code,
+            ).scalar() or 0
+            sample_detail.append({
+                "code": o.code,
+                "actionable": o.actionable,
+                "generated_at": o.generated_at.isoformat(),
+                "gen_day_utc": gen_day,
+                "kline_rows_for_code": kline_for_code,
+                "future_bars_after_gen_day": future_bars,
+            })
+
+        return {
+            "outcome_distinct_codes": len(outcome_codes),
+            "kline_distinct_codes": len(kline_codes),
+            "orphan_codes_count": len(orphan_codes),
+            "orphan_codes": orphan_codes[:30],   # truncate for readability
+            "covered_codes_count": len(covered_codes),
+            "sample_unscored": sample_detail,
+        }
+    finally:
+        db.close()
+
+
 @app.get("/api/_diag/klines-status")
 def diag_klines_status():
     """Quick health check on the klines table — backfill_outcomes depends
