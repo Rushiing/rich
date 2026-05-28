@@ -39,8 +39,28 @@ def _safe(fn, *args, **kwargs):
         return None
 
 
+# Shared long-lived thread pool for every "submit + wait-with-deadline"
+# pattern in this module (_safe_with_timeout, _bounded_pool). Re-creating
+# a pool per call leaks: akshare HTTP reads sometimes hang past their
+# nominal timeout, the worker can't be killed mid-I/O, and with a per-call
+# pool every leaked worker is a fresh OS thread that never goes back. We
+# observed prod hitting `RuntimeError: can't start new thread` after a day
+# of leaks — anyio's threadpool then couldn't spawn workers either, taking
+# down every sync FastAPI route on the box.
+#
+# With a single process-wide pool the leak hard-caps at max_workers: stuck
+# akshare calls occupy at most N permanent threads, and overflow tasks
+# queue inside the pool rather than spawning more OS threads. max_workers
+# sized to cover: collect_many's 10 parallel collect_one × 2 news/notice
+# helpers = 20, plus quotes_tick's 10-wide fan-out, plus headroom for the
+# occasional overlap between hourly snapshot and the 5-min quotes tick.
+_BOUNDED_POOL = ThreadPoolExecutor(
+    max_workers=64, thread_name_prefix="akshare-bounded",
+)
+
+
 def _safe_with_timeout(fn, *args, _timeout: float = 8.0, **kwargs):
-    """Run `fn` with a hard wall-time cap.
+    """Run `fn` with a hard wall-time cap, using the shared _BOUNDED_POOL.
 
     Why we need this *on top of* requests.Session.send's 12s default:
     akshare's news/notice helpers paginate internally, each page being a
@@ -48,21 +68,18 @@ def _safe_with_timeout(fn, *args, _timeout: float = 8.0, **kwargs):
     even though cumulative time can run minutes. Wrapping the whole helper
     in a thread future lets us bail out at a true wall-clock deadline.
 
-    The inner thread leaks if it's stuck in I/O (Python can't kill it),
-    but it'll exit on its own when akshare eventually gives up. We don't
-    block on it.
+    The inner thread is abandoned if it's stuck in I/O (Python can't kill
+    it), but the shared pool caps the total number of such zombies — they
+    don't grow without bound across calls.
     """
-    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="akshare-bounded")
+    fut = _BOUNDED_POOL.submit(_safe, fn, *args, **kwargs)
     try:
-        fut = pool.submit(_safe, fn, *args, **kwargs)
-        try:
-            return fut.result(timeout=_timeout)
-        except FuturesTimeout:
-            logger.warning("akshare call %s exceeded %ss, abandoning",
-                           fn.__name__, _timeout)
-            return None
-    finally:
-        pool.shutdown(wait=False)
+        return fut.result(timeout=_timeout)
+    except FuturesTimeout:
+        fut.cancel()  # no-op if already running; cancels if still queued
+        logger.warning("akshare call %s exceeded %ss, abandoning",
+                       fn.__name__, _timeout)
+        return None
 
 
 def _spot(code: str) -> dict[str, float | None]:
@@ -388,16 +405,14 @@ def _flow_accepts(v: Any) -> bool:
 
 
 def _bounded_pool(fn, codes: list[str], total_timeout: float, accepts) -> dict[str, Any]:
-    """Run `fn(code)` for each code in a bounded thread pool with a
+    """Run `fn(code)` for each code on the shared _BOUNDED_POOL with a
     wall-time deadline. Returns whatever finished by the deadline; codes
-    still in flight are abandoned (their threads keep running until akshare
-    eventually gives up, but the caller doesn't wait).
+    still in flight are cancelled (only effective if they were still
+    queued — running futures keep running on the shared pool until akshare
+    eventually gives up, but we don't wait on them).
     """
     out: dict[str, Any] = {}
-    pool = ThreadPoolExecutor(
-        max_workers=min(10, len(codes)), thread_name_prefix="quotes-bounded",
-    )
-    futures = {pool.submit(fn, c): c for c in codes}
+    futures = {_BOUNDED_POOL.submit(fn, c): c for c in codes}
     try:
         for fut in as_completed(futures, timeout=total_timeout):
             c = futures[fut]
@@ -417,8 +432,10 @@ def _bounded_pool(fn, codes: list[str], total_timeout: float, accepts) -> dict[s
         )
         for f in futures:
             if not f.done():
-                f.cancel()  # best-effort; can't kill a thread mid-I/O
-    pool.shutdown(wait=False)  # don't block return on stuck workers
+                f.cancel()  # cancels queued; no-op for running
+    # No shutdown — pool is process-wide and persists across calls. This
+    # is the whole point of the fix: stop spawning fresh pools whose
+    # leaked workers can't be reclaimed.
     return out
 
 
