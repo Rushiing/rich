@@ -485,20 +485,25 @@ def diag_migrate_confidence_to_int():
         return {"skipped": True, "reason": "non-postgres backend"}
     with engine.begin() as conn:
         # Note: key_table is stored as JSON (not JSONB), so we cast to
-        # jsonb for jsonb_set then back to json for the column. The CASE
-        # produces a jsonb numeric value via the explicit ::jsonb cast.
+        # jsonb for jsonb_set then back to json for the column.
+        # to_jsonb(integer) keeps all CASE branches returning the same
+        # jsonb-numeric type (the earlier ::jsonb-on-strings + json
+        # fallback variant errored with "CASE types jsonb and json cannot
+        # be matched"). WHERE clause guarantees the CASE always matches
+        # one of the three enums, so no ELSE branch is needed.
         rows_n = conn.execute(text(
             """
             UPDATE analyses
             SET key_table = jsonb_set(
                 key_table::jsonb,
                 '{confidence}',
-                CASE key_table->>'confidence'
-                    WHEN '高' THEN '85'::jsonb
-                    WHEN '中' THEN '65'::jsonb
-                    WHEN '低' THEN '45'::jsonb
-                    ELSE key_table->'confidence'
-                END
+                to_jsonb(
+                    CASE key_table->>'confidence'
+                        WHEN '高' THEN 85
+                        WHEN '中' THEN 65
+                        WHEN '低' THEN 45
+                    END
+                )
             )::json
             WHERE key_table->>'confidence' IN ('高', '中', '低')
             """
