@@ -34,11 +34,41 @@ export default function DashboardPage() {
   const [indices, setIndices] = useState<IndexQuote[] | null>(null);
   const [picks, setPicks] = useState<SectorPicksResponse | null>(null);
   const [rows, setRows] = useState<StockRow[] | null>(null);
+  // Per-section error state. Each section fails independently — when only
+  // the sectors endpoint is down we still want indices + watchlist to
+  // render. The previous `.catch(() => setX([]))` setup masked all
+  // failures as "no data", misleading users (e.g. seeing "暂无推荐" when
+  // backend was actually broken). null = no error.
+  const [indicesError, setIndicesError] = useState<string | null>(null);
+  const [picksError, setPicksError] = useState<string | null>(null);
+  const [rowsError, setRowsError] = useState<string | null>(null);
+
+  // Each loader extracted so the "重试" button can re-fire just that one
+  // section's request without re-pulling the other two.
+  function loadIndices() {
+    setIndicesError(null);
+    api.listIndices()
+      .then((d) => { setIndices(d); setIndicesError(null); })
+      .catch((e) => setIndicesError(e instanceof Error ? e.message : String(e)));
+  }
+  function loadPicks() {
+    setPicksError(null);
+    api.getSectorPicks()
+      .then((d) => { setPicks(d); setPicksError(null); })
+      .catch((e) => setPicksError(e instanceof Error ? e.message : String(e)));
+  }
+  function loadRows() {
+    setRowsError(null);
+    api.listStocks()
+      .then((d) => { setRows(d); setRowsError(null); })
+      .catch((e) => setRowsError(e instanceof Error ? e.message : String(e)));
+  }
 
   useEffect(() => {
-    api.listIndices().then(setIndices).catch(() => setIndices([]));
-    api.getSectorPicks().then(setPicks).catch(() => setPicks(null));
-    api.listStocks().then(setRows).catch(() => setRows([]));
+    loadIndices();
+    loadPicks();
+    loadRows();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const attention = (rows ?? [])
@@ -51,7 +81,9 @@ export default function DashboardPage() {
 
       {/* ---- 大盘 ---- */}
       <Section title="大盘">
-        {indices == null ? (
+        {indicesError ? (
+          <ErrorLine error={indicesError} onRetry={loadIndices} />
+        ) : indices == null ? (
           <Muted>加载中…</Muted>
         ) : indices.length === 0 ? (
           <Muted>指数数据暂不可用</Muted>
@@ -78,7 +110,9 @@ export default function DashboardPage() {
 
       {/* ---- 今日推荐板块 ---- */}
       <Section title="今日推荐板块" href="/sectors" hrefLabel="全部板块 →">
-        {picks == null ? (
+        {picksError ? (
+          <ErrorLine error={picksError} onRetry={loadPicks} />
+        ) : picks == null ? (
           <Muted>加载中…</Muted>
         ) : picks.sectors.length === 0 ? (
           <Muted>暂无推荐</Muted>
@@ -115,7 +149,9 @@ export default function DashboardPage() {
 
       {/* ---- 今日要看 ---- */}
       <Section title="今日要看" href="/stocks" hrefLabel="全部盯盘 →">
-        {rows == null ? (
+        {rowsError ? (
+          <ErrorLine error={rowsError} onRetry={loadRows} />
+        ) : rows == null ? (
           <Muted>加载中…</Muted>
         ) : attention.length === 0 ? (
           <Muted>今日自选池无强信号 / 大涨大跌 / 买卖建议</Muted>
@@ -204,6 +240,44 @@ function Section({
 
 function Muted({ children }: { children: React.ReactNode }) {
   return <p style={{ color: "var(--text-faint)", fontSize: 13, margin: 0 }}>{children}</p>;
+}
+
+// Inline error for a dashboard section. Kept on one line + retry link so
+// it doesn't bloat the page when all three sections fail at once (common
+// — they all share the same backend). Honest about what went wrong
+// instead of silently rendering "暂无数据".
+function ErrorLine({ error, onRetry }: { error: string; onRetry: () => void }) {
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", gap: 10,
+      padding: "8px 12px",
+      border: "1px solid #b91c1c",
+      background: "rgba(185, 28, 28, 0.08)",
+      borderRadius: 6,
+      color: "#dc2626",
+      fontSize: 13,
+    }}>
+      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        加载失败:{error}
+      </span>
+      <button
+        type="button"
+        onClick={onRetry}
+        style={{
+          background: "transparent",
+          border: "1px solid #dc2626",
+          color: "#dc2626",
+          borderRadius: 4,
+          padding: "2px 10px",
+          fontSize: 12,
+          cursor: "pointer",
+          flexShrink: 0,
+        }}
+      >
+        重试
+      </button>
+    </div>
+  );
 }
 
 const card: React.CSSProperties = {

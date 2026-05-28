@@ -118,6 +118,11 @@ export default function StocksPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  // Last-refresh error, separate from `msg`. `msg` is for action feedback
+  // ("已开始抓取" etc.); `loadError` is "the most recent data refresh
+  // failed". Keeping them separate so an action toast doesn't overwrite
+  // the persistent "list is stale" banner, and vice versa.
+  const [loadError, setLoadError] = useState<string | null>(null);
   // null = show all rows; otherwise exact match against StockRow.analysis.actionable
   // (or "__pending" for rows that don't have a cached analysis yet).
   const [filter, setFilter] = useState<string | null>(null);
@@ -142,6 +147,17 @@ export default function StocksPage() {
     if (!opts.silent) setLoading(true);
     try {
       setRows(await api.listStocks());
+      setLoadError(null);  // success clears any prior failure banner
+    } catch (e) {
+      // Critical: WITHOUT this catch the exception flies past the try/
+      // finally, `rows` stays at its initial [], and the empty-state UI
+      // says "自选池为空" — misleading users into thinking their data
+      // is gone when actually the backend is broken. Keep stale rows
+      // so they still see the previous good snapshot; surface the error
+      // as a banner above the table.
+      const msg = e instanceof Error ? e.message : String(e);
+      setLoadError(msg);
+      // Do NOT setRows([]) — keep the last good data on screen.
     } finally {
       if (!opts.silent) setLoading(false);
     }
@@ -293,11 +309,13 @@ export default function StocksPage() {
       ));
       // Re-pull list so server-side ordering (starred first) takes effect.
       refresh({ silent: true }).catch(() => {});
-    } catch {
-      // Revert on failure
+    } catch (e) {
+      // Revert the optimistic flip AND surface the failure so the user
+      // doesn't see a "phantom UI glitch" (star changed then jumped back).
       setRows((prev) => prev.map((r) =>
         r.code === code ? { ...r, starred: before } : r,
       ));
+      setMsg(`星标操作失败：${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -365,6 +383,38 @@ export default function StocksPage() {
       {msg && (
         <div style={{ marginTop: 12, color: "var(--text-soft)", fontSize: 13 }}>{msg}</div>
       )}
+      {loadError && (
+        <div style={{
+          marginTop: 12,
+          padding: "8px 12px",
+          border: "1px solid #b91c1c",
+          background: "rgba(185, 28, 28, 0.08)",
+          borderRadius: 6,
+          color: "#dc2626",
+          fontSize: 13,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+        }}>
+          <span>列表加载失败:{loadError}{rows.length > 0 ? "(下方为上次成功的数据)" : ""}</span>
+          <button
+            type="button"
+            onClick={() => refresh()}
+            style={{
+              background: "transparent",
+              border: "1px solid #dc2626",
+              color: "#dc2626",
+              borderRadius: 4,
+              padding: "2px 10px",
+              fontSize: 12,
+              cursor: "pointer",
+            }}
+          >
+            重试
+          </button>
+        </div>
+      )}
 
       <ActionableFilter rows={rows} value={filter} onChange={setFilter} />
 
@@ -419,7 +469,10 @@ export default function StocksPage() {
               </td>
             </tr>
           )}
-          {!loading && rows.length === 0 && (
+          {/* Empty-state ONLY when we're confident the user has no rows
+              (not when the fetch failed — that case shows the loadError
+              banner above instead, so we don't mislead with "自选池为空"). */}
+          {!loading && rows.length === 0 && !loadError && (
             <tr>
               <td colSpan={11} style={{ ...td, textAlign: "center", color: "var(--text-faint)" }}>
                 自选池为空，先去
