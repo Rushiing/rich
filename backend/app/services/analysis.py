@@ -92,16 +92,54 @@ PROMPT_VERSION = prompt_version_for("single")
 _FINANCIAL_STALE_DAYS = 60
 
 
+def _is_intraday() -> bool:
+    """Is right now within A-share market hours (BJT 9:30–11:30 + 13:00–15:00,
+    Mon–Fri)?
+
+    Used by compute_data_completeness() to be lenient on fund-flow fields
+    that the data source only publishes post-close — punishing them
+    during trading hours produced spurious "low confidence" verdicts on
+    every batch run from open to ~15:30 BJT.
+
+    Not exhaustive — doesn't account for holiday calendar. The
+    consequence of a false positive (treating a holiday as trading) is
+    just that fund-flow gaps get a free pass for that day; mild. The
+    consequence of a false negative (rare; would need TZ skew) is the
+    same as before this function existed. So accuracy beyond
+    weekday+hour isn't worth the dependency.
+    """
+    now_bjt = datetime.now(timezone(timedelta(hours=8)))
+    if now_bjt.weekday() >= 5:  # Sat/Sun
+        return False
+    hm = now_bjt.hour * 100 + now_bjt.minute
+    return (930 <= hm <= 1130) or (1300 <= hm <= 1500)
+
+
 def compute_data_completeness(s: Snapshot | None, code: str) -> dict[str, Any]:
     """Score the input quality for this analysis run.
 
-    Returns {score: int 0-100, missing: list[str], stale: list[str]}.
+    Returns {score: int 0-100, missing: list[str], stale: list[str],
+             intraday_skipped: list[str]}.
 
-    Four equally-weighted dimensions (25 pts each):
+    Up to four equally-weighted dimensions:
       - 实时行情:  Snapshot.{price, change_pct, volume, turnover}
       - 技术指标:  Kline.latest_for_code(code) present + MA5/10/20/60 all non-null
       - 资金流向:  Snapshot.{main_net_flow, net_flow_3d, north_hold_change}
       - 财务数据:  Financial.latest_for_code(code, n=1) present + report ≤60d old
+
+    **Intraday leniency (added 5/28 after open-to-15:00 batch runs all
+    came back "低 置信"):** during A-share trading hours, the fund-flow
+    dimension is regularly missing because the data source publishes it
+    post-close. So when fund_missing AND _is_intraday(), we *drop the
+    dimension entirely from the denominator* (not just zero its score)
+    and record the fact in `intraday_skipped` for prompt transparency.
+    Post-close, missing fund flow goes back into `missing` and costs
+    25 pts as before.
+
+    The result is that a fully-filled intraday snapshot scores 100/100
+    (3 dims × 33.33 each) rather than 75/100, and the prompt section
+    can honestly say "盘中暂无 (收盘后才齐), 不影响判断" instead of
+    falsely flagging quality.
 
     If snapshot is None we score 0 with everything missing — caller is
     free to skip the prompt section entirely (the existing fallback path
@@ -109,23 +147,34 @@ def compute_data_completeness(s: Snapshot | None, code: str) -> dict[str, Any]:
     """
     missing: list[str] = []
     stale: list[str] = []
-    score = 0
+    intraday_skipped: list[str] = []
+    got = 0
+    max_score = 0
 
     if s is None:
-        return {"score": 0, "missing": ["snapshot"], "stale": []}
+        return {
+            "score": 0,
+            "missing": ["snapshot"],
+            "stale": [],
+            "intraday_skipped": [],
+        }
 
-    # 1. 实时行情 (25 pts)
+    is_intraday = _is_intraday()
+
+    # 1. 实时行情 (25 pts, always in denominator)
     rt_fields = [("price", s.price), ("change_pct", s.change_pct),
                  ("volume", s.volume), ("turnover", s.turnover)]
     rt_missing = [name for name, v in rt_fields if v is None]
+    max_score += 25
     if not rt_missing:
-        score += 25
+        got += 25
     else:
         missing.append(f"实时行情:{','.join(rt_missing)}")
 
-    # 2. 技术指标 (25 pts) — late import to dodge any circular risk
+    # 2. 技术指标 (25 pts, always in denominator) — late import to dodge any circular risk
     from . import kline as kline_svc
     latest_k = kline_svc.latest_for_code(code)
+    max_score += 25
     if latest_k is None:
         missing.append("技术指标:K线未拉到")
     else:
@@ -133,23 +182,32 @@ def compute_data_completeness(s: Snapshot | None, code: str) -> dict[str, Any]:
                      ("MA20", latest_k.ma20), ("MA60", latest_k.ma60)]
         ma_missing = [name for name, v in ma_fields if v is None]
         if not ma_missing:
-            score += 25
+            got += 25
         else:
             missing.append(f"技术指标:{','.join(ma_missing)}")
 
-    # 3. 资金流向 (25 pts)
+    # 3. 资金流向 — intraday-lenient.
     fund_fields = [("main_net_flow", s.main_net_flow),
                    ("net_flow_3d", s.net_flow_3d),
                    ("north_hold_change", s.north_hold_change)]
     fund_missing = [name for name, v in fund_fields if v is None]
     if not fund_missing:
-        score += 25
+        # Got the data → counts toward both numerator and denominator.
+        max_score += 25
+        got += 25
+    elif is_intraday:
+        # Intraday + missing → drop the dimension. Record for prompt
+        # transparency so the LLM can mention it but not get punished.
+        intraday_skipped.append(f"资金流向({','.join(fund_missing)})")
     else:
+        # Post-close + still missing → actually low quality.
+        max_score += 25
         missing.append(f"资金流向:{','.join(fund_missing)}")
 
-    # 4. 财务数据 (25 pts) — has row + ≤ _FINANCIAL_STALE_DAYS old
+    # 4. 财务数据 (25 pts, always in denominator) — has row + ≤ _FINANCIAL_STALE_DAYS old
     from . import financials as fin_svc
     fin_rows = fin_svc.latest_for_code(code, n=1)
+    max_score += 25
     if not fin_rows:
         missing.append("财务数据:未拉到")
     else:
@@ -161,14 +219,22 @@ def compute_data_completeness(s: Snapshot | None, code: str) -> dict[str, Any]:
             rd = report_date if not hasattr(report_date, "date") else report_date.date()
             age_days = (today - rd).days
             if age_days <= _FINANCIAL_STALE_DAYS:
-                score += 25
+                got += 25
             else:
                 stale.append(f"财务数据:最近季报截止 {age_days} 天前")
         except Exception:
             # Defensive: bad date format shouldn't crash the analysis
             stale.append("财务数据:报告日期解析失败")
 
-    return {"score": score, "missing": missing, "stale": stale}
+    # Score = filled / available × 100. Intraday with fund_missing →
+    # max_score is 75; otherwise 100.
+    score = int(round(got / max_score * 100)) if max_score > 0 else 0
+    return {
+        "score": score,
+        "missing": missing,
+        "stale": stale,
+        "intraday_skipped": intraday_skipped,
+    }
 
 
 def _market_and_sector_context(industry_name: str | None) -> str:
@@ -210,18 +276,35 @@ def _market_and_sector_context(industry_name: str | None) -> str:
 def _data_completeness_prompt_section(comp: dict[str, Any]) -> str:
     """Render the data-completeness section so the LLM can self-calibrate
     confidence. Always rendered (even at score=100) so the LLM is
-    consistently aware of this signal."""
-    lines = [f"\n## 数据完整度\n本次输入完整度: {comp['score']}/100"]
+    consistently aware of this signal.
+
+    5/28 措辞调整: 早期版本 prompt 太狠("数据严重不全,confidence 应该<60,
+    并在 one_line_reason 体现"),LLM 不仅压低置信,还把"数据不全/缺失"
+    塞进 company_tag 和 one_line_reason —— 用户看到一串"PCB龙头+...+数据
+    不全"非常不友好。改为:
+      - 用语温和,只描述事实(缺失/过期/盘中暂无),不强行规定 confidence
+        阈值,让 LLM 自己结合其它信号判断
+      - 明确禁止把"数据不全/缺失"等元信息写进 company_tag / one_line_reason
+        这两个用户可见字段
+    """
+    lines = [f"\n## 输入数据状态\n完整度: {comp['score']}/100"]
     if comp.get("missing"):
-        lines.append(f"缺失: {' · '.join(comp['missing'])}")
+        lines.append(f"缺失维度: {' · '.join(comp['missing'])}")
+    if comp.get("intraday_skipped"):
+        lines.append(
+            f"盘中暂无(收盘后才齐): {' · '.join(comp['intraday_skipped'])} "
+            f"—— 数据源属性,非输入质量问题"
+        )
     if comp.get("stale"):
         lines.append(f"过期: {' · '.join(comp['stale'])}")
-    if comp["score"] >= 90:
-        lines.append("(数据充分,可正常打分)")
-    elif comp["score"] >= 60:
-        lines.append("(数据部分缺失,confidence 应相应折扣)")
-    else:
-        lines.append("(数据严重不全,confidence 应该<60,并在 one_line_reason 体现)")
+    # Soft guidance — let the LLM decide based on the rest of the signal
+    # stack rather than hard-anchoring confidence to a score threshold.
+    lines.append(
+        "请基于以上已有维度做判断,信号充分的维度正常打分。"
+        "完整度低且关键维度缺失时再下调 confidence。"
+        "**不要**把「数据不全」「数据缺失」「缺资金」等元信息写进 company_tag "
+        "或 one_line_reason —— 那两个字段是给用户看的标签,应该描述公司/股票本身的特征。"
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -560,7 +643,9 @@ def _system_prompt(strategy: Strategy) -> list[dict[str, Any]]:
         "# 数据原则\n"
         "\n"
         "- 完全基于提供的 snapshot 与新闻 / 公告做判断，**不要编造**未在输入中的信息\n"
-        "- 信息缺失就直说 '信息不全，无法判断'，并把 confidence 降到 <60（数据严重不全直接 <40）\n"
+        "- 关键信号缺失（如技术面、财报）时降低 confidence；但 company_tag / "
+        "one_line_reason 是给用户看的标签，永远只描述股票本身特征，不要把"
+        "「数据不全 / 缺失」之类的元信息写进去\n"
         "- 始终调用 submit_analysis 工具**一次**，不要给出其他文本\n"
         "- **先填 analysis_thinking 字段把推理写完，再填 key_table 和 deep_analysis 的结构化结果**。\n"
         "  不允许跳过 analysis_thinking 直接给结论。这是为了让你思考更充分，质量更高。\n"
