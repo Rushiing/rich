@@ -113,6 +113,10 @@ export default function StockDetailPage({
       ) : (
         <>
           {detail && <IndustryContextCard detail={detail} />}
+          {/* 6/3: 历史解析上移到 IndustryContextCard 之后,跟"行业 / 水位"
+              并列作为顶部对照信息。阅读流变成"对照 → 建议":先看
+              行业位置 + 历次 anchor 命中,再下沉到当前 KeyTable。 */}
+          <AnalysisHistoryCard code={code} />
           <HoldingCard
             code={code}
             price={detail?.price ?? null}
@@ -132,7 +136,6 @@ export default function StockDetailPage({
               {analysis.mode === "debate" && <DebateBanner code={code} />}
               <KeyTableCard kt={analysis.key_table} currentPrice={detail?.price ?? null} />
               <DeepAnalysis md={analysis.deep_analysis} />
-              <AnalysisHistoryCard code={code} />
               <Footnote analysis={analysis} />
             </>
           )}
@@ -620,6 +623,28 @@ function KeyTableCard({ kt, currentPrice }: { kt: KeyTable; currentPrice: number
       <div style={{ padding: 16, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8 }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
           <div style={{ fontSize: 22, fontWeight: 600, color: actionableColor }}>{view.action}</div>
+          {/* 6/3: valid_window 从 ConfidenceCard 底部提到 actionable 同
+              行 — 它跟 actionable 一样是"决策信息",不应该被置信度数字压
+              住。视觉权重:小一号字 + 灰底 chip,physically 同行但不抢
+              actionable 主位。 */}
+          {kt.valid_window && (
+            <span style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              padding: "2px 8px",
+              borderRadius: 4,
+              background: "var(--surface-alt)",
+              border: "1px solid var(--border-faint)",
+              color: "var(--text-soft)",
+              fontSize: 12,
+              fontWeight: 500,
+              whiteSpace: "nowrap",
+            }}>
+              <span style={{ color: "var(--text-muted)" }}>⏱</span>
+              {kt.valid_window}
+            </span>
+          )}
           {kt.company_tag && (
             <div style={{ color: "var(--text-soft)", fontSize: 13 }}>{kt.company_tag}</div>
           )}
@@ -669,7 +694,6 @@ function KeyTableCard({ kt, currentPrice }: { kt: KeyTable; currentPrice: number
         confidence={kt.confidence}
         reason={kt.confidence_reason}
         actionable={view.action}
-        validWindow={kt.valid_window}
       />
 
       {/* Tier toggle — only renders when the model actually emitted three
@@ -807,12 +831,11 @@ function KtRow({ label, value }: { label: string; value: string }) {
 //     不改 actionable —— 让 LLM 自己的判断保留,用户看到 + 警示足矣)
 //   confidence 为 null → 完全不渲染 (legacy row before this schema bump)
 function ConfidenceCard({
-  confidence, reason, actionable, validWindow,
+  confidence, reason, actionable,
 }: {
   confidence: string | number | null | undefined;
   reason?: string;
   actionable: string;
-  validWindow?: string;
 }) {
   if (confidence == null) return null;
   const bucket = confidenceBucket(confidence);
@@ -861,20 +884,6 @@ function ConfidenceCard({
       {reason && (
         <div style={{ marginTop: 6, color: "var(--text-soft)", fontSize: 13, lineHeight: 1.5 }}>
           {reason}
-        </div>
-      )}
-      {validWindow && (
-        // 5/29: 参考有效窗口 — 在置信度卡内部作为第二行 meta. 跟 reason
-        // 视觉分级:reason 是亮色描述,validWindow 是更浅的"meta"字号,
-        // 不抢 confidence 数字的视觉位。
-        <div style={{
-          marginTop: 8, paddingTop: 8,
-          borderTop: "1px dashed var(--border-faint)",
-          display: "flex", alignItems: "baseline", gap: 8,
-          color: "var(--text-muted)", fontSize: 12,
-        }}>
-          <span>⏱ 参考有效窗口</span>
-          <span style={{ color: "var(--text)", fontWeight: 500 }}>{validWindow}</span>
         </div>
       )}
     </div>
