@@ -283,6 +283,66 @@ def _run_snapshot_in_background(post_close: bool) -> None:
             _snapshot_running = False
 
 
+# ---------------------------------------------------------------------------
+# Public hit-rate summary — UI shows historical accuracy of buy/sell verdicts
+# alongside the actionable badge so users see "AI 历史命中 60% (n=48)"
+# instead of having to take the verdict on faith. Calls outcomes_svc and
+# caches the result for 30 min (sample sizes shift slowly compared to
+# how often the list re-renders).
+# ---------------------------------------------------------------------------
+
+class HitRateBucket(BaseModel):
+    n: int
+    hit_rate: float | None
+    avg_return_d5: float | None
+
+
+class HitRateSummary(BaseModel):
+    """Public-facing snippet for the UI. Filters to v2.5-single (debate
+    sample is too small to publish) and buy/sell only (others have no
+    directional claim so no hit_rate)."""
+    by_actionable: dict[str, HitRateBucket]
+    total_scored: int
+    cached_at: str
+
+
+_hit_rate_cache: dict = {"data": None, "ts": 0.0}
+_HIT_RATE_CACHE_TTL = 30 * 60  # 30 min
+
+
+@router.get("/hit-rate-summary", response_model=HitRateSummary)
+def get_hit_rate_summary():
+    """Hit-rate summary surfaced in list view tooltips + detail page.
+    Filtered to v2.5-single buy/sell. 30-min in-process cache."""
+    import time
+    from ..services import outcomes as outcomes_svc
+    now = time.time()
+    if (_hit_rate_cache["data"] is not None
+            and (now - _hit_rate_cache["ts"]) < _HIT_RATE_CACHE_TTL):
+        return _hit_rate_cache["data"]
+
+    raw = outcomes_svc.hit_rate_stats()
+    by_actionable: dict[str, HitRateBucket] = {}
+    for b in raw["buckets"]:
+        if b["prompt_version"] != "v2.5-single":
+            continue
+        if b["actionable"] not in ("建议买入", "建议卖出"):
+            continue
+        by_actionable[b["actionable"]] = HitRateBucket(
+            n=b["n"],
+            hit_rate=b["hit_rate"],
+            avg_return_d5=b["avg_return_d5"],
+        )
+    payload = HitRateSummary(
+        by_actionable=by_actionable,
+        total_scored=raw["total_scored"],
+        cached_at=datetime.now(timezone.utc).isoformat(),
+    )
+    _hit_rate_cache["data"] = payload
+    _hit_rate_cache["ts"] = now
+    return payload
+
+
 @router.post("/snapshot", response_model=SnapshotTriggerResult)
 def trigger_snapshot(post_close: bool = False):
     """Kick off the snapshot job in a background thread and return immediately.

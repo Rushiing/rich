@@ -189,6 +189,22 @@ export type StockAnalysis = {
   data_completeness?: number | null;
 };
 
+// 6/3: hit-rate summary for the buy/sell verdicts. Surfaced in list view
+// tooltips + detail page so users see "AI 历史命中 60% (n=48)" alongside
+// the actionable badge — building trust by showing the verdict has real
+// calibration data behind it (and being honest about sample size).
+export type HitRateBucket = {
+  n: number;
+  hit_rate: number | null;        // % (0-100); null for non-directional
+  avg_return_d5: number | null;   // %; can be negative
+};
+
+export type HitRateSummary = {
+  by_actionable: Record<string, HitRateBucket>;  // keyed by "建议买入" / "建议卖出"
+  total_scored: number;
+  cached_at: string;
+};
+
 // 5/29: one historical anchor row from AnalysisOutcome. Detail-page
 // "历史解析" card shows the last N of these so users can see how the
 // verdict + confidence shifted across regenerations, alongside the
@@ -372,6 +388,8 @@ export const api = {
     request<AnalysisHistoryItem[]>(
       `/api/stocks/${code}/analysis-history?limit=${limit}`,
     ),
+  hitRateSummary: () =>
+    request<HitRateSummary>(`/api/stocks/hit-rate-summary`),
   // ---- holdings (cost basis) ----
   getHolding: (code: string) =>
     request<Holding | null>(`/api/holdings/${code}`),

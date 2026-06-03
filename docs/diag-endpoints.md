@@ -96,6 +96,33 @@ curl -s "$BASE/api/_diag/outcomes-stats" | python3 -m json.tool
 This is the *user-facing* report. If you only need a single dashboard
 number, use this.
 
+### `GET /api/_diag/hit-rate-by-confidence`
+**Validation:** does the LLM's self-reported confidence actually correlate
+with accuracy? Stratifies hit_rate by `(actionable, confidence_bucket)`
+where bucket follows frontend's `confidenceBucket()`:
+- `high`: confidence >= 80
+- `med`: 60-79
+- `low`: < 60
+
+Only buy/sell directional verdicts; excludes anchors from before 5/29
+(confidence column added then, older rows have null).
+
+**Expected pattern if confidence works**:
+```
+buy.high.hit_rate > buy.med.hit_rate > buy.low.hit_rate
+sell.high.hit_rate > sell.med.hit_rate > sell.low.hit_rate
+```
+
+Flat distribution = LLM is throwing dice picking numbers; we'd need to
+redesign confidence scoring. Wait 1-2 weeks of new anchors before drawing
+conclusions — small bucket sizes are noisy.
+
+```bash
+curl -s "$BASE/api/_diag/hit-rate-by-confidence" | python3 -m json.tool
+```
+
+---
+
 ### `GET /api/_diag/outcomes-detail`
 Raw distribution of the `analysis_outcomes` table — diagnoses why
 `outcomes-stats` is sparse. Shows total / scored split by actionable,

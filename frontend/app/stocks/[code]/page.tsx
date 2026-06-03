@@ -2,7 +2,7 @@
 
 import { use, useEffect, useState, type ReactNode } from "react";
 import {
-  api, ActionableTier, ActionableTiers, Holding, KeyTable, NextDayOutlook,
+  api, ActionableTier, ActionableTiers, HitRateSummary, Holding, KeyTable, NextDayOutlook,
   ScenarioAdvice, StockAnalysis, StockDetail, StopLossLevel,
   confidenceBucket, confidenceLabel,
 } from "../../../lib/api";
@@ -26,6 +26,9 @@ export default function StockDetailPage({
   // independently from the cached LLM analysis so a code with no analysis
   // yet still shows industry chips.
   const [detail, setDetail] = useState<StockDetail | null>(null);
+  // 6/3: global hit_rate summary — fed to KeyTableCard so the actionable
+  // verdict shows "AI 历史命中 X% (n=Y)" right below it. Silent failure.
+  const [hitRate, setHitRate] = useState<HitRateSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -46,6 +49,9 @@ export default function StockDetailPage({
 
   useEffect(() => {
     loadCached();
+    // 6/3: pull hit_rate summary once per code mount. Backend caches
+    // 30 min so this is cheap and stable.
+    api.hitRateSummary().then(setHitRate).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code]);
 
@@ -134,7 +140,7 @@ export default function StockDetailPage({
               />
               {err && <div style={{ color: "#ef4444", marginTop: 8, fontSize: 13 }}>{err}</div>}
               {analysis.mode === "debate" && <DebateBanner code={code} />}
-              <KeyTableCard kt={analysis.key_table} currentPrice={detail?.price ?? null} />
+              <KeyTableCard kt={analysis.key_table} currentPrice={detail?.price ?? null} hitRate={hitRate} />
               <DeepAnalysis md={analysis.deep_analysis} />
               <Footnote analysis={analysis} />
             </>
@@ -590,7 +596,13 @@ function FreshnessBar({
   );
 }
 
-function KeyTableCard({ kt, currentPrice }: { kt: KeyTable; currentPrice: number | null }) {
+function KeyTableCard({
+  kt, currentPrice, hitRate,
+}: {
+  kt: KeyTable;
+  currentPrice: number | null;
+  hitRate: HitRateSummary | null;
+}) {
   // Three-tier toggle state. Default to "neutral" — that's the LLM's
   // top-level actionable + position_pct, so the card initially shows what
   // it always showed pre-Phase-8.
@@ -649,6 +661,32 @@ function KeyTableCard({ kt, currentPrice }: { kt: KeyTable; currentPrice: number
             <div style={{ color: "var(--text-soft)", fontSize: 13 }}>{kt.company_tag}</div>
           )}
         </div>
+        {/* 6/3: AI 历史命中率 — 在 actionable 下方、reason 之上,作为
+            "你为什么信这个建议" 的硬数据支撑。只对买/卖 显示 (其它
+            没 hit_rate)。sample n<30 加 "(样本小)" 警示。 */}
+        {(() => {
+          const hb = hitRate?.by_actionable[view.action];
+          if (!hb || hb.hit_rate == null) return null;
+          const rateColor =
+            hb.hit_rate >= 60 ? "#22c55e" :
+            hb.hit_rate >= 50 ? "var(--text)" :
+            "#f59e0b";
+          return (
+            <div style={{
+              marginTop: 8,
+              color: "var(--text-soft)", fontSize: 12, lineHeight: 1.5,
+            }}>
+              <span>AI 此类建议历史命中 </span>
+              <b style={{ color: rateColor, fontSize: 13 }}>{hb.hit_rate.toFixed(1)}%</b>
+              <span> · 样本 <b style={{ color: "var(--text)" }}>{hb.n}</b></span>
+              {hb.n < 30 && <span style={{ color: "#f59e0b" }}> (偏小)</span>}
+              {hb.avg_return_d5 != null && (
+                <> · 5 日平均{hb.avg_return_d5 >= 0 ? "+" : ""}
+                  {hb.avg_return_d5.toFixed(2)}%</>
+              )}
+            </div>
+          );
+        })()}
         {/* Show the per-tier reason when the tier toggle exists; otherwise
             fall back to the global one_line_reason. */}
         {(tiers ? view.reason : kt.one_line_reason) && (

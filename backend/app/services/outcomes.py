@@ -159,3 +159,76 @@ def hit_rate_stats() -> dict[str, Any]:
         })
     summary.sort(key=lambda x: (x["prompt_version"], x["actionable"]))
     return {"total_scored": len(rows), "buckets": summary}
+
+
+def hit_rate_by_confidence() -> dict[str, Any]:
+    """Stratify hit_rate by confidence bucket. Tests whether the
+    LLM's self-reported confidence actually correlates with accuracy —
+    i.e. whether 5/28's confidence-as-int system is doing real work
+    or is just decoration.
+
+    Buckets follow frontend's confidenceBucket():
+      high: >= 80
+      med:  60-79
+      low:  < 60
+
+    Only buy/sell anchors (directional verdicts), only anchors written
+    after 5/29 (when AnalysisOutcome started storing confidence).
+    Older anchors have confidence=None and are excluded.
+
+    Expected pattern if confidence is meaningful:
+      high.hit_rate > med.hit_rate > low.hit_rate
+    Flat distribution would mean the LLM is throwing dice when picking
+    confidence numbers."""
+    db: Session = SessionLocal()
+    try:
+        rows = (
+            db.query(AnalysisOutcome)
+            .filter(
+                AnalysisOutcome.return_d5.isnot(None),
+                AnalysisOutcome.confidence.isnot(None),
+                AnalysisOutcome.actionable.in_(["建议买入", "建议卖出"]),
+            )
+            .all()
+        )
+    finally:
+        db.close()
+
+    def bucket(c: int) -> str:
+        if c >= 80:
+            return "high"
+        if c >= 60:
+            return "med"
+        return "low"
+
+    buckets: dict[tuple, dict[str, Any]] = {}
+    for o in rows:
+        key = (o.actionable, bucket(o.confidence))
+        b = buckets.setdefault(key, {
+            "actionable": o.actionable,
+            "confidence_bucket": bucket(o.confidence),
+            "n": 0, "hits": 0, "sum_return_d5": 0.0,
+        })
+        b["n"] += 1
+        b["sum_return_d5"] += o.return_d5
+        if o.actionable == "建议买入" and o.return_d5 > 0:
+            b["hits"] += 1
+        elif o.actionable == "建议卖出" and o.return_d5 < 0:
+            b["hits"] += 1
+
+    summary = []
+    for b in buckets.values():
+        n = b["n"]
+        summary.append({
+            "actionable": b["actionable"],
+            "confidence_bucket": b["confidence_bucket"],
+            "n": n,
+            "hit_rate": round(b["hits"] / n * 100, 1) if n else None,
+            "avg_return_d5": round(b["sum_return_d5"] / n, 2) if n else None,
+        })
+    bucket_order = {"high": 0, "med": 1, "low": 2}
+    summary.sort(key=lambda x: (x["actionable"], bucket_order[x["confidence_bucket"]]))
+    return {
+        "total_scored_with_confidence": len(rows),
+        "buckets": summary,
+    }

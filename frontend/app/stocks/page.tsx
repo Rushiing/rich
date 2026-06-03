@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useEffect, useRef, useState } from "react";
-import { api, AnalysisBrief, StockRow, confidenceBucket, confidenceLabel } from "../../lib/api";
+import { api, AnalysisBrief, HitRateSummary, StockRow, confidenceBucket, confidenceLabel } from "../../lib/api";
 import Tooltip from "../_components/Tooltip";
 
 // While a snapshot job is running we re-pull /api/stocks at this cadence so
@@ -140,6 +140,13 @@ export default function StocksPage() {
   // failed". Keeping them separate so an action toast doesn't overwrite
   // the persistent "list is stale" banner, and vice versa.
   const [loadError, setLoadError] = useState<string | null>(null);
+
+  // 6/3: 全局 hit_rate summary — passed to each ActionableCell so its
+  // tooltip can show "AI 历史命中率 X% (n=Y)" for buy/sell verdicts.
+  // Single mount-time fetch; backend caches 30 min so this is cheap.
+  // Silent failure: hit_rate is supplementary, shouldn't drag the page
+  // down if outcomes service is unhealthy.
+  const [hitRate, setHitRate] = useState<HitRateSummary | null>(null);
   // null = show all rows; otherwise exact match against StockRow.analysis.actionable
   // (or "__pending" for rows that don't have a cached analysis yet).
   const [filter, setFilter] = useState<string | null>(null);
@@ -190,6 +197,9 @@ export default function StocksPage() {
 
   useEffect(() => {
     refresh();
+    // 6/3: hit_rate summary — single mount fetch, silent failure (it's
+    // supplementary tooltip content, not blocking).
+    api.hitRateSummary().then(setHitRate).catch(() => {});
     // If a job is already running (e.g., user reloaded mid-batch), join it.
     api.snapshotStatus().then((s) => {
       if (s.running) startPolling();
@@ -508,7 +518,7 @@ export default function StocksPage() {
             </tr>
           )}
           {/* Filter mode: flat list of whichever bucket is selected. */}
-          {!loading && filter !== null && visibleRowsSorted.map((r) => stockRow(r, toggleStar))}
+          {!loading && filter !== null && visibleRowsSorted.map((r) => stockRow(r, toggleStar, hitRate))}
           {/* Default mode: grouped, with collapsible non-act sections. */}
           {!loading && filter === null && GROUP_DEFS.map(({ key, label, color }) => {
             const groupRows = groupedRows[key];
@@ -536,7 +546,7 @@ export default function StocksPage() {
                     <span style={{ color: "var(--text-muted)" }}>({groupRows.length})</span>
                   </td>
                 </tr>
-                {!isCollapsed && groupRows.map((r) => stockRow(r, toggleStar))}
+                {!isCollapsed && groupRows.map((r) => stockRow(r, toggleStar, hitRate))}
               </Fragment>
             );
           })}
@@ -607,7 +617,12 @@ function ActionableFilter({
   );
 }
 
-function ActionableCell({ analysis }: { analysis: AnalysisBrief | null }) {
+function ActionableCell({
+  analysis, hitRate,
+}: {
+  analysis: AnalysisBrief | null;
+  hitRate: HitRateSummary | null;
+}) {
   if (!analysis || !analysis.actionable) {
     return <span style={{ color: "var(--text-dim)", fontSize: 12 }}>待生成</span>;
   }
@@ -625,6 +640,8 @@ function ActionableCell({ analysis }: { analysis: AnalysisBrief | null }) {
   const confBucket = confidenceBucket(analysis.confidence);
   const isActionable = analysis.actionable === "建议买入" || analysis.actionable === "建议卖出";
   const degraded = confBucket === "low" && isActionable;
+  // 6/3: hit_rate for this actionable type. Only buy/sell have hit_rate.
+  const hitBucket = hitRate?.by_actionable[analysis.actionable];
   return (
     // Wider on desktop (ultrawide-friendly), still capped so a single line of
     // 操作建议 doesn't run forever on huge screens. minWidth keeps the cell
@@ -636,6 +653,28 @@ function ActionableCell({ analysis }: { analysis: AnalysisBrief | null }) {
             <div>
               <div style={{ fontWeight: 600, marginBottom: 4 }}>{analysis.actionable}</div>
               <div style={{ color: "var(--text-soft)" }}>{explainBlurb}</div>
+              {/* 6/3: historical hit_rate for this verdict. Only shown
+                  when we have data (buy/sell only); n<30 gets a "(样本小)"
+                  caveat so users don't over-anchor on noise. */}
+              {hitBucket && hitBucket.hit_rate != null && (
+                <div style={{
+                  marginTop: 6, paddingTop: 6,
+                  borderTop: "1px dashed var(--border-faint)",
+                  color: "var(--text-soft)", fontSize: 11, lineHeight: 1.5,
+                }}>
+                  AI 历史命中率 <b style={{
+                    color: hitBucket.hit_rate >= 60 ? "#22c55e"
+                      : hitBucket.hit_rate >= 50 ? "var(--text)" : "#f59e0b"
+                  }}>{hitBucket.hit_rate.toFixed(1)}%</b>
+                  {" "}(n={hitBucket.n}{hitBucket.n < 30 ? "，样本偏小" : ""})
+                  {hitBucket.avg_return_d5 != null && (
+                    <>
+                      <br />5 日平均收益 {hitBucket.avg_return_d5 >= 0 ? "+" : ""}
+                      {hitBucket.avg_return_d5.toFixed(2)}%
+                    </>
+                  )}
+                </div>
+              )}
               {degraded && (
                 <div style={{ marginTop: 4, color: "#f59e0b", fontSize: 11 }}>
                   ⚠️ 低置信，慎跟
@@ -772,7 +811,11 @@ function hexA(hex: string, a: number): string {
 // share one source of truth. `onToggleStar` is required because the star
 // toggle needs access to component state, but rest of the row is pure
 // data → JSX.
-function stockRow(r: StockRow, onToggleStar: (code: string) => void) {
+function stockRow(
+  r: StockRow,
+  onToggleStar: (code: string) => void,
+  hitRate: HitRateSummary | null,
+) {
   return (
     <tr key={r.code} style={r.has_strong_signal ? rowStrong : undefined}>
       <td style={{ ...td, width: 28, padding: "10px 0 10px 6px" }}>
@@ -825,7 +868,7 @@ function stockRow(r: StockRow, onToggleStar: (code: string) => void) {
         <IndustryWaterCell row={r} />
       </td>
       <td style={td}>
-        <ActionableCell analysis={r.analysis} />
+        <ActionableCell analysis={r.analysis} hitRate={hitRate} />
       </td>
       <td style={{ ...td, color: "var(--text-faint)", fontSize: 12 }}>
         {r.last_ts ? new Date(r.last_ts).toLocaleString("zh-CN", { hour: "2-digit", minute: "2-digit", month: "numeric", day: "numeric" }) : "未抓取"}

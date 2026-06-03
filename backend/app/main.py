@@ -511,6 +511,25 @@ def diag_migrate_confidence_to_int():
     return {"rows_updated": rows_n}
 
 
+@app.get("/api/_diag/hit-rate-by-confidence")
+def diag_hit_rate_by_confidence():
+    """Stratify hit_rate by the LLM's self-reported confidence bucket.
+
+    Tests whether the confidence-as-int system (5/28) is actually
+    discriminative — if "high" rows hit at clearly higher rate than
+    "low" rows, the field is doing real work. If the rates are roughly
+    equal, the LLM is throwing dice when picking numbers, and we need
+    to redesign confidence scoring.
+
+    Only buy/sell anchors (directional). Excludes anchors written
+    before 5/29 (no confidence stored). May return small bucket sizes
+    initially — give it 1-2 weeks of new anchors before treating it
+    as conclusive.
+    """
+    from .services import outcomes as outcomes_svc
+    return outcomes_svc.hit_rate_by_confidence()
+
+
 @app.get("/api/_diag/smart-analyze-status")
 def diag_smart_analyze_status():
     """Status of the smart intraday analysis tick (every 30 min in
