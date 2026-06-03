@@ -4,9 +4,9 @@
  * /changelog — full release-notes archive. Renders all entries reverse-
  * chronologically (CHANGELOG[0] is already the newest).
  *
- * Pattern matches other pages: themed header with UserChip + ThemeToggle
- * + back-to-/stocks link. Width capped at 880px so long bullet lines
- * stay readable.
+ * Pattern matches other pages: themed header with UserChip + back-to-
+ * /stocks link. Width capped at 880px so long bullet lines stay
+ * readable.
  */
 
 import { CHANGELOG } from "../../lib/changelog";

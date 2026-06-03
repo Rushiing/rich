@@ -21,28 +21,10 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  // themeColor is light/dark adaptive — the browser chrome (PWA status bar)
-  // matches the user's pick.
-  themeColor: [
-    { media: "(prefers-color-scheme: dark)",  color: "#0a0a0a" },
-    { media: "(prefers-color-scheme: light)", color: "#fafafa" },
-  ],
+  // 6/3: light mode dropped — too many color contrast / layout gaps to fix
+  // properly. App is dark-only now. status bar locked to dark too.
+  themeColor: "#0a0a0a",
 };
-
-// Synchronous boot script — runs before paint to set data-theme so we don't
-// flash the wrong palette on hard refresh. Mirrors ThemeToggle's storage
-// contract: localStorage.theme = "system" | "light" | "dark", default "system".
-const BOOT_THEME = `
-(function() {
-  try {
-    var t = localStorage.getItem("theme");
-    if (t === "light" || t === "dark") {
-      document.documentElement.setAttribute("data-theme", t);
-    }
-    // "system" or unset → leave attribute off; CSS @media handles it.
-  } catch (e) {}
-})();
-`;
 
 export default function RootLayout({
   children,
@@ -50,10 +32,9 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="zh-CN">
-      <head>
-        <script dangerouslySetInnerHTML={{ __html: BOOT_THEME }} />
-      </head>
+    // data-theme="dark" 写死: 兜底任何残留 localStorage.theme="light" 的
+    // 老用户回访时 CSS 仍走 dark 调色板。
+    <html lang="zh-CN" data-theme="dark">
       <body
         style={{
           fontFamily:

@@ -11,7 +11,6 @@
 
 import { usePathname } from "next/navigation";
 import UserChip from "./UserChip";
-import ThemeToggle from "./ThemeToggle";
 
 const LINKS: { href: string; label: string }[] = [
   { href: "/",          label: "首页" },
@@ -92,7 +91,6 @@ export default function TopNav() {
       </div>
 
       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-        <ThemeToggle />
         <UserChip />
       </div>
     </nav>
