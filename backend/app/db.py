@@ -75,6 +75,11 @@ _POSTGRES_BACKFILL = [
     # we can later correlate input quality with hit-rate. See
     # compute_data_completeness() in services/analysis.py.
     ("analyses",  "data_completeness",        "INTEGER"),
+    # 5/29: per-anchor confidence + data_completeness on outcome rows.
+    # Powers the detail-page "历史解析" card — users see how the AI's
+    # confidence + input quality evolved across regenerations.
+    ("analysis_outcomes", "confidence",         "INTEGER"),
+    ("analysis_outcomes", "data_completeness",  "INTEGER"),
 ]
 
 

@@ -358,6 +358,7 @@ ANALYSIS_TOOL = {
                     "risk_scores",
                     "confidence",
                     "confidence_reason",
+                    "valid_window",
                 ],
                 "properties": {
                     "company_tag": {
@@ -587,6 +588,19 @@ ANALYSIS_TOOL = {
                             "目的是让用户/复盘者看到这个分数是怎么来的。"
                         ),
                     },
+                    # 5/29: explicit validity window. Heavy user reported
+                    # not knowing how long a verdict is meant to apply —
+                    # is "建议买入" valid for today, this week, until what
+                    # price? Make the LLM declare it.
+                    "valid_window": {
+                        "type": "string",
+                        "description": (
+                            "本建议的参考有效窗口。要具体,不要写'近期'/'短期'这类含糊词。"
+                            "例:'3 个交易日内' / '跌破 X.XX 元前' / '本周内' / '出新公告前'。"
+                            "事件驱动型给事件触发,技术面驱动给价位触发,纯波段给天数。"
+                            "如果没法说出具体窗口,给'1-3 个交易日内'保底,不要省略。"
+                        ),
+                    },
                 },
             },
             "deep_analysis": {
@@ -672,6 +686,14 @@ def _system_prompt(strategy: Strategy) -> list[dict[str, Any]]:
         "**硬约束**：position_pct 必须 aggressive ≥ neutral ≥ conservative。同一票"
         "在三档之间应该是连续的——不要 aggressive=买入 50%、conservative=买入 80%"
         "这种自相矛盾。每档 reason ≤ 30 字。\n"
+        "\n"
+        "# 建议有效期(valid_window)\n"
+        "\n"
+        "必填字段。要诚实+具体,不要写'近期'/'短期'这类废话:\n"
+        "- 事件驱动型(等业绩 / 出公告 / 解禁) → 给事件触发,例'出 Q3 财报前'\n"
+        "- 技术面驱动型(关键支撑阻力位) → 给价位触发,例'跌破 X.XX 前'\n"
+        "- 纯波段(无明确事件/技术位) → 给天数,例'3 个交易日内'\n"
+        "无论哪种,用户应当一眼能判断'什么情况下这个建议作废'。\n"
     )
     rules_section = ""
     if strategy.rules:
@@ -899,6 +921,7 @@ def generate(
     strategy_name: str | None = None,
     client: Anthropic | None = None,
     mode: str = "single",
+    force: bool = False,
 ) -> Analysis:
     """Synchronously generate a fresh analysis and persist it.
 
@@ -909,6 +932,15 @@ def generate(
         from the route by ?mode=debate or auto-promoted when the single-
         pass result is a high-conviction buy/sell (handled by caller; this
         function trusts the mode argument as given).
+
+    `force` (5/29): when False (default), if the latest snapshot for this
+    code matches the existing Analysis row's snapshot_id, we return the
+    cached row without re-calling the LLM. Suppresses the "regenerate
+    gives a different answer to the same input" complaint that came in
+    from a heavy user: LLM sampling makes repeated calls give different
+    verdicts on identical inputs, which destroys trust. Set force=True
+    when the user explicitly clicks "重新生成" in the detail page (they
+    want a fresh answer); batch_analyze leaves it False to dedupe.
 
     Replaces the existing Analysis row for this code (one row per code policy).
     """
@@ -922,6 +954,18 @@ def generate(
         .order_by(desc(Snapshot.id))
         .first()
     )
+
+    # Cache hit: same snapshot, same code → reuse existing verdict
+    # (assuming one exists). Saves both tokens AND user trust in the
+    # consistency of identical inputs. force=True skips this branch.
+    if not force and s is not None:
+        existing_cached = db.query(Analysis).filter(Analysis.code == code).first()
+        if existing_cached is not None and existing_cached.snapshot_id == s.id:
+            logger.info(
+                "analysis[%s] cache hit on snapshot_id=%d, skipping LLM (force=False)",
+                code, s.id,
+            )
+            return existing_cached
 
     strat = get_strategy(strategy_name)
     if client is None:
@@ -1049,11 +1093,19 @@ def generate(
     try:
         from .outcomes import record_anchor
         kt = payload.get("key_table") or {}
+        # 5/29: include confidence + data_completeness so the detail-page
+        # 历史解析 card can plot how those values shifted across
+        # regenerations. confidence in kt may be int (new) or legacy
+        # enum string — record_anchor normalizes both.
+        raw_conf = kt.get("confidence")
+        conf_for_anchor: int | str | None = raw_conf if isinstance(raw_conf, (int, str)) else None
         record_anchor(
             db, code=code, generated_at=row.created_at,
             actionable=str(kt.get("actionable") or ""),
             prompt_version=prompt_version_for(mode), mode=mode,
             anchor_price=(s.price if s else None),
+            confidence=conf_for_anchor,  # type: ignore[arg-type]
+            data_completeness=data_comp["score"],
         )
     except Exception:
         logger.exception("outcome anchor failed for %s (non-fatal)", code)

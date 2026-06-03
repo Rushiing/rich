@@ -338,6 +338,13 @@ class AnalysisOutcome(Base):
     return_d5: Mapped[float | None] = mapped_column(Float, nullable=True)
     return_d20: Mapped[float | None] = mapped_column(Float, nullable=True)
 
+    # 5/29: snapshot of confidence + data_completeness at anchor time.
+    # Nullable for legacy rows pre-this-schema-bump. Surfaces in the
+    # detail-page "历史解析" card so users can see how confidence/quality
+    # evolved across regenerations.
+    confidence: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    data_completeness: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
     )

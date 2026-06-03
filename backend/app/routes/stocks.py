@@ -18,7 +18,7 @@ ANALYSIS_FRESH_HOURS = 4
 
 from ..auth import require_auth
 from ..db import get_db
-from ..models import Analysis, Snapshot, Watchlist
+from ..models import Analysis, AnalysisOutcome, Snapshot, Watchlist
 from ..services.analysis import generate as analysis_generate, get_cached as analysis_cached
 from ..services.cron import run_daily_analysis_job, run_snapshot_job
 from ..services.signals import has_strong
@@ -489,6 +489,7 @@ def get_analysis(
 def generate_analysis(
     code: str,
     mode: str = "single",
+    force: bool = False,
     db: Session = Depends(get_db),
     user_id: int | None = Depends(require_auth),
 ):
@@ -497,6 +498,12 @@ def generate_analysis(
 
     `?mode=debate` runs the bull/bear/judge debate pipeline (3 LLM calls,
     ~30s, sharper red-flag detection). Default is `single` (~10s, one call).
+
+    `?force=true` (5/29) bypasses the snapshot-id cache: even if the
+    cached analysis is based on the same snapshot, re-call the LLM.
+    Frontend detail-page "重新生成" button sets this to true (user
+    explicitly wants a fresh take); batch_analyze leaves it false so
+    repeated batch runs on unchanged snapshots reuse results.
     """
     owner = resolve_owner(user_id, db)
     if not _user_watchlist(db, owner).filter(Watchlist.code == code).first():
@@ -504,9 +511,72 @@ def generate_analysis(
     if mode not in ("single", "debate"):
         raise HTTPException(status_code=400, detail="mode must be single or debate")
     try:
-        row = analysis_generate(db, code, mode=mode)
+        row = analysis_generate(db, code, mode=mode, force=force)
     except RuntimeError as e:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     return AnalysisOut.from_row(row, is_fresh=True)
+
+
+class AnalysisHistoryItem(BaseModel):
+    """One historical anchor + its forward returns. Powers the detail
+    page's 历史解析 collapsible card so users can see how the AI's
+    verdict + confidence shifted across regenerations, alongside the
+    actual returns those anchors achieved."""
+    generated_at: str
+    actionable: str
+    anchor_price: float
+    confidence: int | None = None
+    data_completeness: int | None = None
+    # Forward returns in %. None when the horizon hasn't elapsed yet
+    # (filled in by _outcomes_tick once the trading days pass).
+    return_d1: float | None = None
+    return_d3: float | None = None
+    return_d5: float | None = None
+    mode: str | None = None
+    prompt_version: str | None = None
+
+    @classmethod
+    def from_outcome(cls, o: AnalysisOutcome) -> "AnalysisHistoryItem":
+        return cls(
+            generated_at=o.generated_at.isoformat() if o.generated_at else "",
+            actionable=o.actionable or "",
+            anchor_price=o.anchor_price,
+            confidence=o.confidence,
+            data_completeness=o.data_completeness,
+            return_d1=o.return_d1,
+            return_d3=o.return_d3,
+            return_d5=o.return_d5,
+            mode=o.mode,
+            prompt_version=o.prompt_version,
+        )
+
+
+@router.get("/{code}/analysis-history", response_model=list[AnalysisHistoryItem])
+def get_analysis_history(
+    code: str,
+    limit: int = 10,
+    db: Session = Depends(get_db),
+    user_id: int | None = Depends(require_auth),
+):
+    """Return the last N anchored analyses for this code, most recent
+    first. Joined with their (eventually-backfilled) forward returns so
+    the frontend can show the trajectory of past verdicts AND how they
+    played out.
+
+    Ownership-scoped to the user's watchlist for the same reason as
+    `generate_analysis` — don't surface anchor data for codes the user
+    isn't tracking. limit capped at 50 to keep responses small."""
+    owner = resolve_owner(user_id, db)
+    if not _user_watchlist(db, owner).filter(Watchlist.code == code).first():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not in watchlist")
+    limit = max(1, min(50, limit))
+    outcomes = (
+        db.query(AnalysisOutcome)
+        .filter(AnalysisOutcome.code == code)
+        .order_by(desc(AnalysisOutcome.generated_at))
+        .limit(limit)
+        .all()
+    )
+    return [AnalysisHistoryItem.from_outcome(o) for o in outcomes]

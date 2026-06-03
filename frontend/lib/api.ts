@@ -160,6 +160,11 @@ export type KeyTable = {
   // New 5/28: 1-sentence reason for the confidence score (≤30 字).
   // Optional because legacy rows pre-this-schema-bump don't carry it.
   confidence_reason?: string;
+  // New 5/29: LLM-declared validity window for this verdict, e.g.
+  // "3 个交易日内" / "跌破 12.50 元前" / "出 Q3 财报前". Surfaced on
+  // detail page beside the confidence card so users know how long
+  // the verdict is meant to apply. Optional for legacy rows.
+  valid_window?: string;
 };
 
 export type StockAnalysis = {
@@ -178,6 +183,23 @@ export type StockAnalysis = {
   // time. Surfaced on the detail page as a small meta line so the user
   // knows how much input the LLM had. Optional for legacy rows.
   data_completeness?: number | null;
+};
+
+// 5/29: one historical anchor row from AnalysisOutcome. Detail-page
+// "历史解析" card shows the last N of these so users can see how the
+// verdict + confidence shifted across regenerations, alongside the
+// forward returns those anchors actually achieved.
+export type AnalysisHistoryItem = {
+  generated_at: string;            // ISO timestamp
+  actionable: string;              // 建议买入 / 观望 / ...
+  anchor_price: number;            // snapshot.price at generation time
+  confidence?: number | null;      // 0-100, null for legacy rows
+  data_completeness?: number | null;
+  return_d1?: number | null;       // % return 1 trading day later (null = not yet)
+  return_d3?: number | null;
+  return_d5?: number | null;
+  mode?: string | null;            // "single" | "debate"
+  prompt_version?: string | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -330,10 +352,21 @@ export const api = {
     request<AnalysisBatchStatus>("/api/stocks/analysis/batch/status"),
   getAnalysis: (code: string) =>
     request<StockAnalysis | null>(`/api/stocks/${code}/analysis`),
-  generateAnalysis: (code: string, mode: "single" | "debate" = "single") =>
+  // 5/29: force=true bypasses the snapshot-id cache. Detail page sets
+  // force=true for the user-pressed "重新生成" button (user explicitly
+  // wants a fresh take); batch flows don't.
+  generateAnalysis: (
+    code: string,
+    mode: "single" | "debate" = "single",
+    opts: { force?: boolean } = {},
+  ) =>
     request<StockAnalysis>(
-      `/api/stocks/${code}/analysis?mode=${mode}`,
+      `/api/stocks/${code}/analysis?mode=${mode}${opts.force ? "&force=true" : ""}`,
       { method: "POST" },
+    ),
+  analysisHistory: (code: string, limit = 10) =>
+    request<AnalysisHistoryItem[]>(
+      `/api/stocks/${code}/analysis-history?limit=${limit}`,
     ),
   // ---- holdings (cost basis) ----
   getHolding: (code: string) =>

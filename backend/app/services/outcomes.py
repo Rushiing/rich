@@ -30,13 +30,25 @@ HORIZONS = [1, 3, 5, 20]
 def record_anchor(
     db: Session, code: str, generated_at: datetime, actionable: str,
     prompt_version: str | None, mode: str | None, anchor_price: float | None,
+    confidence: int | None = None,
+    data_completeness: int | None = None,
 ) -> None:
     """Insert an outcome anchor. Called from analysis.generate() right
     after the Analysis row is persisted. No-op when anchor_price is
-    missing — without a reference price we can't measure return."""
+    missing — without a reference price we can't measure return.
+
+    5/29: also stores confidence + data_completeness per anchor so the
+    detail-page "历史解析" card can show how those values evolved
+    across regenerations. Both default to None for call sites that
+    haven't been updated (e.g. unit tests, batch backfills)."""
     if anchor_price is None or anchor_price <= 0:
         logger.info("outcome anchor skipped for %s — no anchor price", code)
         return
+    # Normalize legacy enum confidence ("高"/"中"/"低") to int — anchor
+    # rows should be uniformly numeric so the history table doesn't
+    # have to render mixed types.
+    if isinstance(confidence, str):
+        confidence = {"高": 85, "中": 65, "低": 45}.get(confidence)
     db.add(AnalysisOutcome(
         code=code,
         generated_at=generated_at,
@@ -44,6 +56,8 @@ def record_anchor(
         prompt_version=prompt_version,
         mode=mode,
         anchor_price=anchor_price,
+        confidence=confidence,
+        data_completeness=data_completeness,
     ))
     db.commit()
 

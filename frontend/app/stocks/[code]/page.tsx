@@ -53,7 +53,11 @@ export default function StockDetailPage({
     setGenerating(true);
     setErr(null);
     try {
-      const a = await api.generateAnalysis(code, mode);
+      // 5/29: force=true bypasses snapshot-id cache. When a user
+      // explicitly clicks "重新生成", they want a fresh LLM call even
+      // if the snapshot hasn't changed. Background batch flows leave
+      // force off so they dedupe correctly.
+      const a = await api.generateAnalysis(code, mode, { force: true });
       setAnalysis(a);
       // Deep mode: scroll users right to the "看多 vs 看空" section so
       // they see the cross-validation payoff immediately. Defer one frame
@@ -126,8 +130,9 @@ export default function StockDetailPage({
               />
               {err && <div style={{ color: "#ef4444", marginTop: 8, fontSize: 13 }}>{err}</div>}
               {analysis.mode === "debate" && <DebateBanner code={code} />}
-              <KeyTableCard kt={analysis.key_table} />
+              <KeyTableCard kt={analysis.key_table} currentPrice={detail?.price ?? null} />
               <DeepAnalysis md={analysis.deep_analysis} />
+              <AnalysisHistoryCard code={code} />
               <Footnote analysis={analysis} />
             </>
           )}
@@ -582,7 +587,7 @@ function FreshnessBar({
   );
 }
 
-function KeyTableCard({ kt }: { kt: KeyTable }) {
+function KeyTableCard({ kt, currentPrice }: { kt: KeyTable; currentPrice: number | null }) {
   // Three-tier toggle state. Default to "neutral" — that's the LLM's
   // top-level actionable + position_pct, so the card initially shows what
   // it always showed pre-Phase-8.
@@ -647,6 +652,15 @@ function KeyTableCard({ kt }: { kt: KeyTable }) {
         )}
       </div>
 
+      {/* 5/29: 价格已偏离 AI 推荐区间的提示 — 用户反馈"操作建议有效
+          期"问题最直接的解法。买/卖类才提示;阈值 5% (5% 内属于正常
+          波动)。观望/不入手不提示因为本来没建议入场。 */}
+      <PriceAlertBanner
+        current={currentPrice}
+        kt={kt}
+        actionable={view.action}
+      />
+
       {/* 5/28: 置信度独立块. Moved out of the KtRow table (where it was
           a buried one-line cell) so users can see at a glance how much
           weight to give this verdict. Low confidence + 买/卖 ⇒ dashed
@@ -655,6 +669,7 @@ function KeyTableCard({ kt }: { kt: KeyTable }) {
         confidence={kt.confidence}
         reason={kt.confidence_reason}
         actionable={view.action}
+        validWindow={kt.valid_window}
       />
 
       {/* Tier toggle — only renders when the model actually emitted three
@@ -792,11 +807,12 @@ function KtRow({ label, value }: { label: string; value: string }) {
 //     不改 actionable —— 让 LLM 自己的判断保留,用户看到 + 警示足矣)
 //   confidence 为 null → 完全不渲染 (legacy row before this schema bump)
 function ConfidenceCard({
-  confidence, reason, actionable,
+  confidence, reason, actionable, validWindow,
 }: {
   confidence: string | number | null | undefined;
   reason?: string;
   actionable: string;
+  validWindow?: string;
 }) {
   if (confidence == null) return null;
   const bucket = confidenceBucket(confidence);
@@ -847,7 +863,195 @@ function ConfidenceCard({
           {reason}
         </div>
       )}
+      {validWindow && (
+        // 5/29: 参考有效窗口 — 在置信度卡内部作为第二行 meta. 跟 reason
+        // 视觉分级:reason 是亮色描述,validWindow 是更浅的"meta"字号,
+        // 不抢 confidence 数字的视觉位。
+        <div style={{
+          marginTop: 8, paddingTop: 8,
+          borderTop: "1px dashed var(--border-faint)",
+          display: "flex", alignItems: "baseline", gap: 8,
+          color: "var(--text-muted)", fontSize: 12,
+        }}>
+          <span>⏱ 参考有效窗口</span>
+          <span style={{ color: "var(--text)", fontWeight: 500 }}>{validWindow}</span>
+        </div>
+      )}
     </div>
+  );
+}
+
+// 5/29: 价格已偏离 AI 推荐区间的提示。
+// 用户反馈:"操作建议有效期"问题最直接的体现就是 — 建议买入 [10-12],
+// 现在已经 13.5 了,我还跟吗?这个组件就是把这种状态显式标红。
+// 阈值 5%:实际买卖区间通常本来就有一定波动允许度,严格按 high/low 卡
+// 会噪声太多;5% 之外属于"明显偏离"。只对方向性的 actionable(买/卖)
+// 提示;观望/不入手本来就没建议入场,不需要价格保护。
+function PriceAlertBanner({
+  current, kt, actionable,
+}: {
+  current: number | null;
+  kt: KeyTable;
+  actionable: string;
+}) {
+  if (current == null) return null;
+  if (actionable !== "建议买入" && actionable !== "建议卖出") return null;
+
+  const DELTA = 0.05;
+  let msg: string | null = null;
+
+  if (actionable === "建议买入") {
+    if (current > kt.buy_price_high * (1 + DELTA)) {
+      const pct = ((current - kt.buy_price_high) / kt.buy_price_high * 100).toFixed(1);
+      msg = `当前价 ${current.toFixed(2)} 已超出 AI 推荐买入上限 ${kt.buy_price_high.toFixed(2)} 约 ${pct}%，可能已错过推荐区间,建议重新评估或重新生成解析`;
+    } else if (current < kt.buy_price_low * (1 - DELTA)) {
+      const pct = ((kt.buy_price_low - current) / kt.buy_price_low * 100).toFixed(1);
+      msg = `当前价 ${current.toFixed(2)} 已低于 AI 推荐买入下限 ${kt.buy_price_low.toFixed(2)} 约 ${pct}%，警惕意外利空,建议重新评估`;
+    }
+  } else if (actionable === "建议卖出") {
+    if (current < kt.sell_price_low * (1 - DELTA)) {
+      const pct = ((kt.sell_price_low - current) / kt.sell_price_low * 100).toFixed(1);
+      msg = `当前价 ${current.toFixed(2)} 已低于 AI 推荐卖出下限 ${kt.sell_price_low.toFixed(2)} 约 ${pct}%，可能已错过卖点`;
+    } else if (current > kt.sell_price_high * (1 + DELTA)) {
+      const pct = ((current - kt.sell_price_high) / kt.sell_price_high * 100).toFixed(1);
+      msg = `当前价 ${current.toFixed(2)} 已超出 AI 推荐卖出上限 ${kt.sell_price_high.toFixed(2)} 约 ${pct}%，建议重新评估`;
+    }
+  }
+
+  if (!msg) return null;
+  return (
+    <div style={{
+      padding: "10px 14px",
+      background: "rgba(239, 68, 68, 0.10)",
+      border: "1px solid #dc2626",
+      borderRadius: 8,
+      color: "#dc2626",
+      fontSize: 13,
+      lineHeight: 1.5,
+    }}>
+      ⚠️ {msg}
+    </div>
+  );
+}
+
+// 5/29: 历史解析折叠区。默认折叠,点击展开后是 table:
+// 时间 / 建议(chip) / 置信度(label) / 当时价 / d1 / d3 / d5
+// 第一行 = 当前最新分析,后面是历次 regenerate 的 anchor。让用户看到
+// "AI 的判断是怎么演化的"——回应"刷新后建议变了"的焦虑。
+// 没数据(code 无 anchor 历史)不渲染整个 card。
+function AnalysisHistoryCard({ code }: { code: string }) {
+  const [items, setItems] = useState<import("../../../lib/api").AnalysisHistoryItem[] | null>(null);
+  const [open, setOpen] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.analysisHistory(code, 10)
+      .then((d) => { if (!cancelled) setItems(d); })
+      .catch((e) => { if (!cancelled) setErr(e instanceof Error ? e.message : String(e)); });
+    return () => { cancelled = true; };
+  }, [code]);
+
+  // No data, no card. Errors are quiet: this is supplementary info,
+  // shouldn't drag down the page if outcomes endpoint is unhealthy.
+  if (err || !items || items.length === 0) return null;
+
+  return (
+    <section style={{
+      marginTop: 16,
+      border: "1px solid var(--border)",
+      borderRadius: 8,
+      overflow: "hidden",
+    }}>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        style={{
+          width: "100%",
+          padding: "10px 14px",
+          background: "var(--surface-alt)",
+          color: "var(--text-muted)",
+          fontSize: 13,
+          textAlign: "left",
+          border: "none",
+          cursor: "pointer",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+        }}
+      >
+        <span>📊 历史解析 ({items.length} 次)</span>
+        <span style={{ fontSize: 11, color: "var(--text-faint)" }}>
+          {open ? "▲ 收起" : "▼ 展开"}
+        </span>
+      </button>
+      {open && (
+        <div style={{ padding: "10px 14px" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead>
+              <tr style={{ color: "var(--text-muted)", textAlign: "left" }}>
+                <th style={{ padding: "4px 6px", fontWeight: 500 }}>时间</th>
+                <th style={{ padding: "4px 6px", fontWeight: 500 }}>建议</th>
+                <th style={{ padding: "4px 6px", fontWeight: 500 }}>置信</th>
+                <th style={{ padding: "4px 6px", fontWeight: 500, textAlign: "right" }}>当时价</th>
+                <th style={{ padding: "4px 6px", fontWeight: 500, textAlign: "right" }}>d1</th>
+                <th style={{ padding: "4px 6px", fontWeight: 500, textAlign: "right" }}>d3</th>
+                <th style={{ padding: "4px 6px", fontWeight: 500, textAlign: "right" }}>d5</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((it, i) => {
+                const ACT_STYLE: Record<string, { color: string; label: string }> = {
+                  "建议买入":   { color: "#ef4444", label: "买" },
+                  "观望":       { color: "#9ca3af", label: "观望" },
+                  "建议卖出":   { color: "#22c55e", label: "卖" },
+                  "不建议入手": { color: "#6b7280", label: "不入" },
+                };
+                const style = ACT_STYLE[it.actionable] ?? { color: "#9ca3af", label: it.actionable };
+                const confBucket = confidenceBucket(it.confidence);
+                const confColor =
+                  confBucket === "high" ? "#22c55e" :
+                  confBucket === "low"  ? "#f59e0b" :
+                                          "#9ca3af";
+                const fmtPct = (v: number | null | undefined) => v == null ? "—" :
+                  <span style={{ color: v >= 0 ? "#ef4444" : "#22c55e" }}>
+                    {v >= 0 ? "+" : ""}{v.toFixed(2)}%
+                  </span>;
+                const ts = new Date(it.generated_at);
+                const tsLabel = `${(ts.getMonth() + 1)}/${ts.getDate()} ${String(ts.getHours()).padStart(2, "0")}:${String(ts.getMinutes()).padStart(2, "0")}`;
+                return (
+                  <tr key={i} style={{ borderTop: i === 0 ? undefined : "1px solid var(--border-faint)" }}>
+                    <td style={{ padding: "6px", fontFamily: "monospace", color: "var(--text-soft)" }}>{tsLabel}</td>
+                    <td style={{ padding: "6px" }}>
+                      <span style={{
+                        padding: "1px 6px", borderRadius: 3, fontSize: 11, fontWeight: 600,
+                        background: `${style.color}26`, color: style.color,
+                      }}>
+                        {style.label}
+                      </span>
+                    </td>
+                    <td style={{ padding: "6px", color: confColor, fontWeight: 500 }}>
+                      {it.confidence != null
+                        ? `${confidenceLabel(it.confidence)}${typeof it.confidence === "number" ? ` (${it.confidence})` : ""}`
+                        : "—"}
+                    </td>
+                    <td style={{ padding: "6px", fontFamily: "monospace", textAlign: "right" }}>
+                      {it.anchor_price.toFixed(2)}
+                    </td>
+                    <td style={{ padding: "6px", fontFamily: "monospace", textAlign: "right" }}>{fmtPct(it.return_d1)}</td>
+                    <td style={{ padding: "6px", fontFamily: "monospace", textAlign: "right" }}>{fmtPct(it.return_d3)}</td>
+                    <td style={{ padding: "6px", fontFamily: "monospace", textAlign: "right" }}>{fmtPct(it.return_d5)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <p style={{ marginTop: 8, color: "var(--text-faint)", fontSize: 11, lineHeight: 1.5 }}>
+            d1 / d3 / d5 = 当时建议后 1 / 3 / 5 个交易日累计涨跌幅。「—」表示尚未到期或刚生成不久。
+          </p>
+        </div>
+      )}
+    </section>
   );
 }
 
