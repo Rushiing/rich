@@ -511,6 +511,48 @@ def diag_migrate_confidence_to_int():
     return {"rows_updated": rows_n}
 
 
+@app.get("/api/_diag/watchlist-stats")
+def diag_watchlist_stats():
+    """Watchlist 总体统计 — 估算 batch_analyze 类策略的成本规模。
+
+    一次 LLM 调用 ~5-7 秒 + ~0.05 元 token。
+    每日成本 = total × 跑次数 × 单价。比如:
+      - total=200, 每小时跑1次, 盘中4小时 → 200 × 4 × 0.05 = 40 元/天
+      - 增量过滤后只 10% 触发 → 4 元/天
+    distinct_codes 远小于 total 说明用户们关注的票高度重叠 — 全市场
+    级 batch 实际不用按 user 跑,只跑 distinct codes 即可。
+    """
+    from sqlalchemy import text
+    from .db import engine
+    with engine.begin() as conn:
+        total = conn.execute(text("SELECT COUNT(*) FROM watchlist")).scalar() or 0
+        distinct_codes = conn.execute(
+            text("SELECT COUNT(DISTINCT code) FROM watchlist")
+        ).scalar() or 0
+        users_with = conn.execute(
+            text("SELECT COUNT(DISTINCT user_id) FROM watchlist WHERE user_id IS NOT NULL")
+        ).scalar() or 0
+        # 每用户条数分布,看是否高度集中(少数重度用户) vs 分散
+        per_user = conn.execute(text(
+            "SELECT user_id, COUNT(*) AS n FROM watchlist "
+            "WHERE user_id IS NOT NULL GROUP BY user_id ORDER BY n DESC"
+        )).fetchall()
+        counts = sorted([r[1] for r in per_user], reverse=True)
+    distribution = {
+        "max": counts[0] if counts else 0,
+        "median": counts[len(counts) // 2] if counts else 0,
+        "min": counts[-1] if counts else 0,
+        "top_5_user_counts": counts[:5],
+    }
+    return {
+        "total": total,
+        "distinct_codes": distinct_codes,
+        "users_with_watchlist": users_with,
+        "avg_per_user": round(total / users_with, 1) if users_with > 0 else 0,
+        "distribution": distribution,
+    }
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
