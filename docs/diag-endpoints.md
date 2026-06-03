@@ -174,6 +174,30 @@ given current kline data.
 
 ---
 
+## Admin batch (one-shot)
+
+### `POST /api/_diag/regenerate-all`
+**Async** force re-analyze every distinct watchlist code, bypassing the
+stale/missing skip ladder AND the snapshot_id cache. Use after shipping
+a new schema field (e.g. `valid_window` on 6/3) when you want all rows
+to carry it before the next market open.
+
+`distinct_codes ~ 100` from `/watchlist-stats` → ~10 min @ 5-7s/call,
+cost ~5 元. Returns `{started: true}` immediately or
+`{started: false, already_running: true}`.
+
+```bash
+curl -X POST "$BASE/api/_diag/regenerate-all"
+# Poll status:
+curl -s "$BASE/api/_diag/regenerate-all/status" | python3 -m json.tool
+```
+
+### `GET /api/_diag/regenerate-all/status`
+Status of the most recent run: `{running, last_started_at, last_result}`
+where `last_result` is `{codes, generated, failed, skipped}` once done.
+
+---
+
 ## Migrations (one-off)
 
 ### `GET /api/_diag/smart-analyze-status`

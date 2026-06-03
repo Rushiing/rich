@@ -511,6 +511,61 @@ def diag_migrate_confidence_to_int():
     return {"rows_updated": rows_n}
 
 
+_regen_lock = __import__("threading").Lock()
+_regen_state = {"v": False, "last_result": None, "last_started_at": None}
+
+
+@app.post("/api/_diag/regenerate-all")
+def diag_regenerate_all():
+    """Admin one-shot: force re-analyze EVERY distinct watchlist code,
+    bypassing both the stale/missing skip ladder AND the snapshot_id
+    cache. Use when a new schema field shipped (e.g. valid_window) and
+    you want every row to carry it before the next market open.
+
+    ASYNC — distinct codes ~100 × ~5-7s/LLM call = ~10 min. Returns
+    `{started: true}` immediately. Status at /regenerate-all/status.
+    Re-entrant guard: a second call while one is running returns
+    `{started: false, already_running: true}` instead of double-firing.
+
+    Cost: at ~0.05 元/call, full pass = ~5 元. Run sparingly."""
+    import threading
+    from .services.cron import run_daily_analysis_job
+    from datetime import datetime, timezone
+
+    with _regen_lock:
+        if _regen_state["v"]:
+            return {"started": False, "already_running": True}
+        _regen_state["v"] = True
+        _regen_state["last_result"] = None
+        _regen_state["last_started_at"] = datetime.now(timezone.utc).isoformat()
+
+    def _worker():
+        try:
+            # force=True bypasses both skip ladder and snapshot_id cache.
+            result = run_daily_analysis_job(
+                only_stale=False, only_missing=False, force=True,
+            )
+            _regen_state["last_result"] = result
+        except Exception as e:
+            _regen_state["last_result"] = {"error": str(e)}
+        finally:
+            with _regen_lock:
+                _regen_state["v"] = False
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return {"started": True}
+
+
+@app.get("/api/_diag/regenerate-all/status")
+def diag_regenerate_all_status():
+    """Status of the most recent /regenerate-all run."""
+    return {
+        "running": _regen_state["v"],
+        "last_started_at": _regen_state["last_started_at"],
+        "last_result": _regen_state["last_result"],
+    }
+
+
 @app.get("/api/_diag/hit-rate-by-confidence")
 def diag_hit_rate_by_confidence():
     """Stratify hit_rate by the LLM's self-reported confidence bucket.
