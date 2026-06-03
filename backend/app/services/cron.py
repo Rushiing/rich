@@ -18,7 +18,7 @@ The scheduler runs in-process; Railway must be pinned to 1 backend replica.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -28,7 +28,11 @@ from sqlalchemy.orm import Session
 from ..config import settings
 from ..db import SessionLocal, ensure_extra_columns
 from ..models import Analysis, Snapshot, Watchlist
-from .analysis import generate as analysis_generate, get_cached as analysis_cached
+from .analysis import (
+    generate as analysis_generate,
+    get_cached as analysis_cached,
+    should_reanalyze,
+)
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout, as_completed
 
 from .scraper import (
@@ -570,6 +574,157 @@ def _financials_tick():
         logger.exception("financials tick failed")
 
 
+# ---------------------------------------------------------------------------
+# Smart intraday analysis — every 30 min during trading hours, only repaint
+# codes whose snapshot meaningfully changed since their last analysis.
+# Addresses the heavy-user complaint that 分钟级 snapshot 数据没被自动
+# LLM 消费 ("拿到了数据不消费,数据价值就弱了"). Distinct codes ≈ 100
+# in prod (5/29 watchlist-stats), so全量 cap ~5 元/cycle. Increment filter
+# usually keeps us to ~5-15 codes per cycle = 0.25-0.75 元.
+#
+# The 触发条件 logic itself lives in analysis.should_reanalyze() so the
+# list view's is_fresh badge can share it — when smart cron decides
+# "this row needs repaint", we want the list to also say "已过期".
+# ---------------------------------------------------------------------------
+
+# Module-level last-run state. Same pattern as refresh-financials /
+# backfill-outcomes async endpoints — diag endpoint reads this.
+_smart_state: dict = {
+    "running": False,
+    "last_result": None,   # dict from last run, populated on completion
+    "last_started_at": None,  # ISO ts
+}
+
+
+def run_smart_intraday_analysis() -> dict:
+    """Distinct-code 增量 batch. Scans every unique watchlist code,
+    applies _should_reanalyze, calls analysis.generate(force=False) for
+    those that pass — force=False lets the snapshot_id cache short-
+    circuit any false positives that slipped through (defense in depth).
+
+    Returns counters by reason tag for the diag endpoint.
+    """
+    if not settings.ANTHROPIC_API_KEY:
+        logger.info("smart intraday analysis: ANTHROPIC_API_KEY not set, skipping")
+        return {"skipped_no_key": True}
+    if _smart_state["running"]:
+        logger.info("smart intraday analysis: already running, skipping")
+        return {"skipped_already_running": True}
+
+    _smart_state["running"] = True
+    _smart_state["last_started_at"] = datetime.now(timezone.utc).isoformat()
+    db: Session = SessionLocal()
+    try:
+        codes = [c for (c,) in db.query(Watchlist.code).distinct().all()]
+        if not codes:
+            result = {"distinct_codes": 0, "triggered": 0, "by_reason": {}}
+            _smart_state["last_result"] = result
+            return result
+
+        # Bulk-fetch latest snapshot per code (one query) + existing
+        # analyses (one query) to avoid N+1.
+        # Latest snapshot per code: subquery for max(id) per code, join.
+        from sqlalchemy import func, and_
+        latest_snap_subq = (
+            db.query(Snapshot.code, func.max(Snapshot.id).label("max_id"))
+            .filter(Snapshot.code.in_(codes))
+            .group_by(Snapshot.code)
+            .subquery()
+        )
+        latest_snaps = {
+            s.code: s for s in db.query(Snapshot)
+            .join(latest_snap_subq, and_(
+                Snapshot.code == latest_snap_subq.c.code,
+                Snapshot.id == latest_snap_subq.c.max_id,
+            ))
+            .all()
+        }
+        existing_rows = {
+            a.code: a for a in db.query(Analysis)
+            .filter(Analysis.code.in_(codes)).all()
+        }
+        # Anchor snapshots = snapshots referenced by existing analyses.
+        anchor_ids = [a.snapshot_id for a in existing_rows.values()
+                      if a.snapshot_id is not None]
+        anchor_snaps = (
+            {s.id: s for s in db.query(Snapshot)
+             .filter(Snapshot.id.in_(anchor_ids)).all()}
+            if anchor_ids else {}
+        )
+
+        by_reason: dict[str, int] = {}
+        triggered: list[str] = []
+        for code in codes:
+            snap = latest_snaps.get(code)
+            existing = existing_rows.get(code)
+            anchor = (
+                anchor_snaps.get(existing.snapshot_id)
+                if (existing and existing.snapshot_id is not None) else None
+            )
+            should, tag = should_reanalyze(snap, existing, anchor,
+                                           respect_cooldown=True)
+            by_reason[tag] = by_reason.get(tag, 0) + 1
+            if should:
+                triggered.append(code)
+
+        logger.info(
+            "smart intraday analysis: distinct=%d triggered=%d by_reason=%s",
+            len(codes), len(triggered), by_reason,
+        )
+
+        # Generate sequentially — each ~5-7s. 30-40 codes worst case =
+        # ~3-4 min, fits comfortably in the 30 min cycle.
+        generated = 0
+        failed = 0
+        cache_hit = 0
+        for code in triggered:
+            try:
+                # force=False → snapshot_id cache可能 hit (e.g. another
+                # tick already analyzed this snapshot). Defense in depth.
+                before = (
+                    existing_rows.get(code).snapshot_id
+                    if existing_rows.get(code) else None
+                )
+                row = analysis_generate(db, code, force=False)
+                # Detect cache hit: snapshot_id 没变说明没真跑 LLM
+                if row.snapshot_id == before and before is not None:
+                    cache_hit += 1
+                else:
+                    generated += 1
+            except Exception:
+                failed += 1
+                logger.exception("smart intraday: %s failed", code)
+
+        result = {
+            "distinct_codes": len(codes),
+            "triggered": len(triggered),
+            "generated": generated,
+            "cache_hit": cache_hit,
+            "failed": failed,
+            "by_reason": by_reason,
+            "triggered_codes": triggered[:30],  # sample for debugging
+        }
+        _smart_state["last_result"] = result
+        return result
+    finally:
+        db.close()
+        _smart_state["running"] = False
+
+
+def _smart_analyze_tick():
+    """APScheduler entry. Internal _is_intraday guard since cron can't
+    express 'trading hours only' precisely (lunch break, holidays)."""
+    # Local _is_intraday: A 股交易时段 + 工作日. Reuse the same logic as
+    # data_completeness so behavior is consistent across the codebase.
+    try:
+        from .analysis import _is_intraday
+        if not _is_intraday():
+            return
+        run_smart_intraday_analysis()
+    except Exception:
+        logger.exception("smart analyze tick failed")
+
+
 def _outcomes_tick():
     """Daily post-close: fill forward returns on analysis outcomes. Runs
     after _kline_tick (16:30) so the latest close is already in the DB."""
@@ -639,6 +794,24 @@ def start_scheduler() -> None:
         id="financials_mon_08_00",
         replace_existing=True,
         misfire_grace_time=3600,
+    )
+    # 6/3: Smart intraday analysis — every 30 min during trading hours,
+    # only repaint codes whose snapshot meaningfully changed. Cron casts
+    # a slightly wider net (09-14 mon-fri, every :05 and :35) so the
+    # tick fires near top-of-hour and bottom-of-hour just after the
+    # 5-min quotes job; _smart_analyze_tick() then internal-guards with
+    # _is_intraday() to skip lunch break + non-trading days.
+    # First job fires at 09:35 — after 09:30 open quotes + after the
+    # 09:35 daily_analysis_tick which bootstrap-fills cold codes.
+    sched.add_job(
+        _smart_analyze_tick,
+        CronTrigger(
+            day_of_week="mon-fri", hour="9-14", minute="5,35",
+            timezone="Asia/Shanghai",
+        ),
+        id="smart_analyze_30min",
+        replace_existing=True,
+        misfire_grace_time=600,
     )
     # Analysis-outcome backfill — daily 17:00 BJT, after the 16:30 kline
     # tick so the latest close is available.

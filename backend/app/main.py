@@ -511,6 +511,37 @@ def diag_migrate_confidence_to_int():
     return {"rows_updated": rows_n}
 
 
+@app.get("/api/_diag/smart-analyze-status")
+def diag_smart_analyze_status():
+    """Status of the smart intraday analysis tick (every 30 min in
+    trading hours). Returns the last run's per-reason counters so we
+    can see how often each trigger condition fires:
+
+    - triggered: codes that passed _should_reanalyze
+    - generated: actually called LLM (cache_hit shows how many were
+      short-circuited by snapshot_id cache)
+    - by_reason: distribution of skip / trigger reasons
+        cooldown: existing analysis < 30 min old
+        no_snap: snapshot not yet pulled
+        no_existing: no prior analysis (daily 09:35 cron's job)
+        no_change: same snapshot already analyzed
+        price_move: |price - anchor| / anchor >= 1.5%
+        signal_change: snap.signals differs from anchor
+        stale: existing > 4h old (fallback)
+        no_anchor: existing has no snapshot_id (legacy row)
+
+    Useful for tuning thresholds — if "stale" dominates we need to
+    relax price_move, if "cooldown" dominates we're triggering too
+    often.
+    """
+    from .services.cron import _smart_state
+    return {
+        "running": _smart_state["running"],
+        "last_started_at": _smart_state["last_started_at"],
+        "last_result": _smart_state["last_result"],
+    }
+
+
 @app.get("/api/_diag/watchlist-stats")
 def diag_watchlist_stats():
     """Watchlist 总体统计 — 估算 batch_analyze 类策略的成本规模。

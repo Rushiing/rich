@@ -273,6 +273,81 @@ def _market_and_sector_context(industry_name: str | None) -> str:
     return "\n".join(lines) + "\n"
 
 
+# ---------------------------------------------------------------------------
+# Freshness logic — shared between the smart intraday cron and the list
+# view's is_fresh badge. The cron uses _should_reanalyze() to decide
+# whether to fire LLM; the list view uses the same logic to decide
+# whether to flag a row as "已过期" — making the two systems agree.
+# ---------------------------------------------------------------------------
+
+# Threshold for "price moved enough to re-analyze" (% relative to anchor).
+# 1.5% per heavy-user feedback (6/3) — A股 日均振幅 2-3%, 1.5% 捕捉到 ~30-40
+# 支变化的票而不是只有龙虎榜级波动。
+SMART_PRICE_DELTA_PCT = 1.5
+
+# Time-based fallback: even with no significant change, anything older than
+# this is considered stale (and the smart cron will repaint it).
+SMART_STALE_HOURS = 4
+
+# Cooldown: existing analysis 不到这个时间内,smart cron 不再触发(防止
+# 刚手动重生过的体验"刚解析又被刷")。NOTE: cooldown 不会让 is_fresh
+# 变 False — 它只是 cron 的礼貌,UI 该说过期还得说过期。
+SMART_COOLDOWN_MIN = 30
+
+
+def should_reanalyze(
+    snap: "Snapshot | None",
+    existing: "Analysis | None",
+    anchor_snap: "Snapshot | None",
+    *,
+    respect_cooldown: bool = True,
+) -> tuple[bool, str]:
+    """Decide whether smart batch should re-analyze (or, with cooldown
+    disabled, whether the list view should call this row "已过期").
+
+    Returns (should, reason_tag). reason_tag is one of:
+      - cooldown / no_snap / no_existing / no_change / no_anchor
+        / price_move / signal_change / stale
+
+    `respect_cooldown` defaults True for the cron (don't bother刚解析的
+    code); list view passes False so a row that's 5 min old but has a
+    valid trigger condition still gets the visual badge.
+    """
+    if snap is None or snap.price is None:
+        return False, "no_snap"
+    if existing is None:
+        return False, "no_existing"
+
+    now = datetime.now(timezone.utc)
+    created = (existing.created_at if existing.created_at.tzinfo
+               else existing.created_at.replace(tzinfo=timezone.utc))
+    age = now - created
+
+    if respect_cooldown and age < timedelta(minutes=SMART_COOLDOWN_MIN):
+        return False, "cooldown"
+
+    if existing.snapshot_id == snap.id:
+        return False, "no_change"
+
+    if anchor_snap is not None and anchor_snap.price:
+        pct = abs((snap.price - anchor_snap.price) / anchor_snap.price * 100)
+        if pct >= SMART_PRICE_DELTA_PCT:
+            return True, "price_move"
+    elif existing.snapshot_id is None:
+        return True, "no_anchor"
+
+    if anchor_snap is not None:
+        old_sig = set(anchor_snap.signals or [])
+        new_sig = set(snap.signals or [])
+        if old_sig != new_sig:
+            return True, "signal_change"
+
+    if age > timedelta(hours=SMART_STALE_HOURS):
+        return True, "stale"
+
+    return False, "no_change"
+
+
 def _data_completeness_prompt_section(comp: dict[str, Any]) -> str:
     """Render the data-completeness section so the LLM can self-calibrate
     confidence. Always rendered (even at score=100) so the LLM is

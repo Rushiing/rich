@@ -142,6 +142,38 @@ given current kline data.
 
 ## Migrations (one-off)
 
+### `GET /api/_diag/smart-analyze-status`
+Status of the smart intraday analysis tick (6/3, every 30 min in trading
+hours). Returns the **last run's** per-reason counters:
+
+```json
+{
+  "running": false,
+  "last_started_at": "2026-06-03T05:35:00+00:00",
+  "last_result": {
+    "distinct_codes": 100,
+    "triggered": 12,
+    "generated": 11,
+    "cache_hit": 1,
+    "failed": 0,
+    "by_reason": {
+      "cooldown": 8,
+      "no_change": 65,
+      "price_move": 10,
+      "signal_change": 2,
+      "stale": 0
+    },
+    "triggered_codes": ["600519", "300750", ...]
+  }
+}
+```
+
+**Useful for tuning thresholds**: if `stale` dominates we should lower
+`_SMART_PRICE_DELTA_PCT`; if `cooldown` dominates we're scanning too
+often. `by_reason` always sums to `distinct_codes`.
+
+---
+
 ### `POST /api/_diag/migrate-prompt-version`
 **Idempotent** retroactive fix for the pre-c231b60 hardcode bug:
 `PROMPT_VERSION` was a module constant `"v2.5-debate"`, so every row

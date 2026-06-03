@@ -19,7 +19,11 @@ ANALYSIS_FRESH_HOURS = 4
 from ..auth import require_auth
 from ..db import get_db
 from ..models import Analysis, AnalysisOutcome, Snapshot, Watchlist
-from ..services.analysis import generate as analysis_generate, get_cached as analysis_cached
+from ..services.analysis import (
+    generate as analysis_generate,
+    get_cached as analysis_cached,
+    should_reanalyze,
+)
 from ..services.cron import run_daily_analysis_job, run_snapshot_job
 from ..services.signals import has_strong
 from ..services.users import resolve_owner
@@ -168,7 +172,15 @@ def list_stocks(
         a.code: a
         for a in db.query(Analysis).filter(Analysis.code.in_(list(watch.keys()))).all()
     }
-    fresh_cutoff = datetime.now(timezone.utc) - timedelta(hours=ANALYSIS_FRESH_HOURS)
+    # 6/3: anchor snapshot batch prefetch — needed for should_reanalyze's
+    # price-move / signal-change comparison. Snapshot ids referenced by
+    # any existing analysis row, batched into a single IN query.
+    anchor_ids = [a.snapshot_id for a in analyses.values()
+                  if a.snapshot_id is not None]
+    anchor_snaps = (
+        {s.id: s for s in db.query(Snapshot).filter(Snapshot.id.in_(anchor_ids)).all()}
+        if anchor_ids else {}
+    )
 
     def _brief(code: str) -> AnalysisBrief | None:
         a = analyses.get(code)
@@ -191,13 +203,23 @@ def list_stocks(
             conf_val = raw_conf
         else:
             conf_val = None
+        # 6/3: is_fresh now mirrors should_reanalyze — the same logic
+        # that drives the smart cron decides the visual badge. respect_
+        # cooldown=False so a 5-min-old row that already has a real
+        # trigger (price moved 2%) still flags as 已过期 immediately
+        # for the user, even though the cron will hold off until 30 min
+        # passes. Net effect: list 和 cron 对"过期"的定义保持一致。
+        snap = by_code.get(code)
+        anchor = (anchor_snaps.get(a.snapshot_id)
+                  if a.snapshot_id is not None else None)
+        needs_repaint, _ = should_reanalyze(snap, a, anchor, respect_cooldown=False)
         return AnalysisBrief(
             actionable=str(kt.get("actionable") or ""),
             one_line_reason=str(kt.get("one_line_reason") or ""),
             company_tag=str(kt.get("company_tag") or ""),
             red_flags=list(kt.get("red_flags") or []),
             created_at=created.isoformat() if created else "",
-            is_fresh=bool(created and created >= fresh_cutoff),
+            is_fresh=not needs_repaint,
             confidence=conf_val,
             confidence_reason=(str(kt["confidence_reason"])
                                if kt.get("confidence_reason") else None),
@@ -488,8 +510,21 @@ def get_analysis(
     row = db.query(Analysis).filter(Analysis.code == code).first()
     if row is None:
         return None
-    fresh = analysis_cached(db, code) is not None
-    return AnalysisOut.from_row(row, is_fresh=fresh)
+    # 6/3: align is_fresh with the list view + smart cron's freshness
+    # logic. Detail page already had a 4h cutoff via analysis_cached;
+    # switching to should_reanalyze means an actively-moving stock
+    # shows "已过期" earlier and a quiet stock stays fresh past 4h.
+    latest_snap = (
+        db.query(Snapshot).filter(Snapshot.code == code)
+        .order_by(desc(Snapshot.id)).first()
+    )
+    anchor_snap = (
+        db.query(Snapshot).filter(Snapshot.id == row.snapshot_id).first()
+        if row.snapshot_id is not None else None
+    )
+    needs_repaint, _ = should_reanalyze(latest_snap, row, anchor_snap,
+                                        respect_cooldown=False)
+    return AnalysisOut.from_row(row, is_fresh=not needs_repaint)
 
 
 @router.post("/{code}/analysis", response_model=AnalysisOut)
