@@ -99,13 +99,20 @@ number, use this.
 ### `GET /api/_diag/hit-rate-by-confidence`
 **Validation:** does the LLM's self-reported confidence actually correlate
 with accuracy? Stratifies hit_rate by `(actionable, confidence_bucket)`
-where bucket follows frontend's `confidenceBucket()`:
+across d1/d3/d5 horizons in one shot. Bucket follows frontend's
+`confidenceBucket()`:
 - `high`: confidence >= 80
 - `med`: 60-79
 - `low`: < 60
 
 Only buy/sell directional verdicts; excludes anchors from before 5/29
-(confidence column added then, older rows have null).
+(confidence column added then, older rows have null). d5 is the gold
+standard; d1/d3 light up earlier (5/29 anchors only reach d5 around
+6/5) and give a preview.
+
+Returns `scored_per_horizon` totals so you can see how much sample
+you have to work with at each horizon. Each bucket has `d1`/`d3`/`d5`
+sub-objects with `{n, hit_rate, avg_return}`.
 
 **Expected pattern if confidence works**:
 ```

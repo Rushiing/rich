@@ -443,6 +443,11 @@ export default function StocksPage() {
         </div>
       )}
 
+      {/* 6/3: AI 历史命中率 banner — 集中展示买/卖两类的全局命中率,
+          胜过在每行 tooltip 里重复同一个数字。带数据口径说明和样本量
+          透明度,降低用户对 AI 建议的盲信门槛。 */}
+      <HitRateBanner hitRate={hitRate} />
+
       <ActionableFilter rows={rows} value={filter} onChange={setFilter} />
 
       <div style={{ marginTop: 8, color: "var(--text-muted)", fontSize: 13 }}>
@@ -518,7 +523,7 @@ export default function StocksPage() {
             </tr>
           )}
           {/* Filter mode: flat list of whichever bucket is selected. */}
-          {!loading && filter !== null && visibleRowsSorted.map((r) => stockRow(r, toggleStar, hitRate))}
+          {!loading && filter !== null && visibleRowsSorted.map((r) => stockRow(r, toggleStar))}
           {/* Default mode: grouped, with collapsible non-act sections. */}
           {!loading && filter === null && GROUP_DEFS.map(({ key, label, color }) => {
             const groupRows = groupedRows[key];
@@ -546,7 +551,7 @@ export default function StocksPage() {
                     <span style={{ color: "var(--text-muted)" }}>({groupRows.length})</span>
                   </td>
                 </tr>
-                {!isCollapsed && groupRows.map((r) => stockRow(r, toggleStar, hitRate))}
+                {!isCollapsed && groupRows.map((r) => stockRow(r, toggleStar))}
               </Fragment>
             );
           })}
@@ -554,6 +559,97 @@ export default function StocksPage() {
       </table>
       </div>
     </main>
+  );
+}
+
+// 6/3: 集中展示 AI 历史命中率 — 列表顶部 banner. 替代了之前在每行
+// tooltip 里重复同一全局数字的设计 (噪音 + 不一目了然)。详情页保留
+// per-stock 上下文展示。silent 处理 null/loading — 数据没回来时
+// 不渲染整个 banner,不阻塞主列表。
+function HitRateBanner({ hitRate }: { hitRate: HitRateSummary | null }) {
+  if (!hitRate) return null;
+  const buy = hitRate.by_actionable["建议买入"];
+  const sell = hitRate.by_actionable["建议卖出"];
+  if (!buy && !sell) return null;
+
+  const StatCard = ({
+    label, bucket, color,
+  }: {
+    label: string;
+    bucket: { n: number; hit_rate: number | null; avg_return_d5: number | null } | undefined;
+    color: string;
+  }) => {
+    if (!bucket || bucket.hit_rate == null) return null;
+    return (
+      <div style={{
+        flex: 1,
+        minWidth: 200,
+        padding: "12px 16px",
+        background: "var(--surface)",
+        border: "1px solid var(--border)",
+        borderLeft: `3px solid ${color}`,
+        borderRadius: 6,
+      }}>
+        <div style={{
+          color: "var(--text-muted)", fontSize: 12, marginBottom: 4,
+        }}>
+          {label}
+        </div>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+          <span style={{
+            fontSize: 28, fontWeight: 700, color,
+            fontFamily: "monospace", lineHeight: 1,
+          }}>
+            {bucket.hit_rate.toFixed(1)}%
+          </span>
+          <span style={{ color: "var(--text-soft)", fontSize: 12 }}>
+            样本 {bucket.n}{bucket.n < 30 ? " · 样本偏小" : ""}
+          </span>
+        </div>
+        {bucket.avg_return_d5 != null && (
+          <div style={{
+            marginTop: 4, color: "var(--text-soft)", fontSize: 12,
+          }}>
+            5 日平均收益{" "}
+            <span style={{
+              color: bucket.avg_return_d5 >= 0 ? "#ef4444" : "#22c55e",
+              fontWeight: 600,
+            }}>
+              {bucket.avg_return_d5 >= 0 ? "+" : ""}
+              {bucket.avg_return_d5.toFixed(2)}%
+            </span>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div style={{
+        display: "flex", alignItems: "baseline", gap: 8, marginBottom: 6,
+      }}>
+        <span style={{
+          color: "var(--text-muted)", fontSize: 12, fontWeight: 600,
+        }}>
+          AI 历史命中率
+        </span>
+        <span style={{ color: "var(--text-faint)", fontSize: 11 }}>
+          基于 v2.5-single 模型 · 共 {hitRate.total_scored} 条已结算样本
+        </span>
+      </div>
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+        <StatCard label="建议买入" bucket={buy} color="#ef4444" />
+        <StatCard label="建议卖出" bucket={sell} color="#22c55e" />
+      </div>
+      <div style={{
+        marginTop: 6,
+        color: "var(--text-faint)", fontSize: 11, lineHeight: 1.5,
+      }}>
+        口径:建议买入命中 = 5 个交易日后股价上涨;建议卖出命中 = 5 个交易日后股价下跌。
+        样本 &lt; 30 时数字噪音较大,仅作参考。
+      </div>
+    </div>
   );
 }
 
@@ -617,12 +713,7 @@ function ActionableFilter({
   );
 }
 
-function ActionableCell({
-  analysis, hitRate,
-}: {
-  analysis: AnalysisBrief | null;
-  hitRate: HitRateSummary | null;
-}) {
+function ActionableCell({ analysis }: { analysis: AnalysisBrief | null }) {
   if (!analysis || !analysis.actionable) {
     return <span style={{ color: "var(--text-dim)", fontSize: 12 }}>待生成</span>;
   }
@@ -640,8 +731,6 @@ function ActionableCell({
   const confBucket = confidenceBucket(analysis.confidence);
   const isActionable = analysis.actionable === "建议买入" || analysis.actionable === "建议卖出";
   const degraded = confBucket === "low" && isActionable;
-  // 6/3: hit_rate for this actionable type. Only buy/sell have hit_rate.
-  const hitBucket = hitRate?.by_actionable[analysis.actionable];
   return (
     // Wider on desktop (ultrawide-friendly), still capped so a single line of
     // 操作建议 doesn't run forever on huge screens. minWidth keeps the cell
@@ -653,28 +742,9 @@ function ActionableCell({
             <div>
               <div style={{ fontWeight: 600, marginBottom: 4 }}>{analysis.actionable}</div>
               <div style={{ color: "var(--text-soft)" }}>{explainBlurb}</div>
-              {/* 6/3: historical hit_rate for this verdict. Only shown
-                  when we have data (buy/sell only); n<30 gets a "(样本小)"
-                  caveat so users don't over-anchor on noise. */}
-              {hitBucket && hitBucket.hit_rate != null && (
-                <div style={{
-                  marginTop: 6, paddingTop: 6,
-                  borderTop: "1px dashed var(--border-faint)",
-                  color: "var(--text-soft)", fontSize: 11, lineHeight: 1.5,
-                }}>
-                  AI 历史命中率 <b style={{
-                    color: hitBucket.hit_rate >= 60 ? "#22c55e"
-                      : hitBucket.hit_rate >= 50 ? "var(--text)" : "#f59e0b"
-                  }}>{hitBucket.hit_rate.toFixed(1)}%</b>
-                  {" "}(n={hitBucket.n}{hitBucket.n < 30 ? "，样本偏小" : ""})
-                  {hitBucket.avg_return_d5 != null && (
-                    <>
-                      <br />5 日平均收益 {hitBucket.avg_return_d5 >= 0 ? "+" : ""}
-                      {hitBucket.avg_return_d5.toFixed(2)}%
-                    </>
-                  )}
-                </div>
-              )}
+              {/* 6/3: 全局历史命中率 moved to top-of-list HitRateBanner
+                  (per-row tooltip 重复同一数字是噪音). 这里只留 actionable
+                  解释 + 低置信警告。 */}
               {degraded && (
                 <div style={{ marginTop: 4, color: "#f59e0b", fontSize: 11 }}>
                   ⚠️ 低置信，慎跟
@@ -811,11 +881,7 @@ function hexA(hex: string, a: number): string {
 // share one source of truth. `onToggleStar` is required because the star
 // toggle needs access to component state, but rest of the row is pure
 // data → JSX.
-function stockRow(
-  r: StockRow,
-  onToggleStar: (code: string) => void,
-  hitRate: HitRateSummary | null,
-) {
+function stockRow(r: StockRow, onToggleStar: (code: string) => void) {
   return (
     <tr key={r.code} style={r.has_strong_signal ? rowStrong : undefined}>
       <td style={{ ...td, width: 28, padding: "10px 0 10px 6px" }}>
@@ -868,7 +934,7 @@ function stockRow(
         <IndustryWaterCell row={r} />
       </td>
       <td style={td}>
-        <ActionableCell analysis={r.analysis} hitRate={hitRate} />
+        <ActionableCell analysis={r.analysis} />
       </td>
       <td style={{ ...td, color: "var(--text-faint)", fontSize: 12 }}>
         {r.last_ts ? new Date(r.last_ts).toLocaleString("zh-CN", { hour: "2-digit", minute: "2-digit", month: "numeric", day: "numeric" }) : "未抓取"}

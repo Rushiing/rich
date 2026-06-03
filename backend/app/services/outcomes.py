@@ -162,30 +162,35 @@ def hit_rate_stats() -> dict[str, Any]:
 
 
 def hit_rate_by_confidence() -> dict[str, Any]:
-    """Stratify hit_rate by confidence bucket. Tests whether the
-    LLM's self-reported confidence actually correlates with accuracy —
-    i.e. whether 5/28's confidence-as-int system is doing real work
-    or is just decoration.
+    """Stratify hit_rate by confidence bucket across d1/d3/d5 horizons.
+
+    Tests whether the LLM's self-reported confidence actually correlates
+    with accuracy — i.e. whether 5/28's confidence-as-int system is
+    doing real work or is just decoration.
 
     Buckets follow frontend's confidenceBucket():
       high: >= 80
       med:  60-79
       low:  < 60
 
-    Only buy/sell anchors (directional verdicts), only anchors written
-    after 5/29 (when AnalysisOutcome started storing confidence).
-    Older anchors have confidence=None and are excluded.
+    6/3 — returns d1/d3/d5 horizons in one shot. Confidence column on
+    outcomes was added 5/29; the first d5-scored anchors with non-null
+    confidence won't appear until ~6/5. d1/d3 light up earlier and give
+    a preview of whether the field is meaningful. d5 stays the gold
+    standard (hit_rate_stats uses d5 too).
 
     Expected pattern if confidence is meaningful:
       high.hit_rate > med.hit_rate > low.hit_rate
-    Flat distribution would mean the LLM is throwing dice when picking
-    confidence numbers."""
+    Flat distribution = LLM throwing dice picking numbers.
+
+    Only buy/sell anchors (directional). Anchors lacking confidence are
+    excluded entirely (legacy).
+    """
     db: Session = SessionLocal()
     try:
         rows = (
             db.query(AnalysisOutcome)
             .filter(
-                AnalysisOutcome.return_d5.isnot(None),
                 AnalysisOutcome.confidence.isnot(None),
                 AnalysisOutcome.actionable.in_(["建议买入", "建议卖出"]),
             )
@@ -201,34 +206,56 @@ def hit_rate_by_confidence() -> dict[str, Any]:
             return "med"
         return "low"
 
+    def is_hit(actionable: str, ret: float) -> bool:
+        if actionable == "建议买入":
+            return ret > 0
+        return ret < 0  # 建议卖出
+
+    # Each bucket accumulates per-horizon counts.
+    HORIZONS = ("d1", "d3", "d5")
     buckets: dict[tuple, dict[str, Any]] = {}
     for o in rows:
         key = (o.actionable, bucket(o.confidence))
         b = buckets.setdefault(key, {
             "actionable": o.actionable,
             "confidence_bucket": bucket(o.confidence),
-            "n": 0, "hits": 0, "sum_return_d5": 0.0,
+            **{h: {"n": 0, "hits": 0, "sum": 0.0} for h in HORIZONS},
         })
-        b["n"] += 1
-        b["sum_return_d5"] += o.return_d5
-        if o.actionable == "建议买入" and o.return_d5 > 0:
-            b["hits"] += 1
-        elif o.actionable == "建议卖出" and o.return_d5 < 0:
-            b["hits"] += 1
+        for h in HORIZONS:
+            ret = getattr(o, f"return_{h}")
+            if ret is None:
+                continue
+            b[h]["n"] += 1
+            b[h]["sum"] += ret
+            if is_hit(o.actionable, ret):
+                b[h]["hits"] += 1
 
     summary = []
     for b in buckets.values():
-        n = b["n"]
-        summary.append({
+        item = {
             "actionable": b["actionable"],
             "confidence_bucket": b["confidence_bucket"],
-            "n": n,
-            "hit_rate": round(b["hits"] / n * 100, 1) if n else None,
-            "avg_return_d5": round(b["sum_return_d5"] / n, 2) if n else None,
-        })
+        }
+        for h in HORIZONS:
+            hb = b[h]
+            n = hb["n"]
+            item[h] = {
+                "n": n,
+                "hit_rate": round(hb["hits"] / n * 100, 1) if n else None,
+                "avg_return": round(hb["sum"] / n, 2) if n else None,
+            }
+        summary.append(item)
+
     bucket_order = {"high": 0, "med": 1, "low": 2}
     summary.sort(key=lambda x: (x["actionable"], bucket_order[x["confidence_bucket"]]))
+
+    # Roll-up totals per horizon: how many anchors of any bucket are
+    # currently scored at that horizon. Useful for "do I have enough
+    # sample to trust the comparison?"
+    totals = {h: sum(b[h]["n"] for b in buckets.values()) for h in HORIZONS}
+
     return {
-        "total_scored_with_confidence": len(rows),
+        "total_with_confidence": len(rows),  # row count irrespective of horizon
+        "scored_per_horizon": totals,
         "buckets": summary,
     }
