@@ -606,20 +606,6 @@ function HitRateBanner({ hitRate }: { hitRate: HitRateSummary | null }) {
             样本 {bucket.n}{bucket.n < 30 ? " · 样本偏小" : ""}
           </span>
         </div>
-        {bucket.avg_return_d5 != null && (
-          <div style={{
-            marginTop: 4, color: "var(--text-soft)", fontSize: 12,
-          }}>
-            5 日平均收益{" "}
-            <span style={{
-              color: bucket.avg_return_d5 >= 0 ? "#ef4444" : "#22c55e",
-              fontWeight: 600,
-            }}>
-              {bucket.avg_return_d5 >= 0 ? "+" : ""}
-              {bucket.avg_return_d5.toFixed(2)}%
-            </span>
-          </div>
-        )}
       </div>
     );
   };

@@ -680,10 +680,6 @@ function KeyTableCard({
               <b style={{ color: rateColor, fontSize: 13 }}>{hb.hit_rate.toFixed(1)}%</b>
               <span> · 样本 <b style={{ color: "var(--text)" }}>{hb.n}</b></span>
               {hb.n < 30 && <span style={{ color: "#f59e0b" }}> (偏小)</span>}
-              {hb.avg_return_d5 != null && (
-                <> · 5 日平均{hb.avg_return_d5 >= 0 ? "+" : ""}
-                  {hb.avg_return_d5.toFixed(2)}%</>
-              )}
             </div>
           );
         })()}
