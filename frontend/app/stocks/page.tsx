@@ -735,6 +735,27 @@ function ActionableCell({ analysis }: { analysis: AnalysisBrief | null }) {
           {analysis.one_line_reason}
         </span>
       )}
+      {/* 6/3: valid_window 透出到列表 — 用户反馈在详情页只在
+          actionable 旁不够,列表也要一眼看到决策窗口。橙色高亮跟其它
+          灰字理由拉开层级,告诉用户"这个建议什么时候作废"。 */}
+      {analysis.valid_window && (
+        <span style={{
+          marginTop: 2,
+          alignSelf: "flex-start",
+          padding: "2px 7px",
+          borderRadius: 3,
+          background: "rgba(245, 158, 11, 0.12)",
+          border: "1px solid rgba(245, 158, 11, 0.35)",
+          color: "#f59e0b",
+          fontSize: 12,
+          fontWeight: 500,
+          lineHeight: 1.4,
+          maxWidth: "100%",
+          whiteSpace: "normal",
+        }}>
+          ⏱ {analysis.valid_window}
+        </span>
+      )}
     </div>
   );
 }

@@ -70,6 +70,11 @@ class AnalysisBrief(BaseModel):
     # Frontend's confidenceBucket() normalizes all three.
     confidence: int | str | None = None
     confidence_reason: str | None = None
+    # 6/3: AI-declared validity window for this verdict, e.g.
+    # "3 个交易日内" / "跌破 12.50 元前". Surfaced in the 操作建议 cell
+    # last line so users see decision freshness at a glance. None for
+    # legacy rows pre-valid_window schema.
+    valid_window: str | None = None
 
 
 class StockRow(BaseModel):
@@ -196,6 +201,8 @@ def list_stocks(
             confidence=conf_val,
             confidence_reason=(str(kt["confidence_reason"])
                                if kt.get("confidence_reason") else None),
+            valid_window=(str(kt["valid_window"])
+                          if kt.get("valid_window") else None),
         )
 
     rows: list[StockRow] = []

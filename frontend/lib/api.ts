@@ -27,6 +27,10 @@ export type AnalysisBrief = {
   // null for very old rows. Use confidenceBucket() to bucket.
   confidence?: number | string | null;
   confidence_reason?: string | null;
+  // 6/3: AI-declared validity window, e.g. "3 个交易日内" / "跌破 X 元前".
+  // Surfaced in list view as the last (highlighted) line of the
+  // 操作建议 cell so users see decision freshness at a glance.
+  valid_window?: string | null;
 };
 
 export type StopLossLevel = {
