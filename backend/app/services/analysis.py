@@ -1048,14 +1048,21 @@ def generate(
             raise RuntimeError(
                 "ANTHROPIC_API_KEY not set. Add it in Railway → backend → Variables."
             )
-        # 6/4: timeout=60 — dashscope/kimi 偶发 LLM call hang 几分钟才返回
-        # (6/3 regenerate-all 100 stocks 跑了 117 分钟而非预期的 10),拖死
-        # smart intraday 30 分钟 cycle (cycle 跑不完下一个就被锁 skip)。
-        # 60s 是经验值:正常 call 落 6-15s,超 60s 通常是真 hang 不会"再等
-        # 一下就好"。失败 stock 计入 failed,主流程继续。
+        # 6/4: timeout=60 + max_retries=0 — 严格 60s 单股上限。
+        #
+        # 背景:dashscope/kimi 偶发 LLM call hang 几分钟才返回 (6/3
+        # regenerate-all 100 stocks 跑了 117 分钟而非预期的 10),拖死
+        # smart intraday 30 分钟 cycle。第一次只加 timeout=60 不够,SDK
+        # 默认 max_retries=2 让单 stock worst case 变 3×60=180s,实测
+        # 100% 触发 (11:05 cycle 跑了 67 分钟还没结束)。
+        #
+        # max_retries=0 让失败的 stock 直接计入 failed 不再 SDK 层重试。
+        # 下次 cron tick (30 分钟后) 会自然重试 — 比 SDK retry 更便宜 +
+        # 更可预测。100 stocks × 触发 20% × 60s = 20 分钟 hard cap。
         kwargs: dict[str, Any] = {
             "api_key": settings.ANTHROPIC_API_KEY,
             "timeout": 60.0,
+            "max_retries": 0,
         }
         if settings.ANTHROPIC_BASE_URL:
             kwargs["base_url"] = settings.ANTHROPIC_BASE_URL
