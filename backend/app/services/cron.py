@@ -690,28 +690,56 @@ def run_smart_intraday_analysis() -> dict:
             len(codes), len(triggered), by_reason,
         )
 
-        # Generate sequentially — each ~5-7s. 30-40 codes worst case =
-        # ~3-4 min, fits comfortably in the 30 min cycle.
+        # Generate concurrently — kimi 实际 p77 延迟 > 60s,串行 60 个
+        # stocks 跑 1 小时 (6/4 14:05 cycle 实测)。max_workers=5 让 cycle
+        # 时间压到 1/5,配合 timeout=90 (留缓冲让多数 call 成功)。
+        # 60 stocks × 90s / 5 = ~18 min,fit 30 min cycle 窗口。
+        #
+        # dashscope 并发限流未公开测过,5 算保守上限。如果撞限流,失败
+        # stocks 进 failed,下个 cycle 自然重试,不影响整体稳定性。
+        # 每个 worker 自己开 SessionLocal — analysis_generate 内有大量
+        # DB ops,跨线程共享 session 会出 SQLAlchemy 错。
+        SMART_MAX_WORKERS = 5
         generated = 0
         failed = 0
         cache_hit = 0
-        for code in triggered:
+
+        # Pre-capture each triggered code's pre-call snapshot_id so the
+        # worker can detect cache_hit without re-querying.
+        before_ids: dict[str, int | None] = {
+            code: (existing_rows[code].snapshot_id if existing_rows.get(code) else None)
+            for code in triggered
+        }
+
+        def _generate_one(code: str) -> str:
+            """Worker fn — returns one of 'generated' / 'cache_hit' / 'failed'."""
+            worker_db: Session = SessionLocal()
             try:
-                # force=False → snapshot_id cache可能 hit (e.g. another
-                # tick already analyzed this snapshot). Defense in depth.
-                before = (
-                    existing_rows.get(code).snapshot_id
-                    if existing_rows.get(code) else None
-                )
-                row = analysis_generate(db, code, force=False)
-                # Detect cache hit: snapshot_id 没变说明没真跑 LLM
+                row = analysis_generate(worker_db, code, force=False)
+                before = before_ids.get(code)
                 if row.snapshot_id == before and before is not None:
-                    cache_hit += 1
-                else:
-                    generated += 1
+                    return "cache_hit"
+                return "generated"
             except Exception:
-                failed += 1
                 logger.exception("smart intraday: %s failed", code)
+                return "failed"
+            finally:
+                worker_db.close()
+
+        if triggered:
+            with ThreadPoolExecutor(
+                max_workers=SMART_MAX_WORKERS,
+                thread_name_prefix="smart-analyze",
+            ) as pool:
+                futures = [pool.submit(_generate_one, c) for c in triggered]
+                for f in as_completed(futures):
+                    status = f.result()
+                    if status == "generated":
+                        generated += 1
+                    elif status == "cache_hit":
+                        cache_hit += 1
+                    else:
+                        failed += 1
 
         result = {
             "distinct_codes": len(codes),

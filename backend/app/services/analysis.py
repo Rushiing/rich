@@ -1048,20 +1048,24 @@ def generate(
             raise RuntimeError(
                 "ANTHROPIC_API_KEY not set. Add it in Railway → backend → Variables."
             )
-        # 6/4: timeout=60 + max_retries=0 — 严格 60s 单股上限。
+        # 6/4: timeout=90 + max_retries=0,配合 cron 层 ThreadPoolExecutor
+        # 并发(max_workers=5)。
         #
-        # 背景:dashscope/kimi 偶发 LLM call hang 几分钟才返回 (6/3
-        # regenerate-all 100 stocks 跑了 117 分钟而非预期的 10),拖死
-        # smart intraday 30 分钟 cycle。第一次只加 timeout=60 不够,SDK
-        # 默认 max_retries=2 让单 stock worst case 变 3×60=180s,实测
-        # 100% 触发 (11:05 cycle 跑了 67 分钟还没结束)。
+        # 演化:
+        #   - 第一版 timeout=60 + SDK 默认 retry=2 → 实际 worst 3×60=180s/股
+        #     (6/4 11:05 cycle 跑了 67 分钟没结束)
+        #   - 第二版 timeout=60 + max_retries=0 → 13:05 cycle 跑完了但 failed
+        #     30/39=77%,因为 kimi 实际 p77 延迟 > 60s,过激
+        #   - 第三版 (现在) timeout=90 + max_retries=0 + 并发:
+        #     * 单 call 给到 90s 让 60-90s 那批成功
+        #     * 5 并发让 cycle 时间压到 1/5
+        #     * 60 stocks × 90s / 5 并发 = 18 min,fit 30 min cycle
         #
-        # max_retries=0 让失败的 stock 直接计入 failed 不再 SDK 层重试。
-        # 下次 cron tick (30 分钟后) 会自然重试 — 比 SDK retry 更便宜 +
-        # 更可预测。100 stocks × 触发 20% × 60s = 20 分钟 hard cap。
+        # 并发逻辑在 cron.run_smart_intraday_analysis 实现,这里只设单 call
+        # 的协议。debate 模式同一 client,但 batch 流量是 single mode 主导。
         kwargs: dict[str, Any] = {
             "api_key": settings.ANTHROPIC_API_KEY,
-            "timeout": 60.0,
+            "timeout": 90.0,
             "max_retries": 0,
         }
         if settings.ANTHROPIC_BASE_URL:
