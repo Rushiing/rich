@@ -302,6 +302,67 @@ class Financial(Base):
     )
 
 
+class ShareholderChange(Base):
+    """One row per insider (董监高 / 高管 / 配偶子女) shareholding change
+    event. Pulled from akshare's `stock_hold_management_person_em` (东方
+    财富 - 数据中心 - 特色数据 - 人员增减持明细).
+
+    Used by the analysis prompt to surface "近 90 天大股东减持/增持 N 笔"
+    signals — internal-person trading is one of the strongest single
+    alpha indicators in 金融文献, and the LLM was working without it.
+
+    Composite uniqueness: (code, change_date, person, change_shares).
+    Same person can have multiple events on the same day (different
+    trade reasons), so all four fields together identify a row.
+
+    Refreshed daily 17:30 BJT via _shareholder_tick → market-wide pull
+    then filter-to-watchlist. Retention: keep last 365 days (analysis
+    only looks at last 90 but we keep more for future hit-rate joins).
+    """
+    __tablename__ = "shareholder_changes"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    code: Mapped[str] = mapped_column(String(6), nullable=False)
+    # 变动日期 (东财字段 "日期") — 实际成交日 / 变动日
+    change_date: Mapped[str] = mapped_column(String(10), nullable=False)  # YYYY-MM-DD
+    # 变动人姓名 (东财字段 "变动人") — 可能是本人,可能是配偶/子女
+    person: Mapped[str] = mapped_column(String(40), nullable=False)
+    # 变动股数 (东财字段 "变动股数") — 正负号通常体现增减,但有时是 abs;
+    # 用 change_reason 判方向更稳。
+    change_shares: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 成交均价 (元/股)
+    avg_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 变动金额 (元)
+    change_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 变动原因: 竞价交易 / 大宗交易 / 集合竞价 / 协议转让 / 二级市场买卖 / ...
+    change_reason: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # 变动比例 (%) — 占总股本比例
+    change_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 变动后持股数 (股)
+    holdings_after: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 董监高人员姓名 (有时跟 person 同,有时是 person 的"被关联董监高")
+    insider_name: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # 职务: 高管 / 董事 / 监事 / 总经理 / ...
+    role: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # 变动人与董监高的关系: 本人 / 配偶 / 子女 / 父母 / ...
+    relation: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+
+    __table_args__ = (
+        Index("ix_shareholder_code_date", "code", "change_date"),
+        # 防重 (code, date, person, shares) 一起做 dedupe key — 单纯
+        # (code, date, person) 不够,同一人同一天可能多笔不同 reason 的
+        # 交易 (如部分大宗 + 部分竞价)。
+        Index(
+            "uq_shareholder_dedupe",
+            "code", "change_date", "person", "change_shares",
+            unique=True,
+        ),
+    )
+
+
 class AnalysisOutcome(Base):
     """Tracks how an analysis verdict played out over the following N
     trading days. One row per analysis *generation* (a regenerate creates

@@ -781,6 +781,18 @@ def _outcomes_tick():
         logger.exception("outcomes tick failed")
 
 
+def _shareholder_tick():
+    """Daily post-close 17:30 BJT: pull market-wide insider shareholding
+    changes (董监高 / 高管 / 配偶子女增减持), filter to watchlist + 90 days,
+    upsert into shareholder_changes. ~30s wall-time (akshare single bulk
+    call). Used by analysis.py prompt to surface 内部人交易 signal."""
+    try:
+        from . import shareholder as shareholder_svc
+        shareholder_svc.pull_for_watchlist()
+    except Exception:
+        logger.exception("shareholder tick failed")
+
+
 def start_scheduler() -> None:
     """Idempotent. Called from FastAPI lifespan."""
     global scheduler
@@ -865,6 +877,16 @@ def start_scheduler() -> None:
         _outcomes_tick,
         CronTrigger(day_of_week="mon-fri", hour=17, minute=0, timezone="Asia/Shanghai"),
         id="outcomes_17_00",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+    # Shareholder change refresh — daily 17:30 BJT (after _outcomes_tick).
+    # 30s wall-time akshare bulk fetch; insider trading events are post-
+    # close anyway,所以盘后跑最合适。
+    sched.add_job(
+        _shareholder_tick,
+        CronTrigger(day_of_week="mon-fri", hour=17, minute=30, timezone="Asia/Shanghai"),
+        id="shareholder_17_30",
         replace_existing=True,
         misfire_grace_time=3600,
     )

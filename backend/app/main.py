@@ -658,6 +658,53 @@ def diag_watchlist_stats():
     }
 
 
+_shareholder_lock = __import__("threading").Lock()
+_shareholder_running = {"v": False, "last_result": None}
+
+
+@app.post("/api/_diag/refresh-shareholder")
+def diag_refresh_shareholder():
+    """Manual trigger: pull market-wide insider shareholding changes,
+    filter to watchlist + 90 days, upsert into shareholder_changes. ASYNC
+    — returns immediately, ~30s background work (single bulk akshare call
+    然后 in-process filter)。
+
+    Powers the analysis prompt's 股东变动 section. Re-running is safe
+    (upserts by code+date+person+shares unique key)."""
+    import threading
+    from .services import shareholder as shareholder_svc
+
+    with _shareholder_lock:
+        if _shareholder_running["v"]:
+            return {"started": False, "already_running": True}
+        _shareholder_running["v"] = True
+        _shareholder_running["last_result"] = None
+
+    def _worker():
+        try:
+            result = shareholder_svc.pull_for_watchlist()
+            _shareholder_running["last_result"] = result
+        except Exception as e:
+            _shareholder_running["last_result"] = {"error": str(e)}
+        finally:
+            with _shareholder_lock:
+                _shareholder_running["v"] = False
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return {"started": True}
+
+
+@app.get("/api/_diag/refresh-shareholder/status")
+def diag_refresh_shareholder_status():
+    """Status of the most recent /refresh-shareholder run."""
+    from .services import shareholder as shareholder_svc
+    return {
+        "running": _shareholder_running["v"],
+        "progress": shareholder_svc.get_progress(),
+        "last_result": _shareholder_running["last_result"],
+    }
+
+
 @app.get("/api/_diag/akshare-shareholder-probe")
 def diag_akshare_shareholder_probe(fn: str | None = None):
     """Phase 0 临时 endpoint:试 akshare 股东变动接口名 + 字段结构。
