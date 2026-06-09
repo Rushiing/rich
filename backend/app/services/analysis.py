@@ -338,20 +338,30 @@ def _shareholder_changes_section(code: str | None) -> str:
 
 
 def _peer_comparison_section(s: "Snapshot | None") -> str:
-    """同行业市值前 5 (排除本股) 的 PE/PB/今日涨跌横向对比。让 LLM
-    能做相对估值判断,而不是凭空给"PE 20 算贵或便宜"。
+    """同行业 PE 最接近本股的 5 支可比股,横向对比 PE/PB/今日涨跌。
 
     Fail-safe: 无 industry_name / 同行业 < 3 支 / DB error → 返回 ''
     不阻塞。
+
+    6/9 (A+B 调整):
+    - B. 选取算法从"市值降序"改成"PE 接近本股"。原因:6/9 render-prompt
+      验证发现按市值降序选出来 5 支 PE 跨度极大 (36 到 202),LLM 觉得
+      列表代表性差,只用聚合的 industry_pe_avg 不引具体股票。按 PE 接近
+      取 5 支,LLM 看到的是"真的可比的票",更愿意引用。
+    - A. prompt 强化为"必须在 deep_analysis 看多/看空理由里至少引用
+      1-2 支具体股票代码做对比",从被动判读变主动要求。
     """
-    if s is None or not s.industry_name:
+    if s is None or not s.industry_name or s.pe_ratio is None:
+        # 没有本股 PE 就没法算 PE 接近,直接不展示 (同业可比也没意义)
         return ""
     try:
-        from sqlalchemy import desc, func
+        from sqlalchemy import func
         from ..models import Snapshot
         db = SessionLocal()
         try:
-            # 同行业其它 stock 最新 snapshot (排除自己,且 pe_ratio 必须有)
+            # 同行业其它 stock 最新 snapshot (排除自己,且 pe_ratio 必须有)。
+            # B: 按 |peer.pe - self.pe| ASC 取前 5 支,选出真正可比的票
+            # 而不是市值最大的几个 outlier。
             subq = (
                 db.query(Snapshot.code, func.max(Snapshot.id).label("max_id"))
                 .filter(
@@ -361,10 +371,11 @@ def _peer_comparison_section(s: "Snapshot | None") -> str:
                 )
                 .group_by(Snapshot.code).subquery()
             )
+            self_pe = s.pe_ratio
             peers = (
                 db.query(Snapshot)
                 .join(subq, Snapshot.id == subq.c.max_id)
-                .order_by(desc(Snapshot.market_cap))
+                .order_by(func.abs(Snapshot.pe_ratio - self_pe).asc())
                 .limit(5).all()
             )
         finally:
@@ -378,7 +389,7 @@ def _peer_comparison_section(s: "Snapshot | None") -> str:
         return ""
 
     lines = [
-        f"\n## 同业可比 (行业「{s.industry_name}」内市值前 {len(peers)},排除本股)",
+        f"\n## 同业可比 (行业「{s.industry_name}」内 PE 最接近本股的 {len(peers)} 支)",
         "格式: 代码 / PE / PB / 今日%",
     ]
     for p in peers:
@@ -388,13 +399,18 @@ def _peer_comparison_section(s: "Snapshot | None") -> str:
         lines.append(f"- {p.code}: PE {pe} / PB {pb} / {cp}")
 
     # 本股对照
-    self_pe = f"{s.pe_ratio:.1f}" if s.pe_ratio is not None else "—"
-    self_pb = f"{s.pb_ratio:.2f}" if s.pb_ratio is not None else "—"
-    self_cp = f"{s.change_pct:+.2f}%" if s.change_pct is not None else "—"
-    lines.append(f"- **本股 {s.code}: PE {self_pe} / PB {self_pb} / {self_cp}**")
+    self_pe_str = f"{s.pe_ratio:.1f}" if s.pe_ratio is not None else "—"
+    self_pb_str = f"{s.pb_ratio:.2f}" if s.pb_ratio is not None else "—"
+    self_cp_str = f"{s.change_pct:+.2f}%" if s.change_pct is not None else "—"
+    lines.append(f"- **本股 {s.code}: PE {self_pe_str} / PB {self_pb_str} / {self_cp_str}**")
+    # A: 强引导,告诉 LLM **必须**在 deep_analysis 里引用具体可比股票代码,
+    # 不要只说"行业均值"。
     lines.append(
-        "判读提示:本股 PE/PB 相对同业明显偏高 = 估值贵,偏低 = 估值便宜;"
-        "今日涨跌跟同业差距大 = 个股有独立逻辑或异常波动。"
+        "**必读使用方式**:在 deep_analysis 的「看多 vs 看空」或「股价剧情」段,"
+        "至少引用 1-2 支具体可比股票代码 + PE 数字做对比 (例如 '本股 PE 113,"
+        f"同业 {peers[0].code} 是 {peers[0].pe_ratio:.0f}、{peers[1].code} 是 {peers[1].pe_ratio:.0f},"
+        "本股居中/偏高/偏低')。不要只说'行业均值',那是抽象数字,具体可比股票"
+        "才是相对估值锚。"
     )
     return "\n".join(lines) + "\n"
 
