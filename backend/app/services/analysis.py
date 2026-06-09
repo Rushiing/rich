@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc
 
 from ..config import settings
+from ..db import SessionLocal
 from ..models import Analysis, Snapshot, Watchlist
 from .strategy import Strategy, get as get_strategy
 
@@ -229,12 +230,173 @@ def compute_data_completeness(s: Snapshot | None, code: str) -> dict[str, Any]:
     # Score = filled / available × 100. Intraday with fund_missing →
     # max_score is 75; otherwise 100.
     score = int(round(got / max_score * 100)) if max_score > 0 else 0
+
+    # 6/9: info_missing — 新增 informational 类别 (不算分,只提示)。
+    # 用来标注 shareholder / peer 数据缺失情况,LLM 能知道某些段为啥短。
+    # 不进 score 是因为这些是"可选信号",有的话 confidence 可以更高,
+    # 没有的话不算"输入质量差" — 跟 missing/stale 不同语义。
+    info_missing: list[str] = []
+    if s is not None:
+        # 同业可比: 同行业 < 3 个 stock 在 snapshot 池里就算 "可比股不足"
+        try:
+            if s.industry_name:
+                from sqlalchemy import func as sql_func
+                db = SessionLocal()
+                try:
+                    peer_count = (
+                        db.query(sql_func.count(Snapshot.code.distinct()))
+                        .filter(
+                            Snapshot.industry_name == s.industry_name,
+                            Snapshot.code != s.code,
+                            Snapshot.pe_ratio.isnot(None),
+                        ).scalar() or 0
+                    )
+                finally:
+                    db.close()
+                if peer_count < 3:
+                    info_missing.append(f"同业可比股不足(行业「{s.industry_name}」只有 {peer_count} 支)")
+            else:
+                info_missing.append("行业未知,无同业可比")
+        except Exception:
+            pass
+        # 股东变动: 90 天内无任何事件 (跟 latest_for_code 一致)
+        try:
+            from . import shareholder as shareholder_svc
+            events = shareholder_svc.latest_for_code(code, days=90, n=1)
+            if not events:
+                info_missing.append("近 90 天无内部人交易事件")
+        except Exception:
+            pass
+
     return {
         "score": score,
         "missing": missing,
         "stale": stale,
         "intraday_skipped": intraday_skipped,
+        "info_missing": info_missing,
     }
+
+
+def _shareholder_changes_section(code: str | None) -> str:
+    """近 90 天董监高/高管/配偶子女增减持事件 section. Fail-safe: 任何
+    异常 (DB error / table 不存在等) 直接返回 '' 不阻塞 prompt 构建。
+    无事件时返回特殊文案 — 让 LLM 知道我们查过且无内幕活动,而不是
+    数据缺失。
+    """
+    if not code:
+        return ""
+    try:
+        from . import shareholder as shareholder_svc
+        events = shareholder_svc.latest_for_code(code, days=90, n=15)
+    except Exception as e:
+        logger.warning("shareholder section: failed for %s (%s); skipping", code, e)
+        return ""
+
+    if not events:
+        return (
+            "\n## 内部人交易 (近 90 天)\n"
+            "近 90 天内未查到董监高/高管/配偶子女增减持记录。"
+            "(无活动属正常,绝大多数股票多数时间无内部人交易)\n"
+        )
+
+    # 简单汇总: 增持 vs 减持事件数 + 金额. 用 change_reason / change_shares 判方向
+    # 东财 change_shares 正值通常代表增持,负值代表减持。一些"竞价交易"是双向的,
+    # 用 holdings_after - opening 不容易,简化按 sign 分类。
+    buys = [e for e in events if (e.change_shares or 0) > 0]
+    sells = [e for e in events if (e.change_shares or 0) < 0]
+
+    lines = ["\n## 内部人交易 (近 90 天,董监高/高管/配偶子女增减持)"]
+    lines.append(
+        f"汇总: 共 {len(events)} 次变动,其中增持 {len(buys)} 次 / 减持 {len(sells)} 次。"
+    )
+
+    # 详细列表 — 最多 8 条,按时间倒序 (events 已是 DESC)
+    lines.append("\n详细列表 (最近 8 笔):")
+    for e in events[:8]:
+        direction = "增" if (e.change_shares or 0) > 0 else "减" if (e.change_shares or 0) < 0 else "?"
+        shares_w = (abs(e.change_shares) / 1e4) if e.change_shares else 0
+        amt_w = (abs(e.change_amount) / 1e4) if e.change_amount else 0
+        # 例: "2025-12-15 [减] 张三 (高管/本人,因配偶子女): -12.5万股 @ 28.35 ≈ 354万元 · 竞价交易"
+        line = (
+            f"- {e.change_date} [{direction}] {e.person}"
+            f" ({e.role or '?'}/{e.relation or '?'}):"
+            f" {shares_w:.1f}万股"
+        )
+        if e.avg_price:
+            line += f" @ {e.avg_price:.2f}"
+        if amt_w > 0:
+            line += f" ≈ {amt_w:.0f}万元"
+        if e.change_reason:
+            line += f" · {e.change_reason}"
+        lines.append(line)
+
+    lines.append(
+        "\n判读提示:大股东/控股股东集中减持是负面信号;独立高管小额增持是中性偏正;"
+        "大宗交易/协议转让可能是套现/接盘,看交易对手。"
+    )
+    return "\n".join(lines) + "\n"
+
+
+def _peer_comparison_section(s: "Snapshot | None") -> str:
+    """同行业市值前 5 (排除本股) 的 PE/PB/今日涨跌横向对比。让 LLM
+    能做相对估值判断,而不是凭空给"PE 20 算贵或便宜"。
+
+    Fail-safe: 无 industry_name / 同行业 < 3 支 / DB error → 返回 ''
+    不阻塞。
+    """
+    if s is None or not s.industry_name:
+        return ""
+    try:
+        from sqlalchemy import desc, func
+        from ..models import Snapshot
+        db = SessionLocal()
+        try:
+            # 同行业其它 stock 最新 snapshot (排除自己,且 pe_ratio 必须有)
+            subq = (
+                db.query(Snapshot.code, func.max(Snapshot.id).label("max_id"))
+                .filter(
+                    Snapshot.industry_name == s.industry_name,
+                    Snapshot.code != s.code,
+                    Snapshot.pe_ratio.isnot(None),
+                )
+                .group_by(Snapshot.code).subquery()
+            )
+            peers = (
+                db.query(Snapshot)
+                .join(subq, Snapshot.id == subq.c.max_id)
+                .order_by(desc(Snapshot.market_cap))
+                .limit(5).all()
+            )
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning("peer comparison: failed for %s (%s); skipping", s.code, e)
+        return ""
+
+    if len(peers) < 3:
+        # 同行业可比股不足 3 支,展示意义不大
+        return ""
+
+    lines = [
+        f"\n## 同业可比 (行业「{s.industry_name}」内市值前 {len(peers)},排除本股)",
+        "格式: 代码 / PE / PB / 今日%",
+    ]
+    for p in peers:
+        pe = f"{p.pe_ratio:.1f}" if p.pe_ratio is not None else "—"
+        pb = f"{p.pb_ratio:.2f}" if p.pb_ratio is not None else "—"
+        cp = f"{p.change_pct:+.2f}%" if p.change_pct is not None else "—"
+        lines.append(f"- {p.code}: PE {pe} / PB {pb} / {cp}")
+
+    # 本股对照
+    self_pe = f"{s.pe_ratio:.1f}" if s.pe_ratio is not None else "—"
+    self_pb = f"{s.pb_ratio:.2f}" if s.pb_ratio is not None else "—"
+    self_cp = f"{s.change_pct:+.2f}%" if s.change_pct is not None else "—"
+    lines.append(f"- **本股 {s.code}: PE {self_pe} / PB {self_pb} / {self_cp}**")
+    lines.append(
+        "判读提示:本股 PE/PB 相对同业明显偏高 = 估值贵,偏低 = 估值便宜;"
+        "今日涨跌跟同业差距大 = 个股有独立逻辑或异常波动。"
+    )
+    return "\n".join(lines) + "\n"
 
 
 def _market_and_sector_context(industry_name: str | None) -> str:
@@ -372,6 +534,13 @@ def _data_completeness_prompt_section(comp: dict[str, Any]) -> str:
         )
     if comp.get("stale"):
         lines.append(f"过期: {' · '.join(comp['stale'])}")
+    # 6/9: info_missing — 可选信号缺失,不算 score 但告诉 LLM 哪些
+    # 段会比较短或没内容,以便它自己权衡 confidence 上限。
+    if comp.get("info_missing"):
+        lines.append(
+            f"可选信号缺失(不影响 score,但 confidence 上限自然受限): "
+            f"{' · '.join(comp['info_missing'])}"
+        )
     # Soft guidance — let the LLM decide based on the rest of the signal
     # stack rather than hard-anchoring confidence to a score threshold.
     lines.append(
@@ -970,6 +1139,12 @@ def _user_prompt(
             f"## 龙虎榜\n{lhb}\n"
         )
 
+    # 6/9: 股东变动 + 同业可比 两段 — 填补 LLM 缺少的"内部人信号"+
+    # "相对估值锚",目标是让 LLM 拿到更多硬信号后敢用 confidence 全区间。
+    # 都是 fail-safe (内部 try/except),任何异常返回 '' 不阻塞 prompt。
+    shareholder_section = _shareholder_changes_section(s.code if s else None)
+    peer_section = _peer_comparison_section(s)
+
     # 大盘+板块 context. Fail-safe internally — returns '' on upstream error.
     market_ctx = _market_and_sector_context(s.industry_name if s else None)
 
@@ -984,6 +1159,8 @@ def _user_prompt(
     return (
         f"## 标的\n代码: {w.code}\n名称: {w.name}\n市场: {w.exchange}\n\n"
         f"## 最新 snapshot\n{snap_section}\n"
+        f"{shareholder_section}"
+        f"{peer_section}"
         f"{market_ctx}"
         f"{data_comp_section}\n"
         f"请基于上面的信息调用 submit_analysis 一次。"

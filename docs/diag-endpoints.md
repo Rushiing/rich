@@ -82,6 +82,46 @@ stocks to the watchlist.
 
 ---
 
+## Shareholder changes (6/9 — 内部人交易信号)
+
+### `POST /api/_diag/refresh-shareholder`
+**Async** market-wide pull of insider shareholding changes (董监高/高管/
+配偶子女增减持) from 东方财富 datacenter directly. Filters to watchlist
+codes + last 90 days, upserts into `shareholder_changes`.
+
+Why this exists: 6/9 hit-rate analysis showed confidence 几乎全部落在 med
+桶,high (≥80) 0 样本。LLM 缺"内部人信号"是其中一个原因。这个 endpoint
++ 17:30 cron 给 LLM 一个新硬信号:大股东减持 vs 高管增持 vs 中性活动。
+
+```bash
+curl -X POST "$BASE/api/_diag/refresh-shareholder"
+# {"started": true}
+# 等 30 秒
+curl "$BASE/api/_diag/refresh-shareholder/status" | python3 -m json.tool
+```
+
+Implementation note: 直接 GET 东财 `RPT_EXECUTIVE_HOLD_DETAILS` 接口,自
+control pagination (max 2 页 × 5000 行)。akshare 的 `stock_hold_management_detail_em`
+会内部 paginate 所有页几十页,180s 超时。我们 control 后固定 20-30s。
+
+### `GET /api/_diag/refresh-shareholder/status`
+Status of the most recent run + in-flight progress (`rows_seen` /
+`rows_upserted` / `failed`).
+
+### `GET /api/_diag/akshare-shareholder-probe` (临时,等删)
+Phase 0 probe endpoint 验证 akshare 接口名 + 字段。已用 detail_em
+确认,留 1-2 天兜底然后删除。
+
+```bash
+# 看所有候选 fn 在 akshare 里是否存在
+curl "$BASE/api/_diag/akshare-shareholder-probe" | python3 -m json.tool
+
+# 跑单个 fn 的实际返回
+curl "$BASE/api/_diag/akshare-shareholder-probe?fn=stock_hold_management_detail_em"
+```
+
+---
+
 ## Outcomes (analysis hit-rate feedback loop)
 
 ### `GET /api/_diag/outcomes-stats`
