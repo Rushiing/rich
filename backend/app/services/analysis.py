@@ -1241,24 +1241,23 @@ def generate(
             raise RuntimeError(
                 "ANTHROPIC_API_KEY not set. Add it in Railway → backend → Variables."
             )
-        # 6/4: timeout=90 + max_retries=0,配合 cron 层 ThreadPoolExecutor
+        # 6/4: timeout=120 + max_retries=0,配合 cron 层 ThreadPoolExecutor
         # 并发(max_workers=5)。
         #
         # 演化:
-        #   - 第一版 timeout=60 + SDK 默认 retry=2 → 实际 worst 3×60=180s/股
-        #     (6/4 11:05 cycle 跑了 67 分钟没结束)
-        #   - 第二版 timeout=60 + max_retries=0 → 13:05 cycle 跑完了但 failed
-        #     30/39=77%,因为 kimi 实际 p77 延迟 > 60s,过激
-        #   - 第三版 (现在) timeout=90 + max_retries=0 + 并发:
-        #     * 单 call 给到 90s 让 60-90s 那批成功
-        #     * 5 并发让 cycle 时间压到 1/5
-        #     * 60 stocks × 90s / 5 并发 = 18 min,fit 30 min cycle
+        #   - timeout=60 + SDK retry=2 → 6/4 11:05 cycle 67min 卡死
+        #   - timeout=60 + max_retries=0 → 13:05 failed 77% (kimi p77 > 60s)
+        #   - timeout=90 + max_retries=0 + 并发 → 14:05 OK,cycle 18 min
+        #   - 6/9 timeout=90 还撞到 detail 页 force=true APITimeoutError
+        #     (300476/688008 重新生成 60s 内没完成 — 可能是 6/9 加 peer
+        #     强引导让 LLM 输出多+慢,或者 kimi 整体波动)。调到 120 让
+        #     单股 call 更可能 cover p90 延迟。
         #
-        # 并发逻辑在 cron.run_smart_intraday_analysis 实现,这里只设单 call
-        # 的协议。debate 模式同一 client,但 batch 流量是 single mode 主导。
+        # 100 stocks × 60% trigger × 120s / 5 并发 = 24 min,接近 30 min
+        # cycle 边界。实际触发率通常 ~20%,20×120/5=8 min,充裕。
         kwargs: dict[str, Any] = {
             "api_key": settings.ANTHROPIC_API_KEY,
-            "timeout": 90.0,
+            "timeout": 120.0,
             "max_retries": 0,
         }
         if settings.ANTHROPIC_BASE_URL:
