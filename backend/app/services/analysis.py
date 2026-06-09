@@ -351,47 +351,81 @@ def _peer_comparison_section(s: "Snapshot | None") -> str:
     - A. prompt 强化为"必须在 deep_analysis 看多/看空理由里至少引用
       1-2 支具体股票代码做对比",从被动判读变主动要求。
     """
-    if s is None or not s.industry_name or s.pe_ratio is None:
-        # 没有本股 PE 就没法算 PE 接近,直接不展示 (同业可比也没意义)
+    if s is None or s.pe_ratio is None:
+        # 没有本股 PE 就没法算 PE 接近,直接不展示
         return ""
     try:
         from sqlalchemy import func
         from ..models import Snapshot
         db = SessionLocal()
         try:
-            # 同行业其它 stock 最新 snapshot (排除自己,且 pe_ratio 必须有)。
-            # B: 按 |peer.pe - self.pe| ASC 取前 5 支,选出真正可比的票
-            # 而不是市值最大的几个 outlier。
-            subq = (
-                db.query(Snapshot.code, func.max(Snapshot.id).label("max_id"))
-                .filter(
-                    Snapshot.industry_name == s.industry_name,
-                    Snapshot.code != s.code,
-                    Snapshot.pe_ratio.isnot(None),
-                )
-                .group_by(Snapshot.code).subquery()
-            )
             self_pe = s.pe_ratio
-            peers = (
-                db.query(Snapshot)
-                .join(subq, Snapshot.id == subq.c.max_id)
-                .order_by(func.abs(Snapshot.pe_ratio - self_pe).asc())
-                .limit(5).all()
-            )
+            same_industry_peers: list = []
+            # 第一阶段:严格 industry_name 匹配
+            if s.industry_name:
+                subq = (
+                    db.query(Snapshot.code, func.max(Snapshot.id).label("max_id"))
+                    .filter(
+                        Snapshot.industry_name == s.industry_name,
+                        Snapshot.code != s.code,
+                        Snapshot.pe_ratio.isnot(None),
+                    )
+                    .group_by(Snapshot.code).subquery()
+                )
+                same_industry_peers = (
+                    db.query(Snapshot)
+                    .join(subq, Snapshot.id == subq.c.max_id)
+                    .order_by(func.abs(Snapshot.pe_ratio - self_pe).asc())
+                    .limit(5).all()
+                )
+
+            # 第二阶段 fallback: 同行业 < 3 支时,跨行业按 PE 接近 + 市值同
+            # 量级补足。300476 (industry='元件') 这种 CNINFO 细分行业池子
+            # 里可能就本股自己,严格匹配会一直空。fallback 至少给 LLM 一些
+            # 可比锚 (按 PE 接近 + 市值 0.3-3x 范围筛)。
+            cross_peers: list = []
+            if len(same_industry_peers) < 3 and s.market_cap:
+                exclude_codes = [p.code for p in same_industry_peers] + [s.code]
+                needed = 5 - len(same_industry_peers)
+                subq2 = (
+                    db.query(Snapshot.code, func.max(Snapshot.id).label("max_id"))
+                    .filter(
+                        Snapshot.code.notin_(exclude_codes),
+                        Snapshot.pe_ratio.isnot(None),
+                        Snapshot.market_cap.isnot(None),
+                        Snapshot.market_cap.between(
+                            s.market_cap / 3, s.market_cap * 3
+                        ),
+                    )
+                    .group_by(Snapshot.code).subquery()
+                )
+                cross_peers = (
+                    db.query(Snapshot)
+                    .join(subq2, Snapshot.id == subq2.c.max_id)
+                    .order_by(func.abs(Snapshot.pe_ratio - self_pe).asc())
+                    .limit(needed).all()
+                )
         finally:
             db.close()
     except Exception as e:
         logger.warning("peer comparison: failed for %s (%s); skipping", s.code, e)
         return ""
 
-    if len(peers) < 3:
-        # 同行业可比股不足 3 支,展示意义不大
+    all_peers = list(same_industry_peers) + list(cross_peers)
+    if len(all_peers) < 1:
+        # 完全没可比 (本股无市值且同行业 0 支),放弃
         return ""
 
-    lines = [
-        f"\n## 同业可比 (行业「{s.industry_name}」内 PE 最接近本股的 {len(peers)} 支)",
-        "格式: 代码 / PE / PB / 今日%",
-    ]
+    industry_label = s.industry_name or "未分类"
+    if cross_peers:
+        title = (
+            f"\n## 同业可比 (行业「{industry_label}」内 {len(same_industry_peers)} 支 "
+            f"+ 跨行业市值同量级 PE 接近 {len(cross_peers)} 支)"
+        )
+    else:
+        title = f"\n## 同业可比 (行业「{industry_label}」内 PE 最接近本股的 {len(all_peers)} 支)"
+    lines = [title, "格式: 代码 / PE / PB / 今日%"]
+    peers = all_peers
     for p in peers:
         pe = f"{p.pe_ratio:.1f}" if p.pe_ratio is not None else "—"
         pb = f"{p.pb_ratio:.2f}" if p.pb_ratio is not None else "—"
@@ -562,8 +596,10 @@ def _data_completeness_prompt_section(comp: dict[str, Any]) -> str:
     lines.append(
         "请基于以上已有维度做判断,信号充分的维度正常打分。"
         "完整度低且关键维度缺失时再下调 confidence。"
-        "**不要**把「数据不全」「数据缺失」「缺资金」等元信息写进 company_tag "
-        "或 one_line_reason —— 那两个字段是给用户看的标签,应该描述公司/股票本身的特征。"
+        "**不要**把「数据不全」「数据缺失」「缺资金」「报告日期解析失败」"
+        "「系统提示」等元信息或调试性文字写进 company_tag / one_line_reason "
+        "/ deep_analysis —— 这些都是给用户看的内容,应该只描述公司/股票本身"
+        "的特征,不暴露系统内部状态。"
     )
     return "\n".join(lines) + "\n"
 
