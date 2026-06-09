@@ -659,61 +659,66 @@ def diag_watchlist_stats():
 
 
 @app.get("/api/_diag/akshare-shareholder-probe")
-def diag_akshare_shareholder_probe():
+def diag_akshare_shareholder_probe(fn: str | None = None):
     """Phase 0 临时 endpoint:试 akshare 股东变动接口名 + 字段结构。
-    确认后写 model/scraper, 然后删掉这个 endpoint (留兜底 1-2 天)。
 
-    试 5 支股票 × 3 个候选接口名,看哪个 return DataFrame + 字段叫什么。
+    调用方式:
+      curl $BASE/api/_diag/akshare-shareholder-probe              # 列候选
+      curl $BASE/api/_diag/akshare-shareholder-probe?fn=NAME      # 试单个接口
+
+    单接口 5s 上限 (复用 scraper._safe_with_timeout),避免 Railway 30s
+    edge timeout。Server 串行 try 15 次会撞 timeout,所以改成 query
+    param 选单个 fn 跑。
     """
-    test_codes = ["600519", "300750", "000858", "002594", "600036"]
-    candidates = [
-        # 巨潮资讯股本变动
-        "stock_share_change_cninfo",
-        # 各交易所股权变动
-        "stock_share_hold_change_szse",
-        "stock_share_hold_change_bse",
-        # 高管增减持
-        "stock_ggcg_em",
-        # 股东持股变动
-        "stock_zh_a_gdhs",
-    ]
     try:
         import akshare as ak
     except Exception as e:
         return {"error": f"akshare import failed: {e}"}
 
-    out: dict = {"akshare_version": getattr(ak, "__version__", "unknown")}
-    for fn_name in candidates:
-        fn = getattr(ak, fn_name, None)
-        if fn is None:
-            out[fn_name] = {"status": "fn_not_in_akshare"}
+    candidates = [
+        "stock_share_change_cninfo",       # 巨潮资讯股本变动
+        "stock_share_hold_change_szse",    # 深交所股东变动
+        "stock_share_hold_change_bse",     # 北交所股东变动
+        "stock_ggcg_em",                   # 东财高管增减持
+        "stock_zh_a_gdhs",                 # 股东户数变化
+    ]
+    version = getattr(ak, "__version__", "unknown")
+
+    # 不带 fn 参数 → 列候选 + 显示哪些函数在当前 akshare 版本里存在
+    if fn is None:
+        return {
+            "akshare_version": version,
+            "candidates": [
+                {"fn": c, "exists": hasattr(ak, c)} for c in candidates
+            ],
+            "usage": "再次 curl 加 ?fn=NAME 试单个接口",
+        }
+
+    target = getattr(ak, fn, None)
+    if target is None:
+        return {"akshare_version": version, "fn": fn, "status": "not_in_akshare"}
+
+    from .services.scraper import _safe_with_timeout
+    test_code = "600519"
+    attempts = [
+        {"symbol": test_code},
+        {"stock": test_code},
+        {},
+    ]
+    out: dict = {"akshare_version": version, "fn": fn}
+    for kw in attempts:
+        df = _safe_with_timeout(target, _timeout=5.0, **kw)
+        if df is None:
+            out[str(kw)] = "timeout_or_error"
             continue
-        # 尝试 3 种常见签名:symbol=code / stock=code / 无参数
-        attempt_kwargs = [
-            {"symbol": test_codes[0]},
-            {"stock": test_codes[0]},
-            {},
-        ]
-        for kw in attempt_kwargs:
-            try:
-                df = fn(**kw)
-                if df is None or len(df) == 0:
-                    out[fn_name] = {"status": "empty", "kw": kw}
-                    continue
-                out[fn_name] = {
-                    "status": "ok",
-                    "kw": kw,
-                    "shape": list(df.shape),
-                    "columns": list(df.columns)[:25],
-                    "sample": df.head(3).astype(str).to_dict(orient="records"),
-                }
-                break
-            except Exception as e:
-                out[fn_name] = {
-                    "status": "error",
-                    "kw": kw,
-                    "error": f"{type(e).__name__}: {str(e)[:200]}",
-                }
+        try:
+            shape = list(df.shape)
+            cols = list(df.columns)[:25]
+            sample = df.head(3).astype(str).to_dict(orient="records")
+            out[str(kw)] = {"shape": shape, "columns": cols, "sample": sample}
+            break  # 成功就停
+        except Exception as e:
+            out[str(kw)] = f"df_processing_error: {type(e).__name__}: {str(e)[:100]}"
     return out
 
 
