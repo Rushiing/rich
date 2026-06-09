@@ -7,23 +7,25 @@ Pipeline:
   2. Filter to watchlist codes + last 90 days
   3. Upsert into `shareholder_changes`,unique by (code, date, person, shares)
 
-Why this data source:
-  Phase 0 probe (6/9) found this is the only `_em` (东财全市场) endpoint
-  that returns event-level insider trading data with明确的 "变动原因" +
-  "成交均价" + "变动股数" + "职务" + "与董监高关系" 字段。其它候选要么
-  只覆盖单个交易所 (SZE/BSE),要么是季度股本结构。
+Why this data source (6/9 corrected):
+  Phase 0 probe initially tried stock_hold_management_person_em which
+  defaults to symbol='001308' name='吴远' (single insider lookup) — that's
+  why we only saw 4 rows. Reading akshare source revealed
+  stock_hold_management_detail_em is the correct market-wide endpoint:
+  paginates 5000 rows/page server-side, returns full event-level history
+  with 变动日期 + 变动股数 + 成交均价 + 变动金额 + 变动原因 + 职务 +
+  与董监高关系 — exactly the LLM signal we want.
 
 Refresh cadence:
   - Manual: POST /api/_diag/refresh-shareholder
   - Cron: daily mon-fri 17:30 BJT (after 17:00 outcomes tick)
 
 Performance:
-  - 接口是市场全量返回,一次性 pull 然后 filter (vs financials per-code 拉
-    模式)。所以不需要 ThreadPoolExecutor,一次 akshare call 拿全量。
-  - 30s timeout (Railway edge cap) 让 akshare 有足够时间返回。Phase 0
-    probe 用 5s 只拿到 4 行,30s 应该能拿到全市场最近若干天的全量。
-  - 如果实际 30s 都不够,降级方案是按时间段分多次拉 (e.g. 按月),但
-    先看 30s 能拉到多少。
+  - stock_hold_management_detail_em pagination: full table can run several
+    pages × 5000 rows × 1-2s/page ≈ 1-3 min wall time
+  - 180s timeout. Note: Railway 30s edge cap只对入站 HTTP,我们的
+    refresh-shareholder endpoint 是 async background thread,出站
+    akshare call 不受限制
 """
 from __future__ import annotations
 
@@ -112,10 +114,11 @@ def pull_for_watchlist(window_days: int = DEFAULT_WINDOW_DAYS) -> dict[str, Any]
             len(codes),
         )
 
-        # 30s — Railway edge cap. Phase 0 5s only returned 4 rows (likely
-        # truncated). 30s should cover the latest few weeks market-wide.
+        # Market-wide pull. 180s timeout: pagination 5000 rows/page can
+        # run several pages. Async worker thread so Railway edge 30s
+        # doesn't apply.
         df = _safe_with_timeout(
-            ak.stock_hold_management_person_em, _timeout=30.0,
+            ak.stock_hold_management_detail_em, _timeout=180.0,
         )
         if df is None:
             logger.warning("shareholder pull: akshare fetch timed out or errored")
