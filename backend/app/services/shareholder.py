@@ -34,13 +34,12 @@ import threading
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
-import akshare as ak
+import requests
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from ..db import SessionLocal
 from ..models import ShareholderChange, Watchlist
-from .scraper import _safe_with_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +61,81 @@ DEFAULT_WINDOW_DAYS = 90
 
 # DB retention — keep more than analysis window for future hit-rate joins.
 RETENTION_DAYS = 365
+
+# 东方财富 datacenter URL — 跟 akshare.stock_hold_management_detail_em
+# 用的同一个 endpoint,但我们自己 control pagination (akshare 内部一次拉
+# 全表几十页,180s 都不够)。
+_EM_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+
+# Max pages to fetch per refresh. 5000 行/页, 2 页 = 10000 events,通常
+# cover 最近 1-3 个月市场全量 (东财日均 100-300 个公告)。够 90 天 window。
+MAX_PAGES = 2
+
+# Per-page request timeout (seconds).
+PAGE_TIMEOUT = 25
+
+
+def _fetch_recent_insider_changes_from_em() -> list[dict[str, Any]]:
+    """Direct call to 东方财富 datacenter, paginated, sorted by date DESC.
+    Bypasses akshare's stock_hold_management_detail_em which paginates ALL
+    pages internally (too slow). We cap at MAX_PAGES so wall time is
+    bounded — 2 pages × ~10s = 20-30s typical."""
+    base_params = {
+        "reportName": "RPT_EXECUTIVE_HOLD_DETAILS",
+        "columns": "ALL",
+        "quoteColumns": "",
+        "filter": "",
+        "pageSize": "5000",
+        # Sort: CHANGE_DATE DESC + SECURITY_CODE + PERSON_NAME (akshare 同款)
+        "sortTypes": "-1,1,1",
+        "sortColumns": "CHANGE_DATE,SECURITY_CODE,PERSON_NAME",
+        "source": "WEB",
+        "client": "WEB",
+    }
+    rows: list[dict[str, Any]] = []
+    for page in range(1, MAX_PAGES + 1):
+        params = {
+            **base_params,
+            "pageNumber": str(page),
+            "p": str(page),
+            "pageNo": str(page),
+            "pageNum": str(page),
+        }
+        try:
+            r = requests.get(_EM_URL, params=params, timeout=PAGE_TIMEOUT)
+            r.raise_for_status()
+            data = r.json()
+            result = data.get("result") or {}
+            page_rows = result.get("data") or []
+            if not page_rows:
+                break
+            rows.extend(page_rows)
+            logger.info(
+                "shareholder fetch: page %d → %d rows (total %d)",
+                page, len(page_rows), len(rows),
+            )
+        except Exception as e:
+            logger.warning("shareholder fetch: page %d failed: %s", page, e)
+            break
+    return rows
+
+
+# Map 东财 raw column names → our schema field names (matches akshare's
+# stock_hold_management_detail_em rename logic).
+_FIELD_MAP = {
+    "SECURITY_CODE": "code",
+    "CHANGE_DATE": "change_date",
+    "PERSON_NAME": "person",
+    "CHANGE_SHARES": "change_shares",
+    "AVERAGE_PRICE": "avg_price",
+    "CHANGE_AMOUNT": "change_amount",
+    "CHANGE_REASON": "change_reason",
+    "CHANGE_RATIO": "change_pct",
+    "CHANGE_AFTER_HOLDNUM": "holdings_after",
+    "DSE_PERSON_NAME": "insider_name",
+    "POSITION_NAME": "role",
+    "PERSON_DSE_RELATION": "relation",
+}
 
 
 def _f(v) -> float | None:
@@ -109,19 +183,18 @@ def pull_for_watchlist(window_days: int = DEFAULT_WINDOW_DAYS) -> dict[str, Any]
             })
 
         logger.info(
-            "shareholder pull: starting market-wide fetch "
-            "(will filter to %d watchlist codes)",
-            len(codes),
+            "shareholder pull: fetching from 东财 datacenter (max %d pages × "
+            "5000), will filter to %d watchlist codes",
+            MAX_PAGES, len(codes),
         )
 
-        # Market-wide pull. 180s timeout: pagination 5000 rows/page can
-        # run several pages. Async worker thread so Railway edge 30s
-        # doesn't apply.
-        df = _safe_with_timeout(
-            ak.stock_hold_management_detail_em, _timeout=180.0,
-        )
-        if df is None:
-            logger.warning("shareholder pull: akshare fetch timed out or errored")
+        raw_rows = _fetch_recent_insider_changes_from_em()
+        rows_seen = len(raw_rows)
+        with _progress_lock:
+            _progress["rows_seen"] = rows_seen
+
+        if rows_seen == 0:
+            logger.warning("shareholder pull: 0 rows from 东财 endpoint")
             with _progress_lock:
                 _progress["failed"] = 1
             return {
@@ -129,53 +202,52 @@ def pull_for_watchlist(window_days: int = DEFAULT_WINDOW_DAYS) -> dict[str, Any]
                 "rows_upserted": 0, "failed": 1, "fetch_failed": True,
             }
 
-        rows_seen = len(df)
-        with _progress_lock:
-            _progress["rows_seen"] = rows_seen
-        logger.info("shareholder pull: akshare returned %d rows", rows_seen)
+        logger.info("shareholder pull: 东财 returned %d rows", rows_seen)
 
         cutoff_date = (
             datetime.now(timezone.utc).date() - timedelta(days=window_days)
         )
 
         upserts = 0
-        for _, row in df.iterrows():
-            code = _s(row.get("代码"), 6)
+        for row in raw_rows:
+            code = _s(row.get("SECURITY_CODE"), 6)
             if code is None or code not in codes:
                 continue
-            date_str = _s(row.get("日期"), 10)
-            if date_str is None:
+            # CHANGE_DATE format from 东财: "2024-12-15 00:00:00"
+            date_raw = _s(row.get("CHANGE_DATE"), 19)
+            if date_raw is None:
                 continue
+            date_str = date_raw[:10]
             try:
-                d = datetime.strptime(date_str[:10], "%Y-%m-%d").date()
+                d = datetime.strptime(date_str, "%Y-%m-%d").date()
             except ValueError:
                 continue
             if d < cutoff_date:
                 continue
 
-            person = _s(row.get("变动人"), 40) or "未知"
-            shares = _f(row.get("变动股数"))
+            person = _s(row.get("PERSON_NAME"), 40) or "未知"
+            shares = _f(row.get("CHANGE_SHARES"))
 
             existing = db.query(ShareholderChange).filter_by(
                 code=code,
-                change_date=date_str[:10],
+                change_date=date_str,
                 person=person,
                 change_shares=shares,
             ).first()
 
             attrs = {
                 "code": code,
-                "change_date": date_str[:10],
+                "change_date": date_str,
                 "person": person,
                 "change_shares": shares,
-                "avg_price": _f(row.get("成交均价")),
-                "change_amount": _f(row.get("变动金额")),
-                "change_reason": _s(row.get("变动原因"), 40),
-                "change_pct": _f(row.get("变动比例")),
-                "holdings_after": _f(row.get("变动后持股数")),
-                "insider_name": _s(row.get("董监高人员姓名"), 40),
-                "role": _s(row.get("职务"), 40),
-                "relation": _s(row.get("变动人与董监高的关系"), 20),
+                "avg_price": _f(row.get("AVERAGE_PRICE")),
+                "change_amount": _f(row.get("CHANGE_AMOUNT")),
+                "change_reason": _s(row.get("CHANGE_REASON"), 40),
+                "change_pct": _f(row.get("CHANGE_RATIO")),
+                "holdings_after": _f(row.get("CHANGE_AFTER_HOLDNUM")),
+                "insider_name": _s(row.get("DSE_PERSON_NAME"), 40),
+                "role": _s(row.get("POSITION_NAME"), 40),
+                "relation": _s(row.get("PERSON_DSE_RELATION"), 20),
             }
             if existing:
                 for k, v in attrs.items():
