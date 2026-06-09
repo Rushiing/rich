@@ -658,6 +658,65 @@ def diag_watchlist_stats():
     }
 
 
+@app.get("/api/_diag/akshare-shareholder-probe")
+def diag_akshare_shareholder_probe():
+    """Phase 0 临时 endpoint:试 akshare 股东变动接口名 + 字段结构。
+    确认后写 model/scraper, 然后删掉这个 endpoint (留兜底 1-2 天)。
+
+    试 5 支股票 × 3 个候选接口名,看哪个 return DataFrame + 字段叫什么。
+    """
+    test_codes = ["600519", "300750", "000858", "002594", "600036"]
+    candidates = [
+        # 巨潮资讯股本变动
+        "stock_share_change_cninfo",
+        # 各交易所股权变动
+        "stock_share_hold_change_szse",
+        "stock_share_hold_change_bse",
+        # 高管增减持
+        "stock_ggcg_em",
+        # 股东持股变动
+        "stock_zh_a_gdhs",
+    ]
+    try:
+        import akshare as ak
+    except Exception as e:
+        return {"error": f"akshare import failed: {e}"}
+
+    out: dict = {"akshare_version": getattr(ak, "__version__", "unknown")}
+    for fn_name in candidates:
+        fn = getattr(ak, fn_name, None)
+        if fn is None:
+            out[fn_name] = {"status": "fn_not_in_akshare"}
+            continue
+        # 尝试 3 种常见签名:symbol=code / stock=code / 无参数
+        attempt_kwargs = [
+            {"symbol": test_codes[0]},
+            {"stock": test_codes[0]},
+            {},
+        ]
+        for kw in attempt_kwargs:
+            try:
+                df = fn(**kw)
+                if df is None or len(df) == 0:
+                    out[fn_name] = {"status": "empty", "kw": kw}
+                    continue
+                out[fn_name] = {
+                    "status": "ok",
+                    "kw": kw,
+                    "shape": list(df.shape),
+                    "columns": list(df.columns)[:25],
+                    "sample": df.head(3).astype(str).to_dict(orient="records"),
+                }
+                break
+            except Exception as e:
+                out[fn_name] = {
+                    "status": "error",
+                    "kw": kw,
+                    "error": f"{type(e).__name__}: {str(e)[:200]}",
+                }
+    return out
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
