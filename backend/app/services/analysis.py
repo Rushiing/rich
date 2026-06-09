@@ -1342,27 +1342,66 @@ def generate(
         "tools": [ANALYSIS_TOOL],
         "messages": [{"role": "user", "content": base_user + debate_suffix}],
     }
-    try:
-        msg = client.messages.create(
-            **base_kwargs,
-            tool_choice={"type": "tool", "name": "submit_analysis"},
-        )
-    except Exception as e:
-        # Cheap signature check — most "tool_choice not supported" errors come
-        # back as a 400 with a message mentioning tool_choice.
-        if "tool_choice" in str(e) or "400" in str(e):
-            logger.info("model %s rejected forced tool_choice; retrying with 'any'", model)
-            msg = client.messages.create(**base_kwargs, tool_choice={"type": "any"})
-        else:
-            raise
+    def _call_once():
+        """One LLM round-trip. Returns (msg, tool_use, error_tag) tuple.
+        error_tag is None on success, or a short string when output is
+        unusable (truncated JSON, missing tool_use, missing required
+        fields) — caller decides whether to retry."""
+        try:
+            local_msg = client.messages.create(
+                **base_kwargs,
+                tool_choice={"type": "tool", "name": "submit_analysis"},
+            )
+        except Exception as e:
+            if "tool_choice" in str(e) or "400" in str(e):
+                logger.info("model %s rejected forced tool_choice; retrying with 'any'", model)
+                local_msg = client.messages.create(**base_kwargs, tool_choice={"type": "any"})
+            else:
+                raise
 
-    tool_use = next((b for b in msg.content if getattr(b, "type", None) == "tool_use"), None)
-    if tool_use is None:
-        raise RuntimeError("model did not return a tool_use block")
+        local_tu = next(
+            (b for b in local_msg.content if getattr(b, "type", None) == "tool_use"),
+            None,
+        )
+        if local_tu is None:
+            logger.warning(
+                "no tool_use block. stop_reason=%s, usage=%s",
+                getattr(local_msg, "stop_reason", None),
+                getattr(local_msg, "usage", None),
+            )
+            return local_msg, None, "no_tool_use"
+
+        local_payload = local_tu.input
+        if not isinstance(local_payload, dict) or "key_table" not in local_payload \
+                or "deep_analysis" not in local_payload:
+            # 输出被截断/不完整。常见原因: stream 中断 (dashscope 偶发),
+            # 或 LLM 自己写到一半停了。caller retry 1 次大概率 OK。
+            raw = getattr(local_tu, "raw_arguments", None) or local_payload
+            logger.warning(
+                "tool_use incomplete. stop_reason=%s, usage=%s, payload_keys=%s, raw_start=%r",
+                getattr(local_msg, "stop_reason", None),
+                getattr(local_msg, "usage", None),
+                list(local_payload.keys()) if isinstance(local_payload, dict) else type(local_payload).__name__,
+                str(raw)[:200],
+            )
+            return local_msg, local_tu, "incomplete_input"
+
+        return local_msg, local_tu, None
+
+    # App-level retry: kimi/dashscope 偶发 stream 截断或 partial JSON,
+    # 一次重试大概率成功。SDK 层 max_retries=0 不变 (避免 SDK retry
+    # 内联 backoff 让单 call 时长爆增)。
+    msg, tool_use, err_tag = _call_once()
+    if err_tag is not None:
+        logger.info("analysis[%s] %s on first try, retrying once...", code, err_tag)
+        msg, tool_use, err_tag = _call_once()
+        if err_tag is not None:
+            raise RuntimeError(
+                f"LLM output unusable after 1 retry (err={err_tag}). "
+                f"stop_reason={getattr(msg, 'stop_reason', None)}"
+            )
 
     payload: dict[str, Any] = tool_use.input  # type: ignore[assignment]
-    if "key_table" not in payload or "deep_analysis" not in payload:
-        raise RuntimeError(f"unexpected tool input: {json.dumps(payload)[:200]}")
 
     # Strip analysis_thinking — it's the CoT scratchpad, useful for the
     # model but not for display / persistence. Log a snippet so we can
