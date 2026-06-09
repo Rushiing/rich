@@ -705,6 +705,60 @@ def diag_refresh_shareholder_status():
     }
 
 
+@app.get("/api/_diag/render-prompt")
+def diag_render_prompt(code: str):
+    """Render the actual _user_prompt for a stock and return it as plain
+    text. Useful for verifying that newly-added sections (shareholder /
+    peer comparison / market context) actually inject content vs returning
+    '' due to fail-safe paths.
+
+    Usage:
+      curl "$BASE/api/_diag/render-prompt?code=688008"
+    """
+    from sqlalchemy import desc
+    from sqlalchemy.orm import Session
+    from .db import SessionLocal
+    from .models import Snapshot, Watchlist
+    from .services.analysis import _user_prompt, compute_data_completeness
+
+    db: Session = SessionLocal()
+    try:
+        w = db.query(Watchlist).filter(Watchlist.code == code).first()
+        if not w:
+            return {"error": f"{code} not in watchlist"}
+        s = (
+            db.query(Snapshot)
+            .filter(Snapshot.code == code)
+            .order_by(desc(Snapshot.id))
+            .first()
+        )
+        if s is None:
+            return {"error": f"no snapshot for {code}"}
+
+        data_comp = compute_data_completeness(s, code)
+        prompt = _user_prompt(w, s, data_completeness=data_comp)
+
+        # Section presence checks — quick visual indicator without scrolling
+        # the full prompt.
+        sections = {
+            "shareholder": "## 内部人交易" in prompt,
+            "peer": "## 同业可比" in prompt,
+            "market": "## 大盘与板块表现" in prompt,
+            "data_completeness": "## 输入数据状态" in prompt,
+        }
+
+        return {
+            "code": code,
+            "name": w.name,
+            "data_completeness": data_comp,
+            "prompt_length_chars": len(prompt),
+            "sections_present": sections,
+            "prompt": prompt,
+        }
+    finally:
+        db.close()
+
+
 @app.get("/api/_diag/akshare-shareholder-probe")
 def diag_akshare_shareholder_probe(fn: str | None = None):
     """Phase 0 临时 endpoint:试 akshare 股东变动接口名 + 字段结构。
