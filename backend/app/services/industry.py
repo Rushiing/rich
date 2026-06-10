@@ -31,39 +31,56 @@ logger = logging.getLogger(__name__)
 REFRESH_AGE_DAYS = 7  # consider rows older than this stale + worth re-pulling
 
 
-def _fetch_industry(code: str) -> str | None:
-    """Resolve a code's 所属行业.
+# Cap for the stored 主营业务 text. CNINFO's field is usually one tight
+# sentence, but a few companies dump their entire 经营范围 in it — the
+# prompt only needs the gist, not a regulatory filing.
+_BUSINESS_DESC_MAX_CHARS = 200
+
+
+def _fetch_profile(code: str) -> tuple[str | None, str | None]:
+    """Resolve a code's (所属行业, 主营业务).
 
     Two sources tried in order:
     1. CNINFO `stock_profile_cninfo` — reachable from Railway (vs. the
        eastmoney-backed stock_individual_info_em which gets blocked at
        push2.eastmoney.com). Provides a coarser-grained 国民经济行业分类
-       (e.g., '酒、饮料和精制茶制造业') but stable and complete.
-    2. eastmoney fallback — only fires when CNINFO returns nothing.
+       (e.g., '酒、饮料和精制茶制造业') but stable and complete. Same row
+       also carries 主营业务 — fetched in the same call, zero extra cost.
+    2. eastmoney fallback — only fires when CNINFO returns nothing;
+       industry only (no business desc on that endpoint shape).
 
-    Returned name is the canonical key downstream code groups by.
+    Returned industry name is the canonical key downstream code groups by.
     """
     # Primary: CNINFO
     df = _safe_with_timeout(ak.stock_profile_cninfo, symbol=code, _timeout=8.0)
     if df is not None and len(df) > 0:
         try:
-            v = str(df.iloc[0].get("所属行业") or "").strip()
-            if v:
-                return v
+            row = df.iloc[0]
+            industry = str(row.get("所属行业") or "").strip() or None
+            business = str(row.get("主营业务") or "").strip() or None
+            if business and len(business) > _BUSINESS_DESC_MAX_CHARS:
+                business = business[:_BUSINESS_DESC_MAX_CHARS] + "…"
+            if industry:
+                return industry, business
         except Exception:
             pass
     # Fallback: eastmoney (most likely fails on Railway, kept for dev/local)
     df = _safe_with_timeout(ak.stock_individual_info_em, symbol=code, _timeout=8.0)
     if df is None or len(df) == 0:
-        return None
+        return None, None
     try:
         match = df[df["item"] == "行业"]
         if len(match) == 0:
-            return None
+            return None, None
         v = str(match.iloc[0]["value"]).strip()
-        return v or None
+        return (v or None), None
     except Exception:
-        return None
+        return None, None
+
+
+def _fetch_industry(code: str) -> str | None:
+    """Back-compat shim — industry name only."""
+    return _fetch_profile(code)[0]
 
 
 def refresh_industry_meta(codes: Iterable[str] | None = None) -> dict:
@@ -91,17 +108,24 @@ def refresh_industry_meta(codes: Iterable[str] | None = None) -> dict:
                 ua = row.updated_at
                 if ua and ua.tzinfo is None:
                     ua = ua.replace(tzinfo=timezone.utc)
-                if ua and ua >= cutoff:
+                # business_desc is None on rows written before 6/10 — re-pull
+                # those even when otherwise fresh so the prompt's 主营业务
+                # line fills in on the next refresh pass.
+                if ua and ua >= cutoff and row.business_desc:
                     skipped += 1
                     continue
-            industry = _fetch_industry(code)
+            industry, business = _fetch_profile(code)
             if industry is None:
                 failed += 1
                 continue
             if row is None:
-                db.add(IndustryMeta(code=code, industry_name=industry))
+                db.add(IndustryMeta(
+                    code=code, industry_name=industry, business_desc=business,
+                ))
             else:
                 row.industry_name = industry
+                if business:
+                    row.business_desc = business
                 row.updated_at = datetime.now(timezone.utc)
             refreshed += 1
         db.commit()
@@ -123,6 +147,20 @@ def get_industry_map(codes: Iterable[str] | None = None) -> dict[str, str]:
                 return {}
             q = q.filter(IndustryMeta.code.in_(codes))
         return {c: n for c, n in q.all()}
+    finally:
+        db.close()
+
+
+def get_business_desc(code: str) -> str | None:
+    """主营业务 for one code, or None when not yet pulled. Read by the
+    analysis prompt builder — fail-safe there, so a missing row just means
+    the prompt omits the line."""
+    db: Session = SessionLocal()
+    try:
+        row = db.query(IndustryMeta.business_desc).filter(
+            IndustryMeta.code == code
+        ).first()
+        return row[0] if row and row[0] else None
     finally:
         db.close()
 

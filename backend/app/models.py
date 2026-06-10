@@ -3,7 +3,7 @@ from typing import Any
 
 from sqlalchemy import (
     BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, JSON,
-    String, UniqueConstraint, func,
+    String, Text, UniqueConstraint, func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -253,6 +253,11 @@ class IndustryMeta(Base):
     code: Mapped[str] = mapped_column(String(6), primary_key=True)
     industry_name: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
     industry_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # 6/10: CNINFO 主营业务 — injected into the analysis prompt so the
+    # LLM's 公司画像 stops depending on its (possibly stale or plain wrong)
+    # world knowledge about what the company actually does. Same upstream
+    # call as industry_name, no extra fetch cost.
+    business_desc: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
     )

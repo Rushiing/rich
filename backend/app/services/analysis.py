@@ -166,6 +166,8 @@ def compute_data_completeness(s: Snapshot | None, code: str) -> dict[str, Any]:
             "missing": ["snapshot"],
             "stale": [],
             "intraday_skipped": [],
+            "info_missing": [],
+            "peer_count": None,
         }
 
     is_intraday = _is_intraday()
@@ -253,6 +255,10 @@ def compute_data_completeness(s: Snapshot | None, code: str) -> dict[str, Any]:
     # 不进 score 是因为这些是"可选信号",有的话 confidence 可以更高,
     # 没有的话不算"输入质量差" — 跟 missing/stale 不同语义。
     info_missing: list[str] = []
+    # peer_count exposed in the result (None = unknown/no industry) so the
+    # prompt builder can suppress the self-referential 行业均值/分位 lines
+    # when the industry pool is too thin to mean anything.
+    peer_count: int | None = None
     if s is not None:
         # 同业可比: 同行业 < 3 个 stock 在 snapshot 池里就算 "可比股不足"
         try:
@@ -291,6 +297,7 @@ def compute_data_completeness(s: Snapshot | None, code: str) -> dict[str, Any]:
         "stale": stale,
         "intraday_skipped": intraday_skipped,
         "info_missing": info_missing,
+        "peer_count": peer_count,
     }
 
 
@@ -1039,6 +1046,13 @@ def _user_prompt(
     bull/bear roles which reuse the base prompt) don't have to compute
     completeness separately. They still get the market/sector context.
     """
+    # 行业池太薄(同业 <3 支)时,industry_pe_avg 基本就是本股自己在
+    # 自我印证("行业均值 69.7"=自己的 PE),分位恒为 0/100 — 这种数字
+    # 喂给 LLM 是误导锚而不是信息。peer_count=None(旧调用方/无行业)
+    # 时保持原行为不抑制。
+    _pc = (data_completeness or {}).get("peer_count")
+    show_industry_ctx = not (_pc is not None and _pc < 3)
+
     if s is None:
         snap_section = "（暂无 snapshot 数据，请基于代码、名称、市场常识做最低限度的判断，并显著降低置信度。）"
     else:
@@ -1063,11 +1077,12 @@ def _user_prompt(
         valuation_section = (
             f"市盈率(PE,动态): {s.pe_ratio if s.pe_ratio is not None else '未知'}"
             + (f"  (行业均值 {s.industry_pe_avg:.1f}, 本股分位 {s.industry_pe_pctile:.0f}%)"
-               if s.industry_pe_avg is not None and s.industry_pe_pctile is not None else "")
+               if show_industry_ctx and s.industry_pe_avg is not None
+               and s.industry_pe_pctile is not None else "")
             + "\n"
             + f"市净率(PB): {s.pb_ratio if s.pb_ratio is not None else '未知'}"
             + (f"  (行业均值 {s.industry_pb_avg:.2f})"
-               if s.industry_pb_avg is not None else "")
+               if show_industry_ctx and s.industry_pb_avg is not None else "")
             + "\n"
             + f"换手率: {f'{s.turnover_rate:.2f}%' if s.turnover_rate is not None else '未知'}\n"
             + f"总市值: {_yi(s.market_cap)}\n"
@@ -1083,12 +1098,12 @@ def _user_prompt(
                 f"\n## 近3日表现\n"
                 + f"3日涨幅: {f'{s.change_pct_3d:+.2f}%' if s.change_pct_3d is not None else '未知'}"
                 + (f"  (行业分位 {s.industry_change_3d_pctile:.0f}%)"
-                   if s.industry_change_3d_pctile is not None else "")
+                   if show_industry_ctx and s.industry_change_3d_pctile is not None else "")
                 + "\n"
                 + f"3日累计换手率: {f'{s.turnover_rate_3d:.2f}%' if s.turnover_rate_3d is not None else '未知'}\n"
                 + f"3日主力净流入: {_yi(s.net_flow_3d) if s.net_flow_3d is not None else '未知'}"
                 + (f"  (行业分位 {s.industry_flow_3d_pctile:.0f}%)"
-                   if s.industry_flow_3d_pctile is not None else "")
+                   if show_industry_ctx and s.industry_flow_3d_pctile is not None else "")
                 + "\n"
             )
         industry_line = (
@@ -1217,6 +1232,19 @@ def _user_prompt(
     # 大盘+板块 context. Fail-safe internally — returns '' on upstream error.
     market_ctx = _market_and_sector_context(s.industry_name if s else None)
 
+    # 6/10: 主营业务 from CNINFO (cached in industry_meta). 公司画像此前
+    # 完全依赖模型对公司的世界知识 — 小盘股/转型过主业的票,模型可能在
+    # 用过时记忆编故事。给真实主营业务,把这块幻觉面收掉。Fail-safe:
+    # 没有行就不渲染这行。
+    business_line = ""
+    try:
+        from . import industry as industry_svc
+        biz = industry_svc.get_business_desc(w.code)
+        if biz:
+            business_line = f"主营业务: {biz}\n"
+    except Exception:
+        pass
+
     # Data completeness section (only when caller provided the dict — i.e.
     # the normal generate() path; debate sub-roles reuse base_user and
     # don't need it duplicated).
@@ -1226,7 +1254,7 @@ def _user_prompt(
     )
 
     return (
-        f"## 标的\n代码: {w.code}\n名称: {w.name}\n市场: {w.exchange}\n\n"
+        f"## 标的\n代码: {w.code}\n名称: {w.name}\n市场: {w.exchange}\n{business_line}\n"
         f"## 最新 snapshot\n{snap_section}\n"
         f"{shareholder_section}"
         f"{peer_section}"
