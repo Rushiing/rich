@@ -189,6 +189,23 @@ day after deploy before the first scored rows appear.
 curl -s "$BASE/api/_diag/nd-outlook-stats" | python3 -m json.tool
 ```
 
+### `POST /api/_diag/pool-tick` / `GET /api/_diag/pool-status`
+虚拟预选池 (B1, 6/10) manual tick + status. The tick evaluates active
+pool entries against the latest qfq closes (eliminate on invalidation /
+promote after ≥5 clean days), then scans the two entry channels (rules:
+breakout_20d+big_inflow+profit>0+non-ST; sector_picks: today's cached
+picks). ASYNC — per-code kline pulls; poll pool-status for `last_result`.
+Normally fired by cron at 16:45 BJT.
+
+**Call when**: bootstrapping the pool after deploy, or re-running after
+a missed cron. pool-status also returns the full pool overview (same
+payload as the authed `/api/pool`) for headless inspection.
+
+```bash
+curl -s -X POST "$BASE/api/_diag/pool-tick"
+curl -s "$BASE/api/_diag/pool-status" | python3 -m json.tool
+```
+
 ### `GET /api/_diag/outcomes-detail`
 Raw distribution of the `analysis_outcomes` table — diagnoses why
 `outcomes-stats` is sparse. Shows total / scored split by actionable,

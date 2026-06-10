@@ -79,24 +79,20 @@ LLM 最后剩下的职责是「把证据组织成人话」。
 复用 outcomes 锚点机制做池内表现追踪。核心洞察：买入建议 d1 命中仅 29.3%
 （追高后均值回归），观察期天然过滤冲高回落的票。
 
-### B0 · 池子模型（~2-3 天）
+### B0+B1+B2(v1) · 池子模型 + 双通道 + 观察期引擎 ✅ 6/10 完成
 
-- `VirtualPool` 表：code、入池时间、入池价、来源、thesis、状态机
-  （观察中→可推荐→已推荐→淘汰）
-- thesis = 可证伪的看多论文，复用 debate 的 bull tool schema
-  （thesis + key_points + catalysts + target_price），catalyst 写成可机器验证的条件
-
-### B1 · 入池双通道（~1 周）
-
-- 规则通道：signals 筛（breakout_20d + big_inflow + profit_yoy>0 + 非 ST）
-- LLM 通道：sector_picks 每日 15 支直接作为候选
-- 来源打标签 — 一个月后数据说话哪个通道靠谱
-
-### B2 · 观察期引擎（~1 周）
-
-- 每日 cron 跑 thesis checkpoint：catalyst 兑现几条、池内收益、最大回撤
-- 触发失效条件 → 淘汰（败例保留，是最有价值的数据）
-- 观察 ≥N 天 + 兑现 ≥2/3 + 池内表现为正 → 升级「可推荐」
+- [x] `PoolEntry`（virtual_pool 表）：observing→recommendable→(recommended
+  预留 B3)→eliminated；淘汰行保留终值（败例是数据）；价格全走 qfq K 线
+  （池外代码 `pull_one` 按需拉），天然除权安全
+- [x] 双通道入池（source 打标，一个月后数据说话哪个通道靠谱）：
+  rules = breakout_20d + big_inflow + 净利同比>0 + 非 ST；
+  sector_picks = 当日已生成的板块精选（不强制 LLM call）
+- [x] 观察期引擎并入同一 tick（16:45 cron）：失效线 = 入池价 -7% 或
+  入池 3 日后破 MA20；晋升 = ≥5 交易日 + 正收益 + 站上 MA20
+- [x] `GET /api/pool` + `/pool` 只读页（TopNav 入口）+ diag pool-tick/status
+- **v1 有意收窄**：thesis 只存机器可验证的价格规则 + 入池证据，不存 LLM
+  自由文本 catalyst（避免重蹈 valid_window 不可验证的坑）。bull-schema
+  LLM thesis + catalyst checkpoint 为 B2.5 升级项，等价格规则环路先跑出数据。
 
 ### B3 · 推荐卡片 + 池子净值（~1 周）
 
