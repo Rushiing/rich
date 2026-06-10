@@ -145,10 +145,47 @@ def backfill_outcomes() -> dict:
     return {"scanned": scanned, "filled": filled}
 
 
+def _gen_day(o: AnalysisOutcome) -> str:
+    d = o.generated_at
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=timezone.utc)
+    return d.date().isoformat()
+
+
+def _median(vals: list[float]) -> float:
+    s = sorted(vals)
+    n = len(s)
+    mid = n // 2
+    return s[mid] if n % 2 else (s[mid - 1] + s[mid]) / 2
+
+
+def _is_hit(actionable: str, ret: float) -> bool:
+    if actionable == "建议买入":
+        return ret > 0
+    if actionable == "建议卖出":
+        return ret < 0
+    return False
+
+
 def hit_rate_stats() -> dict[str, Any]:
     """Compute hit-rate summary grouped by actionable verdict + prompt
     version. A 'hit' for 建议买入 = return_d5 > 0; for 建议卖出 =
     return_d5 < 0; others are not scored (no directional claim).
+
+    6/10 honesty pass — two systematic biases in the raw numbers are now
+    surfaced instead of hidden:
+
+    - excess_return_d5: raw avg_return conflates skill with market beta
+      (in a falling tape every 卖出 "hits"). Baseline = same-generation-day
+      median return_d5 across ALL scored anchors (any verdict) — i.e. "the
+      watchlist that day". Per-anchor excess = return − baseline; we report
+      the bucket average. Positive excess on 买入 / negative on 卖出 is
+      skill the market can't explain.
+    - n_unique + hit_rate_dedup: the smart cron re-anchors the same stock
+      on every 1.5% move, so one trending stock can contribute dozens of
+      correlated "hits". Dedup keeps the LAST anchor per (code, day) —
+      end-of-day verdict — and recomputes the hit rate on that set. The
+      gap between hit_rate and hit_rate_dedup is the clustering inflation.
 
     Returns a dict the diag endpoint serializes directly."""
     db: Session = SessionLocal()
@@ -161,6 +198,21 @@ def hit_rate_stats() -> dict[str, Any]:
     finally:
         db.close()
 
+    # Same-day baseline: median return_d5 of all scored anchors that day.
+    by_day: dict[str, list[float]] = {}
+    for o in rows:
+        by_day.setdefault(_gen_day(o), []).append(o.return_d5)
+    day_baseline = {day: _median(vals) for day, vals in by_day.items()}
+
+    # Dedup set: last anchor per (code, gen_day).
+    last_per_code_day: dict[tuple, AnalysisOutcome] = {}
+    for o in rows:
+        key = (o.code, _gen_day(o))
+        cur = last_per_code_day.get(key)
+        if cur is None or o.generated_at > cur.generated_at:
+            last_per_code_day[key] = o
+    dedup_ids = {id(o) for o in last_per_code_day.values()}
+
     # Bucket by (prompt_version, actionable)
     buckets: dict[tuple, dict[str, Any]] = {}
     for o in rows:
@@ -168,28 +220,132 @@ def hit_rate_stats() -> dict[str, Any]:
         b = buckets.setdefault(key, {
             "prompt_version": o.prompt_version or "?",
             "actionable": o.actionable,
-            "n": 0, "hits": 0, "sum_return_d5": 0.0,
+            "n": 0, "hits": 0, "sum_return_d5": 0.0, "sum_excess_d5": 0.0,
+            "n_unique": 0, "hits_unique": 0,
         })
         b["n"] += 1
         b["sum_return_d5"] += o.return_d5
-        if o.actionable == "建议买入" and o.return_d5 > 0:
+        b["sum_excess_d5"] += o.return_d5 - day_baseline[_gen_day(o)]
+        hit = _is_hit(o.actionable, o.return_d5)
+        if hit:
             b["hits"] += 1
-        elif o.actionable == "建议卖出" and o.return_d5 < 0:
-            b["hits"] += 1
+        if id(o) in dedup_ids:
+            b["n_unique"] += 1
+            if hit:
+                b["hits_unique"] += 1
 
     summary = []
     for b in buckets.values():
         n = b["n"]
+        nu = b["n_unique"]
         directional = b["actionable"] in ("建议买入", "建议卖出")
         summary.append({
             "prompt_version": b["prompt_version"],
             "actionable": b["actionable"],
             "n": n,
+            "n_unique": nu,
             "hit_rate": round(b["hits"] / n * 100, 1) if (directional and n) else None,
+            "hit_rate_dedup": round(b["hits_unique"] / nu * 100, 1) if (directional and nu) else None,
             "avg_return_d5": round(b["sum_return_d5"] / n, 2) if n else None,
+            "excess_return_d5": round(b["sum_excess_d5"] / n, 2) if n else None,
         })
     summary.sort(key=lambda x: (x["prompt_version"], x["actionable"]))
     return {"total_scored": len(rows), "buckets": summary}
+
+
+# 看平 band for nd_outlook_stats: |d1 return| within this % counts as a
+# correct 看平 call. 1.0% ≈ a third of A-share daily典型振幅 — tight
+# enough that 看平 isn't a free hit in any quiet tape.
+ND_FLAT_BAND_PCT = 1.0
+
+
+def nd_outlook_stats() -> dict[str, Any]:
+    """Score next_day_outlook.trend against the actual next-day return.
+
+    Scoring (vs d1 return):
+      看涨 hit ⇔ ret > 0;  看跌 hit ⇔ ret < 0;
+      看平 hit ⇔ |ret| ≤ ND_FLAT_BAND_PCT.
+
+    Return basis: anchor_close → close_d1 when both available (dividend-
+    safe, same qfq series); falls back to legacy return_d1 otherwise —
+    `basis` counters expose the mix.
+
+    Grouped two ways: by trend (is the directional claim worth anything?)
+    and by nd_confidence (does its own 高/中/低 self-assessment stratify?).
+    Anchors without nd_trend (pre-6/10) are excluded."""
+    db: Session = SessionLocal()
+    try:
+        rows = (
+            db.query(AnalysisOutcome)
+            .filter(
+                AnalysisOutcome.nd_trend.isnot(None),
+                AnalysisOutcome.close_d1.isnot(None),
+            )
+            .all()
+        )
+    finally:
+        db.close()
+
+    basis = {"anchor_close": 0, "anchor_price": 0}
+
+    def _d1_ret(o: AnalysisOutcome) -> float | None:
+        if o.anchor_close and o.close_d1 is not None:
+            basis["anchor_close"] += 1
+            return (o.close_d1 - o.anchor_close) / o.anchor_close * 100.0
+        if o.return_d1 is not None:
+            basis["anchor_price"] += 1
+            return o.return_d1
+        return None
+
+    def _nd_hit(trend: str, ret: float) -> bool:
+        if trend == "看涨":
+            return ret > 0
+        if trend == "看跌":
+            return ret < 0
+        if trend == "看平":
+            return abs(ret) <= ND_FLAT_BAND_PCT
+        return False
+
+    by_trend: dict[str, dict[str, Any]] = {}
+    by_conf: dict[str, dict[str, Any]] = {}
+    scored = 0
+    for o in rows:
+        ret = _d1_ret(o)
+        if ret is None:
+            continue
+        scored += 1
+        hit = _nd_hit(o.nd_trend, ret)
+        t = by_trend.setdefault(o.nd_trend, {"n": 0, "hits": 0, "sum": 0.0})
+        t["n"] += 1
+        t["sum"] += ret
+        if hit:
+            t["hits"] += 1
+        c = by_conf.setdefault(o.nd_confidence or "?", {"n": 0, "hits": 0, "sum": 0.0})
+        c["n"] += 1
+        c["sum"] += ret
+        if hit:
+            c["hits"] += 1
+
+    def _fmt(d: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+        out = []
+        for k, v in d.items():
+            n = v["n"]
+            out.append({
+                "group": k,
+                "n": n,
+                "hit_rate": round(v["hits"] / n * 100, 1) if n else None,
+                "avg_return_d1": round(v["sum"] / n, 2) if n else None,
+            })
+        out.sort(key=lambda x: -x["n"])
+        return out
+
+    return {
+        "scored": scored,
+        "flat_band_pct": ND_FLAT_BAND_PCT,
+        "return_basis": basis,
+        "by_trend": _fmt(by_trend),
+        "by_nd_confidence": _fmt(by_conf),
+    }
 
 
 def hit_rate_by_confidence() -> dict[str, Any]:

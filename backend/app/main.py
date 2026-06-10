@@ -324,10 +324,24 @@ def diag_klines_status():
 def diag_outcomes_stats():
     """Hit-rate summary grouped by prompt_version + actionable verdict.
     A 'hit' = 建议买入 with return_d5 > 0, or 建议卖出 with return_d5 < 0.
+    6/10: each bucket also carries excess_return_d5 (vs same-day all-anchor
+    median — strips market beta) and n_unique / hit_rate_dedup (last anchor
+    per code per day — strips smart-cron clustering inflation).
     Public on purpose — no secrets, lets us watch quality without shell
     access."""
     from .services import outcomes as outcomes_svc
     return outcomes_svc.hit_rate_stats()
+
+
+@app.get("/api/_diag/nd-outlook-stats")
+def diag_nd_outlook_stats():
+    """Score next_day_outlook.trend (看涨/看平/看跌) against actual next-day
+    returns — the most falsifiable output of the product, tracked since
+    6/10 (anchors before that have no nd_trend and are excluded). Grouped
+    by trend and by the outlook's own 高/中/低 confidence. Expect ~1 day
+    of lag before the first scored rows appear (needs close_d1)."""
+    from .services import outcomes as outcomes_svc
+    return outcomes_svc.nd_outlook_stats()
 
 
 @app.post("/api/_diag/refresh-klines")
