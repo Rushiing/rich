@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useEffect, useRef, useState } from "react";
-import { api, AnalysisBrief, HitRateSummary, StockRow, confidenceBucket, confidenceLabel } from "../../lib/api";
+import { api, ActionItemsOut, AnalysisBrief, HitRateSummary, StockRow, confidenceBucket, confidenceLabel } from "../../lib/api";
 import Tooltip from "../_components/Tooltip";
 
 // While a snapshot job is running we re-pull /api/stocks at this cadence so
@@ -147,6 +147,10 @@ export default function StocksPage() {
   // Silent failure: hit_rate is supplementary, shouldn't drag the page
   // down if outcomes service is unhealthy.
   const [hitRate, setHitRate] = useState<HitRateSummary | null>(null);
+  // S1 (6/10): 今日需行动 — holdings-aware sell triggers. Refreshed
+  // alongside the row list (refresh()) so a stop-loss breach shows up
+  // within one auto-refresh cycle. Silent failure: supplementary.
+  const [actionItems, setActionItems] = useState<ActionItemsOut | null>(null);
   // null = show all rows; otherwise exact match against StockRow.analysis.actionable
   // (or "__pending" for rows that don't have a cached analysis yet).
   const [filter, setFilter] = useState<string | null>(null);
@@ -169,6 +173,9 @@ export default function StocksPage() {
 
   async function refresh(opts: { silent?: boolean } = {}) {
     if (!opts.silent) setLoading(true);
+    // Piggyback action items on every row refresh — same cadence, no
+    // extra timer. Fire-and-forget so a failure can't block the rows.
+    api.actionItems().then(setActionItems).catch(() => {});
     try {
       setRows(await api.listStocks());
       setLoadError(null);  // success clears any prior failure banner
@@ -443,6 +450,10 @@ export default function StocksPage() {
         </div>
       )}
 
+      {/* S1 (6/10): 今日需行动 — 持仓票的卖出触发,放在所有内容之上。
+          只在有 item 时渲染;没有持仓或一切正常时整个区块不出现。 */}
+      <ActionItemsBanner data={actionItems} />
+
       {/* 6/3: AI 历史命中率 banner — 集中展示买/卖两类的全局命中率,
           胜过在每行 tooltip 里重复同一个数字。带数据口径说明和样本量
           透明度,降低用户对 AI 建议的盲信门槛。 */}
@@ -566,6 +577,85 @@ export default function StocksPage() {
 // tooltip 里重复同一全局数字的设计 (噪音 + 不一目了然)。详情页保留
 // per-stock 上下文展示。silent 处理 null/loading — 数据没回来时
 // 不渲染整个 banner,不阻塞主列表。
+// S1 (6/10): 今日需行动 banner — the no-push spec's push surrogate.
+// urgent = red left bar (跌破止损 / 建议卖出 / 看跌强信号), warn = amber
+// (有效期失效 / 其他新信号). Each row links to the detail page where the
+// user can re-generate or act.
+const ACTION_TYPE_LABEL: Record<string, string> = {
+  stop_loss_breach: "跌破止损",
+  sell_verdict: "建议卖出",
+  valid_window_expired: "建议已过期",
+  signal_alert: "新强信号",
+};
+
+function ActionItemsBanner({ data }: { data: ActionItemsOut | null }) {
+  if (!data || data.items.length === 0) return null;
+  const urgentCount = data.items.filter((i) => i.severity === "urgent").length;
+  return (
+    <section style={{
+      marginTop: 14,
+      border: "1px solid #7f1d1d",
+      borderRadius: 8,
+      overflow: "hidden",
+      background: "rgba(127, 29, 29, 0.12)",
+    }}>
+      <div style={{
+        padding: "10px 14px",
+        fontSize: 13,
+        fontWeight: 600,
+        color: "#fca5a5",
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+      }}>
+        <span>⚠️ 今日需行动</span>
+        <span style={{ color: "var(--text-muted)", fontWeight: 400 }}>
+          持仓 {data.checked_holdings} 支中 {data.items.length} 条触发
+          {urgentCount > 0 && `（紧急 ${urgentCount}）`}
+        </span>
+      </div>
+      <div>
+        {data.items.map((it, i) => (
+          <a
+            key={`${it.code}-${it.type}-${i}`}
+            href={`/stocks/${it.code}`}
+            style={{
+              display: "flex",
+              gap: 10,
+              padding: "9px 14px",
+              borderTop: "1px solid rgba(127, 29, 29, 0.35)",
+              borderLeft: `3px solid ${it.severity === "urgent" ? "#ef4444" : "#f59e0b"}`,
+              textDecoration: "none",
+              alignItems: "baseline",
+            }}
+          >
+            <span style={{ whiteSpace: "nowrap", fontSize: 13, color: "var(--text)" }}>
+              {it.name}
+              <span style={{ fontFamily: "monospace", color: "var(--text-faint)", fontSize: 12, marginLeft: 4 }}>
+                {it.code}
+              </span>
+            </span>
+            <span style={{
+              whiteSpace: "nowrap",
+              fontSize: 11,
+              padding: "1px 6px",
+              borderRadius: 4,
+              background: it.severity === "urgent" ? "rgba(239,68,68,0.18)" : "rgba(245,158,11,0.15)",
+              color: it.severity === "urgent" ? "#fca5a5" : "#fcd34d",
+            }}>
+              {ACTION_TYPE_LABEL[it.type] ?? it.type}
+            </span>
+            <span style={{ fontSize: 12.5, color: "var(--text-soft)", lineHeight: 1.45 }}>
+              {it.message}
+            </span>
+          </a>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+
 function HitRateBanner({ hitRate }: { hitRate: HitRateSummary | null }) {
   if (!hitRate) return null;
   const buy = hitRate.by_actionable["建议买入"];

@@ -29,6 +29,10 @@ export default function StockDetailPage({
   // 6/3: global hit_rate summary — fed to KeyTableCard so the actionable
   // verdict shows "AI 历史命中 X% (n=Y)" right below it. Silent failure.
   const [hitRate, setHitRate] = useState<HitRateSummary | null>(null);
+  // S1 (6/10): holding mirrored up from HoldingCard (which owns the
+  // fetch + edit flow) so ScenarioAdviceCard can highlight the quadrant
+  // matching the user's REAL P&L instead of showing four equal rows.
+  const [holding, setHolding] = useState<Holding | null>(null);
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -127,6 +131,7 @@ export default function StockDetailPage({
             code={code}
             price={detail?.price ?? null}
             keyTable={analysis?.key_table ?? null}
+            onHoldingChange={setHolding}
           />
           {!analysis ? (
             <EmptyState onGenerate={regenerate} generating={generating} err={err} />
@@ -140,7 +145,16 @@ export default function StockDetailPage({
               />
               {err && <div style={{ color: "#ef4444", marginTop: 8, fontSize: 13 }}>{err}</div>}
               {analysis.mode === "debate" && <DebateBanner code={code} />}
-              <KeyTableCard kt={analysis.key_table} currentPrice={detail?.price ?? null} hitRate={hitRate} />
+              <KeyTableCard
+                kt={analysis.key_table}
+                currentPrice={detail?.price ?? null}
+                hitRate={hitRate}
+                holdingPnlPct={
+                  holding && detail?.price != null && holding.cost_price > 0
+                    ? (detail.price - holding.cost_price) / holding.cost_price * 100
+                    : null
+                }
+              />
               <DeepAnalysis md={analysis.deep_analysis} />
               <Footnote analysis={analysis} />
             </>
@@ -259,13 +273,20 @@ function IndustryContextCard({ detail }: { detail: StockDetail }) {
  * (globally cached) analysis numbers — no extra LLM call.
  */
 function HoldingCard({
-  code, price, keyTable,
+  code, price, keyTable, onHoldingChange,
 }: {
   code: string;
   price: number | null;
   keyTable: KeyTable | null;
+  // S1: mirrors holding state up to the page so sibling cards (scenario
+  // quadrant highlight) can react without a duplicate fetch.
+  onHoldingChange?: (h: Holding | null) => void;
 }) {
-  const [holding, setHolding] = useState<Holding | null>(null);
+  const [holding, setHoldingRaw] = useState<Holding | null>(null);
+  const setHolding = (h: Holding | null) => {
+    setHoldingRaw(h);
+    onHoldingChange?.(h);
+  };
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -597,11 +618,14 @@ function FreshnessBar({
 }
 
 function KeyTableCard({
-  kt, currentPrice, hitRate,
+  kt, currentPrice, hitRate, holdingPnlPct = null,
 }: {
   kt: KeyTable;
   currentPrice: number | null;
   hitRate: HitRateSummary | null;
+  // S1: user's actual P&L % (null = no holding recorded). Drives the
+  // scenario-advice quadrant highlight.
+  holdingPnlPct?: number | null;
 }) {
   // Three-tier toggle state. Default to "neutral" — that's the LLM's
   // top-level actionable + position_pct, so the card initially shows what
@@ -802,7 +826,9 @@ function KeyTableCard({
       )}
 
       {/* Scenario-based advice — what to do based on current holding state */}
-      {kt.scenario_advice && <ScenarioAdviceCard advice={kt.scenario_advice} />}
+      {kt.scenario_advice && (
+        <ScenarioAdviceCard advice={kt.scenario_advice} pnlPct={holdingPnlPct} />
+      )}
     </section>
   );
 }
@@ -1132,31 +1158,70 @@ function StopLossCard({ levels }: { levels: StopLossLevel[] }) {
   );
 }
 
-function ScenarioAdviceCard({ advice }: { advice: ScenarioAdvice }) {
-  const items: { label: string; text: string }[] = [
-    { label: "未持仓",       text: advice.not_holding },
-    { label: "已持仓 · 大幅浮盈", text: advice.holding_big_gain },
-    { label: "已持仓 · 小幅",     text: advice.holding_small },
-    { label: "已持仓 · 大幅浮亏", text: advice.holding_big_loss },
+// S1 quadrant thresholds: |P&L| ≥ 10% counts as "大幅". Matches the
+// colloquial reading of the LLM's 大幅浮盈/浮亏 labels; not configurable
+// until someone actually asks.
+const BIG_PNL_PCT = 10;
+
+function scenarioKeyForPnl(pnlPct: number | null): keyof ScenarioAdvice {
+  if (pnlPct == null) return "not_holding";
+  if (pnlPct >= BIG_PNL_PCT) return "holding_big_gain";
+  if (pnlPct <= -BIG_PNL_PCT) return "holding_big_loss";
+  return "holding_small";
+}
+
+function ScenarioAdviceCard({
+  advice, pnlPct = null,
+}: {
+  advice: ScenarioAdvice;
+  // S1: user's real P&L %; selects which quadrant is "yours". null =
+  // no holding recorded → 未持仓 is the active row.
+  pnlPct?: number | null;
+}) {
+  const items: { label: string; key: keyof ScenarioAdvice; text: string }[] = [
+    { label: "未持仓",       key: "not_holding",      text: advice.not_holding },
+    { label: "已持仓 · 大幅浮盈", key: "holding_big_gain", text: advice.holding_big_gain },
+    { label: "已持仓 · 小幅",     key: "holding_small",    text: advice.holding_small },
+    { label: "已持仓 · 大幅浮亏", key: "holding_big_loss", text: advice.holding_big_loss },
   ];
+  const activeKey = scenarioKeyForPnl(pnlPct);
   return (
     <div style={{ border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
-      <div style={{ padding: "10px 14px", background: "var(--surface-alt)", color: "var(--text-muted)", fontSize: 12 }}>按持仓情境</div>
+      <div style={{ padding: "10px 14px", background: "var(--surface-alt)", color: "var(--text-muted)", fontSize: 12 }}>
+        按持仓情境
+        {pnlPct != null && (
+          <span style={{ marginLeft: 8, color: pnlPct >= 0 ? "#ef4444" : "#22c55e" }}>
+            你的浮动 {pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(1)}%
+          </span>
+        )}
+      </div>
       <div>
-        {items.map((it, i) => (
-          <div
-            key={i}
-            style={{
-              display: "flex",
-              padding: "10px 14px",
-              borderTop: i === 0 ? undefined : "1px solid var(--border-faint)",
-              gap: 12,
-            }}
-          >
-            <span style={{ color: "var(--text-muted)", fontSize: 13, minWidth: 130 }}>{it.label}</span>
-            <span style={{ color: "var(--text)", fontSize: 13, lineHeight: 1.5, flex: 1 }}>{it.text}</span>
-          </div>
-        ))}
+        {items.map((it, i) => {
+          const active = it.key === activeKey;
+          return (
+            <div
+              key={i}
+              style={{
+                display: "flex",
+                padding: "10px 14px",
+                borderTop: i === 0 ? undefined : "1px solid var(--border-faint)",
+                gap: 12,
+                background: active ? "rgba(59, 130, 246, 0.10)" : undefined,
+                borderLeft: active ? "3px solid #3b82f6" : "3px solid transparent",
+              }}
+            >
+              <span style={{ color: active ? "var(--text)" : "var(--text-muted)", fontSize: 13, minWidth: 130, fontWeight: active ? 600 : 400 }}>
+                {it.label}
+                {active && (
+                  <span style={{ display: "block", fontSize: 11, color: "#60a5fa", fontWeight: 400 }}>
+                    ← 你的现状
+                  </span>
+                )}
+              </span>
+              <span style={{ color: "var(--text)", fontSize: 13, lineHeight: 1.5, flex: 1 }}>{it.text}</span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

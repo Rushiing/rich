@@ -205,6 +205,24 @@ export type HitRateSummary = {
   cached_at: string;
 };
 
+// S1 (6/10): 今日需行动 — holdings-aware sell triggers computed by the
+// backend per request: stop-loss breach / sell verdict / lapsed validity
+// window / new strong signal since the analysis anchor. Rendered as a
+// red banner section at the top of the 盯盘 list (the spec's no-push
+// surrogate).
+export type ActionItem = {
+  code: string;
+  name: string;
+  type: "stop_loss_breach" | "sell_verdict" | "valid_window_expired" | "signal_alert";
+  severity: "urgent" | "warn";
+  message: string;
+};
+
+export type ActionItemsOut = {
+  items: ActionItem[];
+  checked_holdings: number;
+};
+
 // 5/29: one historical anchor row from AnalysisOutcome. Detail-page
 // "历史解析" card shows the last N of these so users can see how the
 // verdict + confidence shifted across regenerations, alongside the
@@ -390,6 +408,8 @@ export const api = {
     ),
   hitRateSummary: () =>
     request<HitRateSummary>(`/api/stocks/hit-rate-summary`),
+  actionItems: () =>
+    request<ActionItemsOut>(`/api/stocks/action-items`),
   // ---- holdings (cost basis) ----
   getHolding: (code: string) =>
     request<Holding | null>(`/api/holdings/${code}`),
