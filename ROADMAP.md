@@ -42,14 +42,16 @@ LLM 最后剩下的职责是「把证据组织成人话」。
 **待 Rush 动作**：Railway 设 `ANALYSIS_MODEL_B=MiniMax-M2.5` + `ANALYSIS_AB_PCT=20`
 开跑 A/B；跑 2-4 周后看 outcomes-stats 按 model 分桶。
 
-### S1 · 持仓感知的卖出触发（~1 周）
+### S1 · 持仓感知的卖出触发 ✅ 6/10 完成
 
-holdings 表已有 cost basis，但卖出建议现在被动等用户点详情页。改主动：
-
-- cron 每周期对**持仓票**检查三件事：现价跌破该票 `stop_loss_levels` 任一档 /
-  `valid_window` 声明的条件已失效 / 强信号变更
-- 命中 → 顶进盯盘页「今日需行动」区（规格不做推送，需行动区就是推送替身）
-- 详情页 scenario_advice 按用户真实浮盈浮亏选中对应象限展示
+- [x] `action_items` 服务 + `GET /api/stocks/action-items`：持仓票四类检查 —
+  跌破 stop_loss_levels（报最深一档）/ actionable=建议卖出 / valid_window 失效
+  （只机验 prompt 强制的三种格式：跌破 X.XX、N 个交易日内、本周内；事件型跳过
+  不误报）/ 解析锚点后新出现的强信号（看跌强信号 urgent）。按需计算无 cron。
+- [x] 盯盘页顶部「今日需行动」banner（urgent 红边 / warn 琥珀边，点击跳详情，
+  无触发不渲染），随列表同节奏刷新
+- [x] 详情页 scenario_advice 按真实持仓高亮所处象限（±10% 分大幅/小幅）+
+  显示浮动百分比
 
 ### S2 · 卖出卡片 + 页面分层（~1 周，与 UI 重构合并）
 
