@@ -121,7 +121,13 @@ def _is_intraday() -> bool:
     if now_bjt.weekday() >= 5:  # Sat/Sun
         return False
     hm = now_bjt.hour * 100 + now_bjt.minute
-    return (930 <= hm <= 1130) or (1300 <= hm <= 1500)
+    # Continuous 9:30–15:00 on purpose — the lunch break (11:30–13:00)
+    # counts as "intraday" for this function's only consumer (fund-flow
+    # leniency in compute_data_completeness): the data source doesn't
+    # publish same-day fund flow during lunch any more than it does
+    # mid-session, so analyses generated over lunch were unfairly losing
+    # the dimension (observed 6/10: midday completeness 75 instead of 100).
+    return 930 <= hm <= 1500
 
 
 def compute_data_completeness(s: Snapshot | None, code: str) -> dict[str, Any]:
