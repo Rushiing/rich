@@ -1462,8 +1462,17 @@ def generate(
     # (ST stocks given 观望 instead of 不建议入手, 建议买入 against broken
     # technicals, tier monotonicity violations, etc.) Mutates payload + adds
     # corrections to red_flags.
-    from .analysis_validators import validate_and_correct
+    from .analysis_validators import validate_and_correct, audit_number_grounding
     validate_and_correct(payload, w, s)
+
+    # 6/10: log-only audit — are the bolded numbers in deep_analysis
+    # actually present in the input we gave the model? Unmatched ones are
+    # candidate hallucinations (or legitimately derived figures — hence
+    # log-only until we know the false-positive rate). Never blocks.
+    try:
+        audit_number_grounding(payload.get("deep_analysis"), base_user, code)
+    except Exception:
+        logger.exception("number grounding audit failed for %s (non-fatal)", code)
 
     existing = db.query(Analysis).filter(Analysis.code == code).first()
     if existing:

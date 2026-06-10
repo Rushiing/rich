@@ -16,6 +16,7 @@ unambiguous. Edge cases stay with the LLM's judgment.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from ..models import Snapshot, Watchlist
@@ -189,6 +190,92 @@ def _validate_earnings_collapse(
             tier = tiers.get(tk)
             if isinstance(tier, dict) and (tier.get("position_pct") or 0) > 10:
                 tier["position_pct"] = 10
+
+
+# ---------------------------------------------------------------------------
+# Number-grounding audit (6/10, log-only)
+#
+# The style prompt demands key numbers be **bolded** — which conveniently
+# marks exactly the claims users will anchor on. This audit extracts every
+# number inside a bold segment of deep_analysis and checks it can be found
+# in the prompt input the LLM was given. Unmatched numbers are *candidate*
+# hallucinations — legitimately derived figures (e.g. the LLM computing a
+# % distance to a support level) also land here, so we LOG ONLY and never
+# mutate the payload or surface meta-noise to users. Once a few weeks of
+# logs show the real false-positive rate, this can graduate to an active
+# validator.
+# ---------------------------------------------------------------------------
+
+_NUM_RE = re.compile(r"\d+(?:\.\d+)?")
+
+
+def _extract_numbers(text: str) -> list[str]:
+    return _NUM_RE.findall(text)
+
+
+def audit_number_grounding(
+    deep_analysis: str | None, source_text: str, code: str,
+) -> dict[str, Any]:
+    """Audit bolded numbers in deep_analysis against the prompt input.
+
+    Matching: a bolded number passes if its exact string appears in the
+    source, OR it's within 1% of any number in the source (covers the
+    LLM rounding 69.65 → 69.7 and 亿-unit reformatting at one decimal).
+    Pure integers ≤ 10 are skipped — step markers ("1."), day counts
+    ("3 个交易日") and similar produce noise, not claims.
+
+    Returns counters (also logged) for future diag exposure."""
+    if not deep_analysis:
+        return {"total": 0, "matched": 0, "unmatched": []}
+
+    bold_segments = re.findall(r"\*\*(.+?)\*\*", deep_analysis)
+    claimed: list[str] = []
+    for seg in bold_segments:
+        for n in _extract_numbers(seg):
+            if "." not in n and int(n) <= 10:
+                continue
+            claimed.append(n)
+    if not claimed:
+        return {"total": 0, "matched": 0, "unmatched": []}
+
+    source_strs = set(_extract_numbers(source_text))
+    source_floats = []
+    for sn in source_strs:
+        try:
+            source_floats.append(float(sn))
+        except ValueError:
+            pass
+
+    def _grounded(n: str) -> bool:
+        if n in source_strs:
+            return True
+        try:
+            v = float(n)
+        except ValueError:
+            return False
+        return any(
+            sv != 0 and abs(v - sv) / abs(sv) <= 0.01
+            for sv in source_floats
+        )
+
+    unmatched = [n for n in claimed if not _grounded(n)]
+    result = {
+        "total": len(claimed),
+        "matched": len(claimed) - len(unmatched),
+        "unmatched": unmatched[:10],
+    }
+    ratio = len(unmatched) / len(claimed)
+    if ratio > 0.3 and len(claimed) >= 5:
+        logger.warning(
+            "number_grounding[%s] %d/%d bolded numbers NOT in prompt input: %s",
+            code, len(unmatched), len(claimed), unmatched[:10],
+        )
+    else:
+        logger.info(
+            "number_grounding[%s] %d/%d grounded (unmatched: %s)",
+            code, result["matched"], result["total"], unmatched[:5],
+        )
+    return result
 
 
 def validate_and_correct(
