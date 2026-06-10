@@ -87,10 +87,18 @@ PROMPT_VERSION = prompt_version_for("single")
 # we can later correlate them with hit-rate.
 # ---------------------------------------------------------------------------
 
-# Max age (days) for the latest financial report before we tag it "stale".
-# 60d ≈ one quarter of grace — most A-share companies file within 60d of
-# quarter-end; older means we're between filings.
-_FINANCIAL_STALE_DAYS = 60
+# Max age (days) for the latest financial report's *period-end date*
+# before we tag it "stale".
+#
+# 6/10: bumped 60 → 135. The age is measured against the report period end
+# (e.g. Q1 = 03-31), not the disclosure date — and A-share disclosure
+# deadlines mean the freshest available report is routinely 60-130 days
+# past its period end (Q1 disclosed by 4/30, 半年报 by 8/31, so from June
+# to late August the best you can have is the 3/31 report). At 60 the
+# whole watchlist was "stale" for most of every quarter. 135 keeps the
+# common between-filings windows fresh while still flagging the genuinely
+# old cases (e.g. a company still showing Q3 data in late spring).
+_FINANCIAL_STALE_DAYS = 135
 
 
 def _is_intraday() -> bool:
@@ -213,11 +221,20 @@ def compute_data_completeness(s: Snapshot | None, code: str) -> dict[str, Any]:
         missing.append("财务数据:未拉到")
     else:
         report_date = fin_rows[0].report_date
-        # report_date may be datetime or date depending on column type; both
-        # work with timedelta arithmetic against datetime.now().date()
+        # Financial.report_date is a String(10) "YYYYMMDD" (see models.py) —
+        # NOT a date object. The pre-6/10 code did `today - report_date`
+        # directly, which raised on every call and fell into the except
+        # branch: every analysis was tagged "报告日期解析失败" and lost the
+        # full 25-pt financial dimension, systematically depressing
+        # data_completeness (and thus LLM confidence) across the board.
         try:
+            if isinstance(report_date, str):
+                rd = datetime.strptime(report_date.strip(), "%Y%m%d").date()
+            elif hasattr(report_date, "date"):
+                rd = report_date.date()
+            else:
+                rd = report_date
             today = datetime.now(timezone.utc).date()
-            rd = report_date if not hasattr(report_date, "date") else report_date.date()
             age_days = (today - rd).days
             if age_days <= _FINANCIAL_STALE_DAYS:
                 got += 25
