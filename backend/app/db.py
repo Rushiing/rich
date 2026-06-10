@@ -80,6 +80,18 @@ _POSTGRES_BACKFILL = [
     # confidence + input quality evolved across regenerations.
     ("analysis_outcomes", "confidence",         "INTEGER"),
     ("analysis_outcomes", "data_completeness",  "INTEGER"),
+    # 6/10 (S0 — measurement honesty): model for A/B bucketing,
+    # nd_trend/nd_confidence to finally score next_day_outlook, and
+    # anchor_close as the dividend-safe (qfq, same series as close_dN)
+    # return basis. See AnalysisOutcome model for full rationale.
+    ("analysis_outcomes", "model",          "VARCHAR(60)"),
+    ("analysis_outcomes", "nd_trend",       "VARCHAR(10)"),
+    ("analysis_outcomes", "nd_confidence",  "VARCHAR(10)"),
+    ("analysis_outcomes", "anchor_close",   "DOUBLE PRECISION"),
+    # 6/10: CNINFO 主营业务 per code — injected into the analysis prompt so
+    # the LLM stops relying on (possibly stale/wrong) world knowledge for
+    # the 公司画像 section. Filled by refresh_industry_meta.
+    ("industry_meta", "business_desc",      "TEXT"),
 ]
 
 

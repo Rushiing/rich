@@ -32,6 +32,9 @@ def record_anchor(
     prompt_version: str | None, mode: str | None, anchor_price: float | None,
     confidence: int | None = None,
     data_completeness: int | None = None,
+    model: str | None = None,
+    nd_trend: str | None = None,
+    nd_confidence: str | None = None,
 ) -> None:
     """Insert an outcome anchor. Called from analysis.generate() right
     after the Analysis row is persisted. No-op when anchor_price is
@@ -40,7 +43,10 @@ def record_anchor(
     5/29: also stores confidence + data_completeness per anchor so the
     detail-page "历史解析" card can show how those values evolved
     across regenerations. Both default to None for call sites that
-    haven't been updated (e.g. unit tests, batch backfills)."""
+    haven't been updated (e.g. unit tests, batch backfills).
+
+    6/10: model (A/B bucketing) + nd_trend/nd_confidence (next_day_outlook
+    scoring — see nd_outlook_stats). All optional, None for legacy sites."""
     if anchor_price is None or anchor_price <= 0:
         logger.info("outcome anchor skipped for %s — no anchor price", code)
         return
@@ -58,6 +64,9 @@ def record_anchor(
         anchor_price=anchor_price,
         confidence=confidence,
         data_completeness=data_completeness,
+        model=model,
+        nd_trend=nd_trend,
+        nd_confidence=nd_confidence,
     ))
     db.commit()
 
@@ -69,10 +78,15 @@ def backfill_outcomes() -> dict:
     db: Session = SessionLocal()
     filled = scanned = 0
     try:
-        # Only rows that still have at least one unfilled horizon.
+        # Rows with at least one unfilled horizon, or missing the
+        # anchor_close basis (legacy rows predating 6/10).
+        from sqlalchemy import or_
         rows = (
             db.query(AnalysisOutcome)
-            .filter(AnalysisOutcome.close_d20.is_(None))
+            .filter(or_(
+                AnalysisOutcome.close_d20.is_(None),
+                AnalysisOutcome.anchor_close.is_(None),
+            ))
             .all()
         )
         for o in rows:
@@ -82,6 +96,24 @@ def backfill_outcomes() -> dict:
                 gen_date = gen_date.replace(tzinfo=timezone.utc)
             gen_day = gen_date.date().isoformat()
 
+            changed = False
+
+            # anchor_close: qfq close of the anchor's trading day (latest
+            # kline ≤ gen_day — falls back to the prior trading day when
+            # generated on a weekend/holiday). Same price series as
+            # close_dN, so returns computed from it are dividend-safe,
+            # unlike anchor_price (unadjusted intraday).
+            if o.anchor_close is None:
+                anchor_bar = (
+                    db.query(Kline)
+                    .filter(Kline.code == o.code, Kline.date <= gen_day)
+                    .order_by(Kline.date.desc())
+                    .first()
+                )
+                if anchor_bar is not None and anchor_bar.close is not None:
+                    o.anchor_close = anchor_bar.close
+                    changed = True
+
             # Trading days strictly after the generation date, ascending.
             future = (
                 db.query(Kline)
@@ -89,7 +121,6 @@ def backfill_outcomes() -> dict:
                 .order_by(Kline.date.asc())
                 .all()
             )
-            changed = False
             for h in HORIZONS:
                 close_attr = f"close_d{h}"
                 return_attr = f"return_d{h}"

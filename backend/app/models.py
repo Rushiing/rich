@@ -406,6 +406,24 @@ class AnalysisOutcome(Base):
     confidence: Mapped[int | None] = mapped_column(Integer, nullable=True)
     data_completeness: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # 6/10 (S0): three additions for measurement honesty.
+    #
+    # model — which LLM produced this verdict. prompt_version alone can't
+    # distinguish "same prompt, different model", which is exactly the
+    # comparison the A/B mechanism (ANALYSIS_MODEL_B) needs.
+    model: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    # nd_trend / nd_confidence — next_day_outlook's 看涨/看平/看跌 claim and
+    # its 高/中/低 self-assessment, captured at anchor time. The single most
+    # falsifiable output of the product was previously never scored.
+    nd_trend: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    nd_confidence: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    # anchor_close — qfq close of the anchor's trading day, filled by the
+    # outcomes backfill from the same kline series as close_dN. anchor_price
+    # is an *unadjusted intraday* price: across an ex-dividend date its
+    # return vs a qfq close is distorted (June–July is A-share dividend
+    # season). Stats that want a dividend-safe basis use anchor_close.
+    anchor_close: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
     )

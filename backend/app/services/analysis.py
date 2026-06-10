@@ -1477,6 +1477,10 @@ def generate(
         # enum string — record_anchor normalizes both.
         raw_conf = kt.get("confidence")
         conf_for_anchor: int | str | None = raw_conf if isinstance(raw_conf, (int, str)) else None
+        # 6/10: capture next_day_outlook's claim so nd_outlook_stats can
+        # score it against return_d1 — previously the most falsifiable
+        # output of the product was never measured.
+        nd = kt.get("next_day_outlook") or {}
         record_anchor(
             db, code=code, generated_at=row.created_at,
             actionable=str(kt.get("actionable") or ""),
@@ -1484,6 +1488,9 @@ def generate(
             anchor_price=(s.price if s else None),
             confidence=conf_for_anchor,  # type: ignore[arg-type]
             data_completeness=data_comp["score"],
+            model=model,
+            nd_trend=(nd.get("trend") if isinstance(nd, dict) else None),
+            nd_confidence=(nd.get("confidence") if isinstance(nd, dict) else None),
         )
     except Exception:
         logger.exception("outcome anchor failed for %s (non-fatal)", code)
