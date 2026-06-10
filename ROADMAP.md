@@ -1,264 +1,101 @@
-# Roadmap — 下一波迭代
+# Roadmap — 卖得准 + 买有据
 
-存档时间：2026-05-10
-状态：Phase 1–9 + UX 第二波（主题/Tooltip/自选池/板块 TOP5/更新日志）已上线
+存档时间：2026-06-10（替换 5/10 旧版；旧版条目 1/3/4 已上线，2/5/6 收编进下面的阶段）
+背书数据：6/10 线上 3180 锚点 / 1535 已评分 — 卖出 d5 命中 73.7%（avg -3.92%）、
+不建议入手 avg -3.64%、买入 n=70 命中 58.6% 但近期 d1 仅 29.3%（追高回调模式）。
 
----
+## 两个阶段性目标（Rush 6/10 定调）
 
-## 一、AI 分析效果提升
+1. **把「什么时候卖」做到足够好** — 建议足够准确 + 表达足够简洁有说服力。
+2. **告诉用户「什么值得买」** — 先有系统筛选的虚拟预选池，监测一段时间后
+   再推荐，推荐必须有据可依。
 
-### 1. 持仓上下文（最优先 · 价值密度最高）
-
-**问题**：现在解析对所有用户都一样，是「通用建议」。
-**方案**：让用户录入 cost basis（买入日期 / 买入价 / 持仓数量 / 成本），AI 调用前注入这些上下文。
-
-输出会从「合理买入价 23–25」升级到：
-- 你的成本 22.8 元，当前 +5.2%
-- 已突破前高，可锁定 50% 浮盈
-- 你的紧急止损线对应 -8%（绝对价 20.96）
-
-**改动**：
-- 新表 `holdings`：(user_id, code, cost_basis, shares, opened_at, notes)
-- 自选池新增 tab「持仓」(or 行内一键转持仓)
-- analysis._user_prompt 注入持仓段落
-- 详情页关键数据卡顶部加「你的持仓」摘要
+战略方向：让 LLM 负责的面积持续变小 — 数字由 prompt 对账锁住、公司认知由
+CNINFO 主营业务锁住、买卖信号逐步移交规则引擎、命中率由 outcomes 闭环裁决。
+LLM 最后剩下的职责是「把证据组织成人话」。
 
 ---
 
-### 2. 时段感知 prompt（改动小，效果直接）
+## 卖出线（S）
 
-**问题**：盘前 / 盘中 / 盘后内容侧重应该不同，现在都用同一套 prompt。
+### S0 · 把尺子修准 ✅ 6/10 完成
 
-**方案**：`_user_prompt` 按 Asia/Shanghai 时间分支：
-- 盘前（< 9:00）：昨日复盘 + 今日开盘要点 + 当日关键事件
-- 盘中（9:30–15:00）：实时调仓信号、强信号高亮
-- 盘后（≥ 15:00）：当日复盘 + 明日预判（next_day_outlook 已有，重点强化）
+没有可信的度量，"足够准确"无从谈起。全部落地：
 
-**改动**：仅 `services/analysis.py` 一处。
+- [x] 财报日期解析 bug（report_date 字符串减法恒抛异常 → 全体 completeness -25）+ 阈值 60→135
+- [x] 锚点扩展：`model`（A/B）、`nd_trend/nd_confidence`（次日预判追踪）、`anchor_close`（除权安全价基）
+- [x] 命中率诚实化：同日全体锚点中位数基线的 `excess_return_d5` + (code,日) 去重的 `hit_rate_dedup`
+- [x] `nd_outlook_stats()`：次日预判对照真实 d1 收益评分（diag: `/api/_diag/nd-outlook-stats`）
+- [x] 主营业务注入 prompt（公司认知幻觉收敛）+ 单股行业抑制自指均值/分位
+- [x] 数字 grounding 审计（log-only，积累误报率后可升级主动验证器）
+- [x] 模型 A/B 机制（`ANALYSIS_MODEL_B` + `ANALYSIS_AB_PCT`，默认关）
 
----
+**待 Rush 动作**：Railway 设 `ANALYSIS_MODEL_B=MiniMax-M2.5` + `ANALYSIS_AB_PCT=20`
+开跑 A/B；跑 2-4 周后看 outcomes-stats 按 model 分桶。
 
-### 3. AI 建议命中率追踪
+### S1 · 持仓感知的卖出触发（~1 周）
 
-**问题**：信任问题 + 自我迭代缺乏 ground truth。
+holdings 表已有 cost basis，但卖出建议现在被动等用户点详情页。改主动：
 
-**方案**：
-- 新表 `analysis_outcomes`：(code, generated_at, actionable, target_low/high, snapshot_at_T+1/3/5/20)
-- 每天 cron 跑一次：把 N 天前的建议跟现在的实盘价对比，回填表现
-- 详情页 + dashboard 展示「过去 30 天买入建议平均收益 +X%、踩雷率 Y%」
-- 自己也用这个数据回看哪些 prompt / 风格表现差
+- cron 每周期对**持仓票**检查三件事：现价跌破该票 `stop_loss_levels` 任一档 /
+  `valid_window` 声明的条件已失效 / 强信号变更
+- 命中 → 顶进盯盘页「今日需行动」区（规格不做推送，需行动区就是推送替身）
+- 详情页 scenario_advice 按用户真实浮盈浮亏选中对应象限展示
 
----
+### S2 · 卖出卡片 + 页面分层（~1 周，与 UI 重构合并）
 
-### 4. 板块 / 大盘相对位置
+- 盯盘页三层：①今日需行动 ②有变化（新解析/信号变更）③无事发生（默认折叠）
+- 详情页第一屏只放结论卡：actionable + 一句理由 + 触发价 + 有效期 + 置信度
+  （带历史命中率背书，等 S0 口径数据积累后才敢挂）；deep_analysis 折叠
+- 卖出卡片：一句结论 + ≤3 条带数字的理由 + 触发价 + 有效期 + 一行历史战绩
 
-**问题**：现在解析孤立看一支股，没参考系。
+### S3 · 准确率迭代（持续）
 
-**方案**：prompt 里加「今日大盘 +X%、行业 +Y%、本股 +Z%」段；让 AI 知道是绝对涨跌还是相对超额。
-
-**改动**：snapshot 拉行情时多记一个 SH/SZ/CSI300 当日点位 + 行业平均。
-
----
-
-### 5. 关键事件日历
-
-**问题**：财报、解禁、ST 风险这些硬信号 AI 想不出来。
-
-**方案**：
-- 拉数据源：akshare 有 `stock_em_yjbb`（业绩报表）、`stock_em_lhb_yyjzcx`（解禁）等
-- 详情页加「未来 2 周事件」卡：一季报披露 5/15、定增解禁 5/22…
-- 关键事件 ≤ 3 天时盯盘列表加角标提示
+- 「规则出信号、LLM 出解释」：跌破年线+死叉+主力连续流出等硬条件直接产生
+  卖出候选，LLM 负责解释和定价位（用上 strategy slot）
+- 关键事件日历（旧 roadmap #5 收编）：解禁/财报日是天然卖出规则信号
+- prompt_version A/B 用诚实化后的命中率裁决
 
 ---
 
-### 6. 多策略风格选择
+## 买入线（B）— 虚拟预选池
 
-**问题**：用户风险偏好/风格不同，单一 prompt 服务不了所有人。
+复用 outcomes 锚点机制做池内表现追踪。核心洞察：买入建议 d1 命中仅 29.3%
+（追高后均值回归），观察期天然过滤冲高回落的票。
 
-**方案**：内置 2-3 套策略
-- 趋势：技术面权重高，看突破/均线
-- 价值：估值 / 业绩权重高，看 PE 行业分位、ROE
-- 短线博弈：题材 / 资金 / 龙虎榜权重高
+### B0 · 池子模型（~2-3 天）
 
-用户在自选池/详情页选风格；prompt 系统提示词不同。
+- `VirtualPool` 表：code、入池时间、入池价、来源、thesis、状态机
+  （观察中→可推荐→已推荐→淘汰）
+- thesis = 可证伪的看多论文，复用 debate 的 bull tool schema
+  （thesis + key_points + catalysts + target_price），catalyst 写成可机器验证的条件
 
----
+### B1 · 入池双通道（~1 周）
 
-## 二、站点信息架构
+- 规则通道：signals 筛（breakout_20d + big_inflow + profit_yoy>0 + 非 ST）
+- LLM 通道：sector_picks 每日 15 支直接作为候选
+- 来源打标签 — 一个月后数据说话哪个通道靠谱
 
-### A. 全局 TopNav（地基，先做）
+### B2 · 观察期引擎（~1 周）
 
-**问题**：每页自己 render header，nav 重复，扩充难。
+- 每日 cron 跑 thesis checkpoint：catalyst 兑现几条、池内收益、最大回撤
+- 触发失效条件 → 淘汰（败例保留，是最有价值的数据）
+- 观察 ≥N 天 + 兑现 ≥2/3 + 池内表现为正 → 升级「可推荐」
 
-**方案**：抽 `<TopNav />` 组件——左 logo + 主链接（盯盘/板块/自选池），右用户区（chip + 主题 + 日志）。一处改全站统一。
+### B3 · 推荐卡片 + 池子净值（~1 周）
 
----
-
-### B. /stocks 与 /watchlist 合并
-
-**问题**：盯盘是看，自选池是改，但用户经常在看的时候想改。
-
-**方案**：/watchlist 改成 /stocks 的「管理」tab——切到该模式后表格行变成可勾选 + 显示导入/删除按钮。日常 90% 时间在「盯盘」模式。
-
----
-
-### C. Dashboard 首页 `/`
-
-**问题**：现在 `/` 是空的或 redirect，缺产品门面。
-
-**方案**：登录后落地页，三块：
-- 上：今日大盘 + 板块 TOP3 推荐
-- 中：自选池「今日要看的」（强信号 / 大涨大跌 / 命中规则的 5–10 支）
-- 下：待关注事件（本周财报、解禁等）
-
-完整盯盘表通过「查看全部」展开。
+- 推荐自带证据链：入池日期/价格、观察期收益回撤、thesis 验证状态、该来源历史命中率
+- 终极形态：池子 = paper portfolio，「预选池 vs 中证500」净值曲线
 
 ---
 
-### D. 板块下钻 `/sectors/[name]`
+## 节奏
 
-**问题**：板块 hero 只能看推荐，点不进去；板块和自选池断层。
+第 1 周 S0 ✅ + A/B 开跑；第 2-3 周 S1/S2；第 3-5 周 B0-B2；
+第 6 周 B3 + 第一次 A/B 结论复盘。
 
-**方案**：
-- 板块详情页：成份股全表 + 板块走势图
-- **自选池里属于该板块的票高亮**——把"板块"和"自选"打通
-- 板块层 AI 解析：今日异动原因、领涨股、资金流向
+## 收编的旧条目
 
----
-
-### E. 个股详情增强 `/stocks/[code]`
-
-- 顶部加 K 线图（前端 echarts 或 lightweight-charts，喂 klines 表数据）
-- 同行业 3–5 支对比 mini chart
-- 历史 AI 建议时间轴：5/3 买、5/8 持有、5/10 卖出 → 实际涨跌如何
-
----
-
-### F. 大屏多列（带鱼屏专属）
-
-`>1920px` 启用 left sidebar nav + main + right rail（事件提醒 / 推荐 / 大盘）。中小屏退化为单列 + top nav。
-
----
-
-## 三、优先级 / 时间线
-
-### 第一波（2 周内）— 撬动效果大、改动聚焦
-
-- [ ] **持仓 cost basis 录入 + AI 吃**（~3 天）
-- [ ] **时段感知 prompt 分支**（~1 天）
-- [ ] **全局 TopNav 组件**（~1 天）
-
-### 第二波（4–6 周）— 结构性升级
-
-- [ ] Dashboard 首页 `/`
-- [ ] 板块下钻页 `/sectors/[name]`
-- [ ] AI 命中率追踪（先收集数据，UI 第三波再做）
-
-### 第三波（1–2 月）— 增量、需要数据源接入
-
-- [ ] 关键事件日历（财报/解禁/分红）
-- [ ] 个股详情 K 线图 + 同业对比
-- [ ] 策略风格切换
-- [ ] 大屏 sidebar 布局
-- [ ] AI 命中率展示（卡片/榜单）
-
----
-
-## ⚠️ 已知 TODO：真实手机短信验证
-
-**当前状态**：dev 模式
-- `backend/app/services/sms.py` 走「白名单 + 固定 8888」
-- `SMS_DEV_WHITELIST` env var 列出允许登录的手机号
-- 未列入白名单的手机号点「发送验证码」会被拒
-
-**为什么这样做**：内测前期不想等阿里云审批，先用白名单跑通流程；不在白名单的人进不来 = 天然访问控制。
-
-### 切到生产真实短信的步骤
-
-#### 1. 阿里云短信服务开通（耗时主要在审批）
-
-1. 登录阿里云控制台 → 短信服务（dysmsapi）
-2. **申请签名**：填一个公司或产品名（比如「rich」「股票盯盘」）→ 提交资质 → 1–2 工作日审批
-3. **申请模板**：内容形如 `您的验证码是${code}，5分钟内有效。` → 同样 1–2 工作日
-4. **创建 AccessKey**：阿里云 → AccessKey 管理 → 创建子用户 + 分配 `AliyunDysmsFullAccess` 权限 → 拿到 AccessKeyId + AccessKeySecret
-
-> 国内短信签名 + 模板都强制审批。建议留 3 个工作日缓冲。
-
-#### 2. 后端配置
-
-在 Railway → backend → Variables 加 4 个环境变量：
-
-```
-SMS_PROVIDER=aliyun
-ALIYUN_SMS_ACCESS_KEY_ID=<你的 AccessKeyId>
-ALIYUN_SMS_ACCESS_KEY_SECRET=<你的 AccessKeySecret>
-ALIYUN_SMS_SIGN_NAME=<审批通过的签名，比如 "rich"
-ALIYUN_SMS_TEMPLATE_CODE=<审批通过的模板 ID，形如 SMS_xxxxxxx>
-```
-
-把 `SMS_DEV_WHITELIST` 留空 / 删掉。
-
-#### 3. `services/sms.py` 实现真实发送（半天工作）
-
-现在的 stub 大概长这样：
-```python
-def send_code(phone: str, code: str) -> None:
-    if settings.SMS_PROVIDER == "dev":
-        ...
-    elif settings.SMS_PROVIDER == "aliyun":
-        # TODO: 这里要补
-```
-
-要补的是阿里云 SDK 调用。两条路：
-- **走 SDK**：`pip install alibabacloud-dysmsapi20170525`，文档完善但依赖重
-- **走 HTTP API**：直接 POST 到 `https://dysmsapi.aliyuncs.com`，自己拼签名（HMAC-SHA1）。轻量但要写 ~30 行签名代码
-
-我推荐 SDK，省心。代码骨架：
-```python
-from alibabacloud_dysmsapi20170525.client import Client
-from alibabacloud_dysmsapi20170525 import models
-from alibabacloud_tea_openapi import models as open_api_models
-
-def _aliyun_send(phone: str, code: str) -> None:
-    config = open_api_models.Config(
-        access_key_id=settings.ALIYUN_SMS_ACCESS_KEY_ID,
-        access_key_secret=settings.ALIYUN_SMS_ACCESS_KEY_SECRET,
-    )
-    config.endpoint = "dysmsapi.aliyuncs.com"
-    client = Client(config)
-    req = models.SendSmsRequest(
-        phone_numbers=phone,
-        sign_name=settings.ALIYUN_SMS_SIGN_NAME,
-        template_code=settings.ALIYUN_SMS_TEMPLATE_CODE,
-        template_param=json.dumps({"code": code}),
-    )
-    resp = client.send_sms(req)
-    if resp.body.code != "OK":
-        raise RuntimeError(f"sms send failed: {resp.body.code} {resp.body.message}")
-```
-
-#### 4. 风控（重要）
-
-阿里云短信按条计费（~3 分/条），开公网就要防刷：
-- 同一手机号 60 秒内只能发 1 次（前端 cooldown 已有，后端也加一道）
-- 同一手机号每日上限（5 条）
-- 同一 IP 每日上限（20 条）
-- 失败/未注册的手机号不能告知「该号未注册」（防遍历）
-
-后端加个 Redis-less 简单方案：用 DB 表 `sms_send_log(phone, ip, sent_at)` 写记录，查询时 count 当前窗口。
-
-#### 5. 灰度切换
-
-我建议：
-1. 阿里云审批通过 + SDK 接好 + 风控加上后，**保留 dev whitelist 双轨**——白名单内还是 8888，白名单外走真实短信
-2. 跑 1-2 周稳定后，再删 dev 路径
-
-这样新用户能进来，老内测不受影响。
-
----
-
-## 不在 roadmap 的事（明确不做）
-
-- 多模型 ensemble（成本不划算，先单模型把 prompt 调好）
-- 概念/题材绑定（akshare 数据源不稳定，需要自维护）
-- 公开回测「跟单收益」展示（合规风险，绝对不暴露）
+- 旧 #2 时段感知 prompt → S3 顺手做（改动小）
+- 旧 #5 事件日历 → S3（解禁/财报 = 卖出规则信号 + B2 的入池 gate）
+- 旧 #6 多策略风格 → 暂缓，等 S3 的规则引擎成熟后自然承接

@@ -170,6 +170,25 @@ curl -s "$BASE/api/_diag/hit-rate-by-confidence" | python3 -m json.tool
 
 ---
 
+### `GET /api/_diag/nd-outlook-stats`
+Scores `next_day_outlook.trend` (看涨/看平/看跌) against the actual
+next-day return — the most falsifiable output of the product, tracked
+since 6/10 (`nd_trend` on anchors; older rows excluded). Scoring: 看涨
+hit ⇔ d1 > 0, 看跌 hit ⇔ d1 < 0, 看平 hit ⇔ |d1| ≤ 1.0%. Return basis
+prefers `anchor_close` (dividend-safe qfq) and falls back to legacy
+`return_d1`; the `return_basis` counters show the mix.
+
+Grouped `by_trend` (is the directional claim worth anything?) and
+`by_nd_confidence` (does its own 高/中/低 self-assessment stratify?).
+
+**Call when**: reviewing whether 次日预判 deserves UI space, or after a
+prompt change that touches the outlook instructions. Needs ≥1 trading
+day after deploy before the first scored rows appear.
+
+```bash
+curl -s "$BASE/api/_diag/nd-outlook-stats" | python3 -m json.tool
+```
+
 ### `GET /api/_diag/outcomes-detail`
 Raw distribution of the `analysis_outcomes` table — diagnoses why
 `outcomes-stats` is sparse. Shows total / scored split by actionable,
