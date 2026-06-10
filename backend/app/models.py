@@ -487,6 +487,69 @@ class SectorPicks(Base):
     model: Mapped[str] = mapped_column(String(50), nullable=False)
 
 
+class PoolEntry(Base):
+    """B0 (6/10): 虚拟预选池 — a paper position the system is observing
+    before it's allowed to become a recommendation.
+
+    Lifecycle: observing → recommendable → recommended (manual/UI step,
+    reserved) — or → eliminated at any point. A code can re-enter after
+    elimination (new row), so no unique constraint; "active" = state in
+    (observing, recommendable).
+
+    Price basis is the kline table exclusively (qfq close) — pool
+    candidates from the sector_picks channel are usually NOT in any
+    watchlist, so snapshots/quotes don't exist for them; klines are
+    pulled per-code at entry and refreshed by the daily pool tick.
+
+    thesis is machine-verifiable on purpose: invalidation is a price
+    rule the tick can check, not a free-text catalyst it can't. The
+    LLM-bull-thesis upgrade (catalyst checkpoints) is deferred until
+    the price-rule loop proves out.
+    """
+    __tablename__ = "virtual_pool"
+
+    # with_variant: SQLite doesn't autoincrement BigInteger PKs (only
+    # INTEGER PRIMARY KEY rowid aliases), which breaks service-level
+    # inserts in smoke tests. Postgres still gets BIGSERIAL.
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True, autoincrement=True,
+    )
+    code: Mapped[str] = mapped_column(String(6), nullable=False, index=True)
+    name: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # rules | sector_picks — which channel sourced this entry. A month of
+    # outcomes per channel answers "哪个通道的票更靠谱" with data.
+    source: Mapped[str] = mapped_column(String(20), nullable=False)
+    state: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="observing", index=True,
+    )
+    entered_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+    # qfq close + its kline date at entry — same series the evaluation
+    # reads, so return math is dividend-safe by construction.
+    entry_close: Mapped[float] = mapped_column(Float, nullable=False)
+    entry_date: Mapped[str] = mapped_column(String(10), nullable=False)
+    # {summary, evidence: [...], invalidation_price, invalidation_rule,
+    #  sector?: str} — see services/virtual_pool.py builders.
+    thesis: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+
+    # Rolling evaluation results, refreshed by the daily pool tick.
+    last_close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    return_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_drawdown_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    days_observed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    state_changed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    eliminated_reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+
+
 class Analysis(Base):
     """Cached LLM-generated analysis for a stock. One row per code (latest only)."""
 

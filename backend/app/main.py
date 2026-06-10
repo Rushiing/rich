@@ -29,6 +29,7 @@ from .models import (  # noqa: F401  (register tables with metadata)
 from .routes import auth as auth_routes
 from .routes import holdings as holdings_routes
 from .routes import market as market_routes
+from .routes import pool as pool_routes
 from .routes import sectors as sectors_routes
 from .routes import stocks as stocks_routes
 from .routes import watchlist as watchlist_routes
@@ -77,6 +78,7 @@ app.include_router(stocks_routes.router)
 app.include_router(sectors_routes.router)
 app.include_router(holdings_routes.router)
 app.include_router(market_routes.router)
+app.include_router(pool_routes.router)
 
 
 @app.post("/api/_diag/refresh-industry-meta")
@@ -669,6 +671,57 @@ def diag_watchlist_stats():
         "users_with_watchlist": users_with,
         "avg_per_user": round(total / users_with, 1) if users_with > 0 else 0,
         "distribution": distribution,
+    }
+
+
+_pool_lock = __import__("threading").Lock()
+_pool_running = {"v": False, "last_result": None}
+
+
+@app.post("/api/_diag/pool-tick")
+def diag_pool_tick():
+    """Manual 虚拟预选池 tick (B1, 6/10): evaluate active entries against
+    the latest closes, then scan the two entry channels (rules + today's
+    sector picks). ASYNC — per-code kline pulls make the first run
+    ~1s × pool size. Normally fired by cron at 16:45 BJT; POST here to
+    bootstrap the pool or re-run after hours."""
+    import threading
+    from .services import virtual_pool as pool_svc
+
+    with _pool_lock:
+        if _pool_running["v"]:
+            return {"started": False, "already_running": True}
+        _pool_running["v"] = True
+        _pool_running["last_result"] = None
+
+    def _worker():
+        try:
+            _pool_running["last_result"] = pool_svc.run_pool_tick()
+        except Exception as e:
+            _pool_running["last_result"] = {"error": str(e)}
+        finally:
+            with _pool_lock:
+                _pool_running["v"] = False
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return {"started": True}
+
+
+@app.get("/api/_diag/pool-status")
+def diag_pool_status():
+    """Pool tick status + current pool overview (same payload as the
+    authed /api/pool route, public for headless debugging)."""
+    from .db import SessionLocal
+    from .services import virtual_pool as pool_svc
+    db = SessionLocal()
+    try:
+        overview = pool_svc.pool_overview(db)
+    finally:
+        db.close()
+    return {
+        "running": _pool_running["v"],
+        "last_result": _pool_running["last_result"],
+        "pool": overview,
     }
 
 

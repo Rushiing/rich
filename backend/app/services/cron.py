@@ -781,6 +781,19 @@ def _outcomes_tick():
         logger.exception("outcomes tick failed")
 
 
+def _pool_tick():
+    """B1 (6/10) daily post-close 16:45 BJT: 虚拟预选池 — evaluate active
+    entries against today's close (eliminate / promote), then scan the two
+    entry channels (rules + today's sector picks). Runs after _kline_tick
+    (16:30) so watchlist klines are fresh; pool-only codes get their own
+    pull_one inside the service."""
+    try:
+        from . import virtual_pool as pool_svc
+        pool_svc.run_pool_tick()
+    except Exception:
+        logger.exception("pool tick failed")
+
+
 def _shareholder_tick():
     """Daily post-close 17:30 BJT: pull market-wide insider shareholding
     changes (董监高 / 高管 / 配偶子女增减持), filter to watchlist + 90 days,
@@ -877,6 +890,15 @@ def start_scheduler() -> None:
         _outcomes_tick,
         CronTrigger(day_of_week="mon-fri", hour=17, minute=0, timezone="Asia/Shanghai"),
         id="outcomes_17_00",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
+    # 虚拟预选池 daily tick — after klines (16:30), before outcomes (17:00).
+    sched.add_job(
+        _pool_tick,
+        CronTrigger(day_of_week="mon-fri", hour=16, minute=45, timezone="Asia/Shanghai"),
+        id="pool_16_45",
         replace_existing=True,
         misfire_grace_time=3600,
     )
