@@ -1347,6 +1347,19 @@ def generate(
 
     model = settings.ANALYSIS_MODEL or DEFAULT_MODEL
 
+    # Model A/B (6/10): deterministic (code, BJT day) bucketing so a stock
+    # stays on one model all trading day — intraday re-analyses comparing
+    # against their own anchor must not flap between models. sha1, not
+    # builtin hash(): the latter is salted per-process and would reshuffle
+    # buckets on every redeploy.
+    if settings.ANALYSIS_MODEL_B and settings.ANALYSIS_AB_PCT > 0:
+        import hashlib
+        bjt_day = datetime.now(timezone(timedelta(hours=8))).date().isoformat()
+        bucket = int(hashlib.sha1(f"{code}:{bjt_day}".encode()).hexdigest(), 16) % 100
+        if bucket < settings.ANALYSIS_AB_PCT:
+            model = settings.ANALYSIS_MODEL_B
+            logger.info("analysis[%s] A/B → model B (%s), bucket=%d", code, model, bucket)
+
     # Compute data completeness once — fed into the prompt AND persisted on
     # the Analysis row so we can later correlate input quality with
     # hit-rate (e.g. low completeness analyses might be systematically off).

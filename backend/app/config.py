@@ -24,6 +24,20 @@ class Settings(BaseSettings):
     # want to A/B test (e.g., "claude-sonnet-4-6" on zenmux).
     ANALYSIS_MODEL: str = ""
 
+    # --- Model A/B (6/10) ---------------------------------------------------
+    # Route a deterministic slice of analyses to a second model so the
+    # outcomes feedback loop can compare hit rates per model (anchors carry
+    # a `model` column since 6/10). Bucketing is sha1(code + BJT date) % 100
+    # — a stock stays on one model for the whole trading day, so intraday
+    # re-analyses don't flap between models.
+    #
+    # CAVEAT: model B is called through the SAME ANTHROPIC_BASE_URL + API
+    # key as model A — pick a name the current gateway serves (on dashscope
+    # e.g. "MiniMax-M2.5" or "glm-4.7"). Cross-gateway A/B isn't supported.
+    # Either value unset/0 = feature off.
+    ANALYSIS_MODEL_B: str = ""
+    ANALYSIS_AB_PCT: int = 0  # 0-100; % of (code, day) buckets sent to model B
+
     # Toggle the in-process APScheduler. Set False during local tests / when
     # running multiple replicas (only one should schedule).
     SCHEDULER_ENABLED: bool = True
