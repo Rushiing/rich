@@ -228,6 +228,42 @@ export type ActionItemsOut = {
   checked_holdings: number;
 };
 
+// B0/B1 (6/10): 虚拟预选池 — paper positions under system observation.
+// Entries are created/promoted/eliminated by the daily 16:45 pool tick;
+// this API is read-only. See backend services/virtual_pool.py.
+export type PoolThesis = {
+  summary: string;
+  evidence: string[];
+  invalidation_price: number;
+  invalidation_rule: string;
+  sector?: string;
+};
+
+export type PoolEntryRow = {
+  id: number;
+  code: string;
+  name: string | null;
+  source: "rules" | "sector_picks";
+  state: "observing" | "recommendable" | "recommended" | "eliminated";
+  entered_at: string | null;
+  entry_date: string;
+  entry_close: number;
+  last_close: number | null;
+  last_date: string | null;
+  return_pct: number | null;
+  max_drawdown_pct: number | null;
+  days_observed: number;
+  thesis: PoolThesis;
+  eliminated_reason: string | null;
+};
+
+export type PoolOverview = {
+  recommendable: PoolEntryRow[];
+  observing: PoolEntryRow[];
+  eliminated_recent: PoolEntryRow[];
+  counts: { observing: number; recommendable: number; eliminated_total: number };
+};
+
 // 5/29: one historical anchor row from AnalysisOutcome. Detail-page
 // "历史解析" card shows the last N of these so users can see how the
 // verdict + confidence shifted across regenerations, alongside the
@@ -415,6 +451,8 @@ export const api = {
     request<HitRateSummary>(`/api/stocks/hit-rate-summary`),
   actionItems: () =>
     request<ActionItemsOut>(`/api/stocks/action-items`),
+  poolOverview: () =>
+    request<PoolOverview>(`/api/pool`),
   // ---- holdings (cost basis) ----
   getHolding: (code: string) =>
     request<Holding | null>(`/api/holdings/${code}`),

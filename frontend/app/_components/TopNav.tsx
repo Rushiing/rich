@@ -15,6 +15,7 @@ import UserChip from "./UserChip";
 const LINKS: { href: string; label: string }[] = [
   { href: "/",          label: "首页" },
   { href: "/stocks",    label: "盯盘" },
+  { href: "/pool",      label: "预选池" },
   { href: "/sectors",   label: "板块" },
   { href: "/watchlist", label: "自选池" },
   { href: "/changelog", label: "更新日志" },
