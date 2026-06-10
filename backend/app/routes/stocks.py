@@ -343,6 +343,34 @@ def get_hit_rate_summary():
     return payload
 
 
+class ActionItem(BaseModel):
+    code: str
+    name: str
+    type: str       # stop_loss_breach | sell_verdict | valid_window_expired | signal_alert
+    severity: str   # urgent | warn
+    message: str
+
+
+class ActionItemsOut(BaseModel):
+    items: list[ActionItem]
+    checked_holdings: int
+
+
+@router.get("/action-items", response_model=ActionItemsOut)
+def get_action_items(
+    db: Session = Depends(get_db),
+    user_id: int | None = Depends(require_auth),
+):
+    """S1 (6/10): 今日需行动 — holdings-aware sell triggers. For each of
+    the user's holdings: stop-loss breach / sell verdict / lapsed validity
+    window / new strong signal since the analysis anchor. Computed on
+    request (spec excludes push; the 盯盘 banner is the push surrogate).
+    NOTE: declared before /{code} so the literal path wins routing."""
+    from ..services import action_items as action_items_svc
+    owner = resolve_owner(user_id, db)
+    return action_items_svc.compute_for_user(db, owner)
+
+
 @router.post("/snapshot", response_model=SnapshotTriggerResult)
 def trigger_snapshot(post_close: bool = False):
     """Kick off the snapshot job in a background thread and return immediately.
