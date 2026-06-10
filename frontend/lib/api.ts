@@ -197,6 +197,11 @@ export type HitRateBucket = {
   n: number;
   hit_rate: number | null;        // % (0-100); null for non-directional
   avg_return_d5: number | null;   // %; can be negative
+  // S2 (6/10): honest-stats fields. Raw hit_rate conflates market beta +
+  // clustering inflation; the UI leads with these when present.
+  n_unique?: number | null;           // distinct (code, day) anchors
+  hit_rate_dedup?: number | null;     // hit rate on deduped set
+  excess_return_d5?: number | null;   // avg return − same-day all-anchor median
 };
 
 export type HitRateSummary = {

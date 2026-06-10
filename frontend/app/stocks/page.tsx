@@ -662,14 +662,23 @@ function HitRateBanner({ hitRate }: { hitRate: HitRateSummary | null }) {
   const sell = hitRate.by_actionable["建议卖出"];
   if (!buy && !sell) return null;
 
+  // S2 (6/10) 口径升级:大数字用去重命中率(按 code+日取末锚,剥掉盘中
+  // 重复解析的聚类膨胀),配同日基线超额(剥市场 beta)。买入超额为正/
+  // 卖出超额为负 = 真选股区分度,绿色;否则琥珀色提示"主要是行情"。
   const StatCard = ({
-    label, bucket, color,
+    label, bucket, color, isBuy,
   }: {
     label: string;
-    bucket: { n: number; hit_rate: number | null; avg_return_d5: number | null } | undefined;
+    bucket: HitRateSummary["by_actionable"][string] | undefined;
     color: string;
+    isBuy: boolean;
   }) => {
     if (!bucket || bucket.hit_rate == null) return null;
+    const rate = bucket.hit_rate_dedup ?? bucket.hit_rate;
+    const nShown = bucket.n_unique ?? bucket.n;
+    const excess = bucket.excess_return_d5;
+    const excessSupports =
+      excess != null && (isBuy ? excess > 1 : excess < -1);
     return (
       <div style={{
         flex: 1,
@@ -685,16 +694,21 @@ function HitRateBanner({ hitRate }: { hitRate: HitRateSummary | null }) {
         }}>
           {label}
         </div>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
           <span style={{
             fontSize: 28, fontWeight: 700, color,
             fontFamily: "monospace", lineHeight: 1,
           }}>
-            {bucket.hit_rate.toFixed(1)}%
+            {rate.toFixed(1)}%
           </span>
           <span style={{ color: "var(--text-soft)", fontSize: 12 }}>
-            样本 {bucket.n}{bucket.n < 30 ? " · 样本偏小" : ""}
+            去重 n={nShown}{nShown < 30 ? " · 偏小" : ""}
           </span>
+          {excess != null && (
+            <span style={{ fontSize: 12, color: excessSupports ? "#22c55e" : "#f59e0b" }}>
+              5日超额 {excess >= 0 ? "+" : ""}{excess.toFixed(1)}%
+            </span>
+          )}
         </div>
       </div>
     );
@@ -715,8 +729,8 @@ function HitRateBanner({ hitRate }: { hitRate: HitRateSummary | null }) {
         </span>
       </div>
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-        <StatCard label="建议买入" bucket={buy} color="#ef4444" />
-        <StatCard label="建议卖出" bucket={sell} color="#22c55e" />
+        <StatCard label="建议买入" bucket={buy} color="#ef4444" isBuy />
+        <StatCard label="建议卖出" bucket={sell} color="#22c55e" isBuy={false} />
       </div>
       <div style={{
         marginTop: 6,

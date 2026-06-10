@@ -33,6 +33,19 @@ export default function StockDetailPage({
   // fetch + edit flow) so ScenarioAdviceCard can highlight the quadrant
   // matching the user's REAL P&L instead of showing four equal rows.
   const [holding, setHolding] = useState<Holding | null>(null);
+  // S2 (6/10): deep_analysis collapsed by default — the 1500-2500 字 wall
+  // was burying the conclusion. Auto-expands after a debate regenerate
+  // (the payoff lives in the 看多 vs 看空 section) and via the banner jump.
+  const [deepOpen, setDeepOpen] = useState(false);
+
+  function jumpToDebateSection() {
+    setDeepOpen(true);
+    requestAnimationFrame(() => {
+      const t = document.getElementById("md-h-看多-vs-看空")
+        ?? document.getElementById("md-deep-analysis");
+      t?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -73,13 +86,9 @@ export default function StockDetailPage({
       // they see the cross-validation payoff immediately. Defer one frame
       // so the new markdown renders before we query the DOM.
       if (mode === "debate") {
-        requestAnimationFrame(() => {
-          // Anchor id derived from heading text in renderMarkdown (see
-          // h3.id assignment below). Fallback to deep-analysis container.
-          const heading = document.getElementById("md-h-看多-vs-看空")
-            ?? document.getElementById("md-deep-analysis");
-          heading?.scrollIntoView({ behavior: "smooth", block: "start" });
-        });
+        // S2: deep analysis is collapsed by default — expand before the
+        // scroll so the target section exists in the DOM.
+        jumpToDebateSection();
       }
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -122,21 +131,24 @@ export default function StockDetailPage({
         <p style={{ color: "var(--text-faint)", marginTop: 24 }}>加载中…</p>
       ) : (
         <>
-          {detail && <IndustryContextCard detail={detail} />}
-          {/* 6/3: 历史解析上移到 IndustryContextCard 之后,跟"行业 / 水位"
-              并列作为顶部对照信息。阅读流变成"对照 → 建议":先看
-              行业位置 + 历次 anchor 命中,再下沉到当前 KeyTable。 */}
-          <AnalysisHistoryCard code={code} />
-          <HoldingCard
-            code={code}
-            price={detail?.price ?? null}
-            keyTable={analysis?.key_table ?? null}
-            onHoldingChange={setHolding}
-          />
           {!analysis ? (
-            <EmptyState onGenerate={regenerate} generating={generating} err={err} />
+            <>
+              {detail && <IndustryContextCard detail={detail} />}
+              <AnalysisHistoryCard code={code} />
+              <HoldingCard
+                code={code}
+                price={detail?.price ?? null}
+                keyTable={null}
+                onHoldingChange={setHolding}
+              />
+              <EmptyState onGenerate={regenerate} generating={generating} err={err} />
+            </>
           ) : (
             <>
+              {/* S2 (6/10): 结论先行。第一屏 = 鲜度条 + 结论卡(actionable
+                  / 理由 / 触发价 / 有效期 / 命中率背书),持仓对照紧随其
+                  后;行业水位 + 历史解析是"对照信息",下沉到结论之下;
+                  deep_analysis 默认折叠。阅读顺序 = 决策顺序。 */}
               <FreshnessBar
                 analysis={analysis}
                 generating={generating}
@@ -144,7 +156,9 @@ export default function StockDetailPage({
                 onDebate={() => regenerate("debate")}
               />
               {err && <div style={{ color: "#ef4444", marginTop: 8, fontSize: 13 }}>{err}</div>}
-              {analysis.mode === "debate" && <DebateBanner code={code} />}
+              {analysis.mode === "debate" && (
+                <DebateBanner code={code} onJump={() => jumpToDebateSection()} />
+              )}
               <KeyTableCard
                 kt={analysis.key_table}
                 currentPrice={detail?.price ?? null}
@@ -155,7 +169,19 @@ export default function StockDetailPage({
                     : null
                 }
               />
-              <DeepAnalysis md={analysis.deep_analysis} />
+              <HoldingCard
+                code={code}
+                price={detail?.price ?? null}
+                keyTable={analysis?.key_table ?? null}
+                onHoldingChange={setHolding}
+              />
+              {detail && <IndustryContextCard detail={detail} />}
+              <AnalysisHistoryCard code={code} />
+              <DeepAnalysis
+                md={analysis.deep_analysis}
+                open={deepOpen}
+                onToggle={() => setDeepOpen((v) => !v)}
+              />
               <Footnote analysis={analysis} />
             </>
           )}
@@ -687,23 +713,43 @@ function KeyTableCard({
         </div>
         {/* 6/3: AI 历史命中率 — 在 actionable 下方、reason 之上,作为
             "你为什么信这个建议" 的硬数据支撑。只对买/卖 显示 (其它
-            没 hit_rate)。sample n<30 加 "(样本小)" 警示。 */}
+            没 hit_rate)。
+            S2 (6/10) 口径升级:优先展示去重命中率(按 code+日取末锚,
+            剥掉盘中重复解析的聚类水分)+ 相对同日全体票中位数的超额
+            (剥掉市场 beta — 大跌日卖出"命中"不算本事)。超额是否支撑
+            verdict 决定颜色:买入要正、卖出要负才算真区分度。 */}
         {(() => {
           const hb = hitRate?.by_actionable[view.action];
           if (!hb || hb.hit_rate == null) return null;
+          const rate = hb.hit_rate_dedup ?? hb.hit_rate;
+          const nShown = hb.n_unique ?? hb.n;
           const rateColor =
-            hb.hit_rate >= 60 ? "#22c55e" :
-            hb.hit_rate >= 50 ? "var(--text)" :
+            rate >= 60 ? "#22c55e" :
+            rate >= 50 ? "var(--text)" :
             "#f59e0b";
+          const excess = hb.excess_return_d5;
+          const excessSupports =
+            excess != null &&
+            (view.action === "建议买入" ? excess > 1 : excess < -1);
           return (
             <div style={{
               marginTop: 8,
               color: "var(--text-soft)", fontSize: 12, lineHeight: 1.5,
             }}>
               <span>AI 此类建议历史命中 </span>
-              <b style={{ color: rateColor, fontSize: 13 }}>{hb.hit_rate.toFixed(1)}%</b>
-              <span> · 样本 <b style={{ color: "var(--text)" }}>{hb.n}</b></span>
-              {hb.n < 30 && <span style={{ color: "#f59e0b" }}> (偏小)</span>}
+              <b style={{ color: rateColor, fontSize: 13 }}>{rate.toFixed(1)}%</b>
+              <span>（去重 n={nShown}{nShown < 30 ? "，偏小" : ""}）</span>
+              {excess != null && (
+                <span>
+                  {" "}· 5 日超额{" "}
+                  <b style={{ color: excessSupports ? "#22c55e" : "#f59e0b", fontSize: 13 }}>
+                    {excess >= 0 ? "+" : ""}{excess.toFixed(1)}%
+                  </b>
+                  <Tooltip content="相对同日全体自选股中位数的超额收益。买入为正/卖出为负才说明 AI 在选股,而不是搭了大盘的顺风车。">
+                    <span style={{ color: "var(--text-faint)", cursor: "help" }}> ⓘ</span>
+                  </Tooltip>
+                </span>
+              )}
             </div>
           );
         })()}
@@ -714,6 +760,55 @@ function KeyTableCard({
             {tiers ? view.reason : kt.one_line_reason}
           </div>
         )}
+        {/* S2 (6/10): 触发价一行 — 结论卡上直接回答"什么价位动手/离场",
+            不用下翻到关键数据表和止损卡。卖出/不入手给卖出区间+止损触发,
+            买入给买入区间+止损,观望给"若持有"的离场线。止损取最高一档
+            (第一道防线,validators 保证有序)。带现价距离百分比。 */}
+        {(() => {
+          const firstStop = kt.stop_loss_levels && kt.stop_loss_levels.length > 0
+            ? kt.stop_loss_levels.reduce((a, b) => (b.price > a.price ? b : a))
+            : null;
+          const sellish = view.action === "建议卖出" || view.action === "不建议入手";
+          const stopDist = firstStop && currentPrice
+            ? (currentPrice - firstStop.price) / currentPrice * 100
+            : null;
+          const seg: { k: string; v: string }[] = [];
+          if (sellish) {
+            if (kt.sell_price_low != null && kt.sell_price_high != null) {
+              seg.push({ k: "卖出区间", v: `${kt.sell_price_low.toFixed(2)} – ${kt.sell_price_high.toFixed(2)}` });
+            }
+            if (firstStop) {
+              seg.push({
+                k: "跌破即离场",
+                v: `${firstStop.price.toFixed(2)}${stopDist != null ? `（距现价 ${stopDist >= 0 ? "-" : "+"}${Math.abs(stopDist).toFixed(1)}%）` : ""}`,
+              });
+            }
+          } else if (view.action === "建议买入") {
+            seg.push({ k: "买入区间", v: `${view.buy_price_low.toFixed(2)} – ${view.buy_price_high.toFixed(2)}` });
+            if (firstStop) {
+              seg.push({ k: "止损", v: firstStop.price.toFixed(2) });
+            }
+          } else if (firstStop) {
+            seg.push({
+              k: "若持有，跌破离场",
+              v: `${firstStop.price.toFixed(2)}${stopDist != null ? `（距现价 ${stopDist >= 0 ? "-" : "+"}${Math.abs(stopDist).toFixed(1)}%）` : ""}`,
+            });
+          }
+          if (seg.length === 0) return null;
+          return (
+            <div style={{
+              marginTop: 10, display: "flex", flexWrap: "wrap", gap: 14,
+              fontSize: 13,
+            }}>
+              {seg.map((s, i) => (
+                <span key={i}>
+                  <span style={{ color: "var(--text-muted)" }}>{s.k} </span>
+                  <b style={{ fontFamily: "monospace", color: "var(--text)" }}>{s.v}</b>
+                </span>
+              ))}
+            </div>
+          );
+        })()}
         {kt.red_flags && kt.red_flags.length > 0 && (
           <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 6 }}>
             {kt.red_flags.map((f, i) => (
@@ -1227,12 +1322,57 @@ function ScenarioAdviceCard({
   );
 }
 
-function DeepAnalysis({ md }: { md: string }) {
+function DeepAnalysis({
+  md, open, onToggle,
+}: {
+  md: string;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  // S2: collapsed by default. The fold button advertises length so the
+  // user knows what they're opening — chars ≈ reading commitment.
+  const sectionCount = (md.match(/^##\s/gm) || []).length;
+  if (!open) {
+    return (
+      <button
+        onClick={onToggle}
+        style={{
+          marginTop: 16,
+          width: "100%",
+          padding: "12px 16px",
+          background: "var(--surface)",
+          border: "1px dashed var(--border-mid)",
+          borderRadius: 8,
+          color: "var(--text-soft)",
+          fontSize: 13,
+          cursor: "pointer",
+          textAlign: "left",
+        }}
+      >
+        📖 展开完整分析
+        <span style={{ color: "var(--text-faint)", marginLeft: 8 }}>
+          约 {Math.round(md.length / 100) * 100} 字{sectionCount > 0 ? ` · ${sectionCount} 节` : ""}
+          （公司画像 / 股价剧情 / 看多 vs 看空 / 风险与止损 …）
+        </span>
+      </button>
+    );
+  }
   return (
     <section
       id="md-deep-analysis"
       style={{ marginTop: 16, padding: 16, border: "1px solid var(--border)", borderRadius: 8, lineHeight: 1.7, fontSize: 14 }}
     >
+      <div style={{ textAlign: "right", marginBottom: 4 }}>
+        <button
+          onClick={onToggle}
+          style={{
+            background: "none", border: "none", color: "var(--text-muted)",
+            fontSize: 12, cursor: "pointer", padding: 0,
+          }}
+        >
+          收起 ▲
+        </button>
+      </div>
       {renderMarkdown(md)}
     </section>
   );
@@ -1244,16 +1384,16 @@ function DeepAnalysis({ md }: { md: string }) {
  * points them to the 看多 vs 看空 section that holds the differentiating
  * content. Clickable: jumps to that section.
  */
-function DebateBanner({ code }: { code: string }) {
+function DebateBanner({ code, onJump }: { code: string; onJump: () => void }) {
   void code; // referenced for potential future per-code variation
   return (
     <a
       href="#md-h-看多-vs-看空"
       onClick={(e) => {
         e.preventDefault();
-        const t = document.getElementById("md-h-看多-vs-看空")
-          ?? document.getElementById("md-deep-analysis");
-        t?.scrollIntoView({ behavior: "smooth", block: "start" });
+        // S2: deep analysis may be collapsed — the page-level handler
+        // expands it first, then scrolls.
+        onJump();
       }}
       style={{
         display: "block",

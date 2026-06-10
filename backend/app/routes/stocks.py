@@ -295,6 +295,13 @@ class HitRateBucket(BaseModel):
     n: int
     hit_rate: float | None
     avg_return_d5: float | None
+    # S2 (6/10): honest-stats fields surfaced to the UI. The raw hit_rate
+    # conflates market beta (sell verdicts cluster on red days) and
+    # clustering inflation (smart cron re-anchors trending stocks). The UI
+    # should lead with these, not the raw number.
+    n_unique: int | None = None           # distinct (code, day) anchors
+    hit_rate_dedup: float | None = None   # hit rate on last-anchor-per-day set
+    excess_return_d5: float | None = None # avg return minus same-day all-anchor median
 
 
 class HitRateSummary(BaseModel):
@@ -332,6 +339,9 @@ def get_hit_rate_summary():
             n=b["n"],
             hit_rate=b["hit_rate"],
             avg_return_d5=b["avg_return_d5"],
+            n_unique=b.get("n_unique"),
+            hit_rate_dedup=b.get("hit_rate_dedup"),
+            excess_return_d5=b.get("excess_return_d5"),
         )
     payload = HitRateSummary(
         by_actionable=by_actionable,
