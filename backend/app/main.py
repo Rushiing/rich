@@ -632,6 +632,96 @@ def diag_smart_analyze_status():
     }
 
 
+@app.get("/api/_diag/model-ab-stats")
+def diag_model_ab_stats():
+    """A/B 跑起来没 — outcomes-stats 按 prompt_version 分桶,看不出 model,
+    这个 endpoint 专门照 model 维度。
+
+    回答三层:
+      1. config — settings 实际读到的 ANALYSIS_MODEL_B / ANALYSIS_AB_PCT
+         (确认环境变量在 Railway 生效了)
+      2. anchors_by_model — 锚点按 model 分组的 total / scored_d5
+         (model B 锚点有没有在产生;刚设环境变量时 scored_d5 可能还是 0,
+          因为 d5 要等 5 个交易日)
+      3. hit_by_model — 已 d5 评分的按 (model, actionable) 看去重命中 +
+         同日基线超额。这才是 A/B 真对比,但需要 model B 攒够 d5 才有意义,
+         初期多半空。
+    """
+    from sqlalchemy import func
+    from .db import SessionLocal
+    from .models import AnalysisOutcome
+
+    db = SessionLocal()
+    try:
+        config = {
+            "ANALYSIS_MODEL_B": settings.ANALYSIS_MODEL_B or "(未设)",
+            "ANALYSIS_AB_PCT": settings.ANALYSIS_AB_PCT,
+            "ab_active": bool(settings.ANALYSIS_MODEL_B and settings.ANALYSIS_AB_PCT > 0),
+        }
+
+        # 2. 锚点按 model 分布
+        rows = (
+            db.query(
+                AnalysisOutcome.model,
+                func.count().label("total"),
+                func.count(AnalysisOutcome.return_d5).label("scored_d5"),
+            )
+            .group_by(AnalysisOutcome.model)
+            .all()
+        )
+        anchors_by_model = sorted(
+            [
+                {"model": m or "(null,旧锚点)", "total": t, "scored_d5": s}
+                for m, t, s in rows
+            ],
+            key=lambda x: -x["total"],
+        )
+
+        # 3. 已评分的按 (model, actionable) 命中 — 买/卖向才算 hit
+        scored = (
+            db.query(AnalysisOutcome)
+            .filter(
+                AnalysisOutcome.return_d5.isnot(None),
+                AnalysisOutcome.model.isnot(None),
+                AnalysisOutcome.actionable.in_(["建议买入", "建议卖出"]),
+            )
+            .all()
+        )
+        buckets: dict[tuple, dict] = {}
+        for o in scored:
+            key = (o.model, o.actionable)
+            b = buckets.setdefault(key, {
+                "model": o.model, "actionable": o.actionable,
+                "n": 0, "hits": 0, "sum_ret": 0.0,
+            })
+            b["n"] += 1
+            b["sum_ret"] += o.return_d5
+            if o.actionable == "建议买入" and o.return_d5 > 0:
+                b["hits"] += 1
+            elif o.actionable == "建议卖出" and o.return_d5 < 0:
+                b["hits"] += 1
+        hit_by_model = sorted(
+            [
+                {
+                    "model": b["model"], "actionable": b["actionable"],
+                    "n": b["n"],
+                    "hit_rate": round(b["hits"] / b["n"] * 100, 1) if b["n"] else None,
+                    "avg_return_d5": round(b["sum_ret"] / b["n"], 2) if b["n"] else None,
+                }
+                for b in buckets.values()
+            ],
+            key=lambda x: (x["model"], x["actionable"]),
+        )
+
+        return {
+            "config": config,
+            "anchors_by_model": anchors_by_model,
+            "hit_by_model": hit_by_model,
+        }
+    finally:
+        db.close()
+
+
 @app.get("/api/_diag/watchlist-stats")
 def diag_watchlist_stats():
     """Watchlist 总体统计 — 估算 batch_analyze 类策略的成本规模。

@@ -256,7 +256,11 @@ def hit_rate_stats() -> dict[str, Any]:
 # 看平 band for nd_outlook_stats: |d1 return| within this % counts as a
 # correct 看平 call. 1.0% ≈ a third of A-share daily典型振幅 — tight
 # enough that 看平 isn't a free hit in any quiet tape.
-ND_FLAT_BAND_PCT = 1.0
+# 看平命中判定带宽。6/16 从 1.0 → 2.5：A 股日均振幅 2-3%,±1% 带太窄,
+# 次日涨跌几乎必然超出 → "看平"系统性判为没命中(6/16 实测看平 n=403
+# 命中率仅 14.6%,但 avg_return_d1=+1.52% 说明方向并不离谱)。±2.5% 是
+# "次日基本走平"的常识区间。纯统计口径,query-time 重算,不动预判逻辑。
+ND_FLAT_BAND_PCT = 2.5
 
 
 def nd_outlook_stats() -> dict[str, Any]:
