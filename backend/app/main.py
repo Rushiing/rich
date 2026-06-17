@@ -632,6 +632,54 @@ def diag_smart_analyze_status():
     }
 
 
+@app.get("/api/_diag/invite-codes-status")
+def diag_invite_codes_status():
+    """邀请码机制健康检查 — **脱敏**:不返回 code 任何字符,只暴露状态字段,
+    所以放在 public /_diag 下也不会泄露可用邀请码(否则任何人 curl 就能拿
+    到有效码注册账号)。用 note 标签 + created_at 区分不同码。
+
+    回答"通用校验码现在还生不生效":看 unlimited=true 的那条的 is_expired
+    + usable_now。通用码 (max_uses=NULL) 只有 expires_at 一道关 —— 没设
+    过期或没到期 = 永久生效。
+    """
+    from datetime import datetime, timezone
+    from .db import SessionLocal
+    from .models import InviteCode
+
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        rows = db.query(InviteCode).order_by(InviteCode.created_at.desc()).all()
+        out = []
+        for r in rows:
+            ea = r.expires_at
+            if ea is not None and ea.tzinfo is None:
+                ea = ea.replace(tzinfo=timezone.utc)
+            is_expired = bool(ea and ea < now)
+            unlimited = r.max_uses is None
+            exhausted = (not unlimited) and (r.current_uses or 0) >= (r.max_uses or 0)
+            out.append({
+                "note": r.note or "(无标签)",
+                "unlimited": unlimited,
+                "uses": f"{r.current_uses or 0}/{'∞' if unlimited else r.max_uses}",
+                "expires_at": ea.isoformat() if ea else None,
+                "is_expired": is_expired,
+                "exhausted": exhausted,
+                "usable_now": (not is_expired) and (not exhausted),
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            })
+        return {
+            "total": len(out),
+            "usable_count": sum(1 for c in out if c["usable_now"]),
+            "unlimited_usable": sum(
+                1 for c in out if c["unlimited"] and c["usable_now"]
+            ),
+            "codes": out,
+        }
+    finally:
+        db.close()
+
+
 @app.get("/api/_diag/model-ab-stats")
 def diag_model_ab_stats():
     """A/B 跑起来没 — outcomes-stats 按 prompt_version 分桶,看不出 model,
