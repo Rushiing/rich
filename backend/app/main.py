@@ -851,14 +851,20 @@ def diag_pool_status():
     authed /api/pool route, public for headless debugging)."""
     from .db import SessionLocal
     from .services import virtual_pool as pool_svc
+    from .services.cron import get_pool_cron_result
     db = SessionLocal()
     try:
         overview = pool_svc.pool_overview(db)
     finally:
         db.close()
+    cron = get_pool_cron_result()
     return {
         "running": _pool_running["v"],
+        # last_result = 手动 diag pool-tick 的结果(可能 null);6/18 起
+        # 把 16:45 cron tick 的结果也带出来,不再有监控盲区。
         "last_result": _pool_running["last_result"],
+        "last_cron_result": cron["last_cron_result"],
+        "last_cron_at": cron["last_cron_at"],
         "pool": overview,
     }
 

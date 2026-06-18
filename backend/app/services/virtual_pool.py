@@ -245,6 +245,16 @@ def _evaluate_entry(db: Session, e: PoolEntry) -> str:
         db.commit()
         return e.state
 
+    # 6/18 加固: 停牌告警。bars 里 close=None 的是停牌日,被 closes 过滤掉,
+    # 所以 days_observed(=len(closes)) 在长期停牌时会停滞 → 票可能永远
+    # 卡在 observing 不晋升不淘汰。log 出来便于发现僵尸票(阶段2 可加自动处理)。
+    suspended = len(bars) - len(closes)
+    if suspended >= 3:
+        logger.warning(
+            "pool eval %s: %d/%d 观察期 K 线无收盘(疑停牌),days_observed 停滞在 %d",
+            e.code, suspended, len(bars), len(closes),
+        )
+
     last_date, last_close = closes[-1]
     e.last_close = last_close
     e.last_date = last_date
@@ -284,7 +294,9 @@ def _evaluate_entry(db: Session, e: PoolEntry) -> str:
     elif (e.state == "observing"
           and e.days_observed >= PROMOTE_MIN_DAYS
           and (e.return_pct or 0) > 0
-          and (latest.ma20 is None or last_close >= latest.ma20)):
+          # 6/18 加固: MA20 必须存在才晋升。原版 `ma20 is None or ...` 会在
+          # MA20 缺失(新股/数据缺陷)时绕过技术面检验直接晋升 → 低质量推荐。
+          and latest.ma20 is not None and last_close >= latest.ma20):
         e.state = "recommendable"
         e.state_changed_at = now
         logger.info(

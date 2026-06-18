@@ -781,17 +781,34 @@ def _outcomes_tick():
         logger.exception("outcomes tick failed")
 
 
+# 6/18: cron tick 的最近结果。原本 cron 跑完 run_pool_tick() 丢弃结果,
+# 只有手动 diag pool-tick 才写 main._pool_running,导致 16:45 cron 真跑了
+# 但 diag pool-status 看不到入/淘/晋数(监控盲区)。存这里,pool-status 读。
+_pool_last_cron_result: dict | None = None
+_pool_last_cron_at: str | None = None
+
+
+def get_pool_cron_result() -> dict:
+    """main.pool-status 读 cron tick 的最近结果。"""
+    return {"last_cron_result": _pool_last_cron_result, "last_cron_at": _pool_last_cron_at}
+
+
 def _pool_tick():
     """B1 (6/10) daily post-close 16:45 BJT: 虚拟预选池 — evaluate active
     entries against today's close (eliminate / promote), then scan the two
     entry channels (rules + today's sector picks). Runs after _kline_tick
     (16:30) so watchlist klines are fresh; pool-only codes get their own
     pull_one inside the service."""
+    global _pool_last_cron_result, _pool_last_cron_at
     try:
         from . import virtual_pool as pool_svc
-        pool_svc.run_pool_tick()
-    except Exception:
+        result = pool_svc.run_pool_tick()
+        _pool_last_cron_result = result
+        _pool_last_cron_at = datetime.now(timezone.utc).isoformat()
+    except Exception as e:
         logger.exception("pool tick failed")
+        _pool_last_cron_result = {"error": str(e)}
+        _pool_last_cron_at = datetime.now(timezone.utc).isoformat()
 
 
 def _shareholder_tick():
