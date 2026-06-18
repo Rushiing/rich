@@ -92,6 +92,10 @@ _POSTGRES_BACKFILL = [
     # the LLM stops relying on (possibly stale/wrong) world knowledge for
     # the 公司画像 section. Filled by refresh_industry_meta.
     ("industry_meta", "business_desc",      "TEXT"),
+    # 6/18: 批次(cohort)考核。virtual_pool.cohort_week 晋升周;
+    # analysis_outcomes.cohort 让晋升票 anchor 可按批统计买卖建议命中率。
+    ("virtual_pool", "cohort_week",         "VARCHAR(8)"),
+    ("analysis_outcomes", "cohort",         "VARCHAR(8)"),
 ]
 
 

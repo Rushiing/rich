@@ -299,10 +299,30 @@ def _evaluate_entry(db: Session, e: PoolEntry) -> str:
           and latest.ma20 is not None and last_close >= latest.ma20):
         e.state = "recommendable"
         e.state_changed_at = now
+        # 6/18: 批次(cohort)— ISO 周,晋升那周归一期。
+        bjt_now = now.astimezone(timezone(timedelta(hours=8)))
+        e.cohort_week = bjt_now.strftime("%G-W%V")
         logger.info(
-            "pool promote %s: %d days, %+.1f%%, above MA20",
-            e.code, e.days_observed, e.return_pct,
+            "pool promote %s: %d days, %+.1f%%, above MA20, cohort=%s",
+            e.code, e.days_observed, e.return_pct, e.cohort_week,
         )
+        db.commit()  # 先落地晋升状态,再触发解析(解析失败不回滚晋升)
+        # 6/18: 晋升即挂深度解析(single,不 debate)。sector_picks 票多不在
+        # watchlist → allow_external + synthetic w;没 snapshot → anchor_price
+        # 用 kline last_close。失败不阻塞(best-effort)。这是"全生命周期"+
+        # 批次买卖命中率的数据源。
+        try:
+            from . import analysis as analysis_svc
+            analysis_svc.generate(
+                db, e.code, mode="single",
+                allow_external=True, external_name=e.name,
+                cohort=e.cohort_week,
+                anchor_price_override=e.last_close,
+            )
+            logger.info("pool promote %s: analysis generated", e.code)
+        except Exception:
+            logger.exception("pool promote %s: analysis failed (non-fatal)", e.code)
+        return e.state
 
     db.commit()
     return e.state

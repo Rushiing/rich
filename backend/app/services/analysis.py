@@ -1312,6 +1312,18 @@ def _user_prompt(
     )
 
 
+def _infer_exchange(code: str) -> str:
+    """code 前缀推断交易所(synthetic watchlist 用)。6/0/3/9→沪深,
+    8/4→北交所(920/430/83/87 等)。粗略够用,prompt 只拿来填「市场」。"""
+    if code.startswith(("60", "68", "51", "11")):
+        return "sh"
+    if code.startswith(("00", "30", "12", "15")):
+        return "sz"
+    if code.startswith(("8", "4", "92")):
+        return "bj"
+    return "sh"
+
+
 def generate(
     db: Session,
     code: str,
@@ -1319,6 +1331,10 @@ def generate(
     client: Anthropic | None = None,
     mode: str = "single",
     force: bool = False,
+    allow_external: bool = False,
+    external_name: str | None = None,
+    cohort: str | None = None,
+    anchor_price_override: float | None = None,
 ) -> Analysis:
     """Synchronously generate a fresh analysis and persist it.
 
@@ -1343,7 +1359,18 @@ def generate(
     """
     w = db.query(Watchlist).filter(Watchlist.code == code).first()
     if not w:
-        raise ValueError(f"{code} not in watchlist")
+        if not allow_external:
+            raise ValueError(f"{code} not in watchlist")
+        # 6/18: 预选池 sector_picks 通道入的票多不在任何 watchlist。晋升时
+        # 要给它生成解析,构造一个 synthetic Watchlist(不入库,只供 prompt
+        # 拼接用)。_user_prompt 只读 w.code/name/exchange,接任何对象都行。
+        w = Watchlist(
+            code=code,
+            name=external_name or code,
+            exchange=_infer_exchange(code),
+            user_id=None,
+        )
+        logger.info("analysis[%s] using synthetic watchlist (external, name=%s)", code, w.name)
 
     s = (
         db.query(Snapshot)
@@ -1579,16 +1606,21 @@ def generate(
         # score it against return_d1 — previously the most falsifiable
         # output of the product was never measured.
         nd = kt.get("next_day_outlook") or {}
+        # anchor_price 优先用 override(预选池 sector_picks 晋升票没 snapshot,
+        # 传 kline last_close);否则用 snapshot price。没 price → record_anchor
+        # 自己 skip。
+        anchor_px = anchor_price_override if anchor_price_override is not None else (s.price if s else None)
         record_anchor(
             db, code=code, generated_at=row.created_at,
             actionable=str(kt.get("actionable") or ""),
             prompt_version=prompt_version_for(mode), mode=mode,
-            anchor_price=(s.price if s else None),
+            anchor_price=anchor_px,
             confidence=conf_for_anchor,  # type: ignore[arg-type]
             data_completeness=data_comp["score"],
             model=model,
             nd_trend=(nd.get("trend") if isinstance(nd, dict) else None),
             nd_confidence=(nd.get("confidence") if isinstance(nd, dict) else None),
+            cohort=cohort,
         )
     except Exception:
         logger.exception("outcome anchor failed for %s (non-fatal)", code)

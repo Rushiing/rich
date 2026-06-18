@@ -428,6 +428,9 @@ class AnalysisOutcome(Base):
     # return vs a qfq close is distorted (June–July is A-share dividend
     # season). Stats that want a dividend-safe basis use anchor_close.
     anchor_close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 6/18: cohort 周("2026-W25"),仅预选池晋升触发的解析 anchor 带;普通
+    # 自选解析 cohort=None。阶段2 按 cohort 统计这批晋升票的买卖建议命中率。
+    cohort: Mapped[str | None] = mapped_column(String(8), nullable=True)
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
@@ -545,6 +548,9 @@ class PoolEntry(Base):
         DateTime(timezone=True), nullable=True,
     )
     eliminated_reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # 6/18: ISO 周("2026-W25"),晋升成 recommendable 时写。批次(cohort)考核
+    # 按周聚合成"第 N 期",每批可考核累计收益/中证500超额/买卖建议命中率。
+    cohort_week: Mapped[str | None] = mapped_column(String(8), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
     )

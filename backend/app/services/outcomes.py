@@ -35,6 +35,7 @@ def record_anchor(
     model: str | None = None,
     nd_trend: str | None = None,
     nd_confidence: str | None = None,
+    cohort: str | None = None,
 ) -> None:
     """Insert an outcome anchor. Called from analysis.generate() right
     after the Analysis row is persisted. No-op when anchor_price is
@@ -67,6 +68,7 @@ def record_anchor(
         model=model,
         nd_trend=nd_trend,
         nd_confidence=nd_confidence,
+        cohort=cohort,
     ))
     db.commit()
 
