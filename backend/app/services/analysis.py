@@ -367,23 +367,24 @@ def _shareholder_changes_section(code: str | None) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _peer_comparison_section(s: "Snapshot | None") -> str:
-    """同行业 PE 最接近本股的 5 支可比股,横向对比 PE/PB/今日涨跌。
+def compute_peers(s: "Snapshot | None") -> list[dict]:
+    """同行业 PE 最接近本股的可比股 list(结构化)。两个消费者共用:
+    prompt 段 `_peer_comparison_section` + 详情页 `GET /{code}/peers` API
+    (确定性同业可比卡)。
 
-    Fail-safe: 无 industry_name / 同行业 < 3 支 / DB error → 返回 ''
-    不阻塞。
+    两阶段选取(6/9 定):
+      ① 同 industry_name + PE 接近本股,取最近 5 支
+      ② 第一阶段 < 3 支 → 跨行业按 PE 接近 + 市值 0.3-3x 补足
+         (300476 industry='元件' 这种 CNINFO 细分池子里可能就本股自己)
 
-    6/9 (A+B 调整):
-    - B. 选取算法从"市值降序"改成"PE 接近本股"。原因:6/9 render-prompt
-      验证发现按市值降序选出来 5 支 PE 跨度极大 (36 到 202),LLM 觉得
-      列表代表性差,只用聚合的 industry_pe_avg 不引具体股票。按 PE 接近
-      取 5 支,LLM 看到的是"真的可比的票",更愿意引用。
-    - A. prompt 强化为"必须在 deep_analysis 看多/看空理由里至少引用
-      1-2 支具体股票代码做对比",从被动判读变主动要求。
+    返回 list:非本股 peer(按 PE 接近升序)在前,**本股 is_self=True 排
+    最后**(沿用 prompt 里本股加粗放末尾的习惯)。每项:
+      {code, pe_ratio, pb_ratio, change_pct, market_cap,
+       is_self, is_cross_industry}
+    无本股 PE / DB error / 完全无 peer → []。
     """
     if s is None or s.pe_ratio is None:
-        # 没有本股 PE 就没法算 PE 接近,直接不展示
-        return ""
+        return []
     try:
         from sqlalchemy import func
         from ..models import Snapshot
@@ -409,10 +410,7 @@ def _peer_comparison_section(s: "Snapshot | None") -> str:
                     .limit(5).all()
                 )
 
-            # 第二阶段 fallback: 同行业 < 3 支时,跨行业按 PE 接近 + 市值同
-            # 量级补足。300476 (industry='元件') 这种 CNINFO 细分行业池子
-            # 里可能就本股自己,严格匹配会一直空。fallback 至少给 LLM 一些
-            # 可比锚 (按 PE 接近 + 市值 0.3-3x 范围筛)。
+            # 第二阶段 fallback: 跨行业 PE 接近 + 市值 0.3-3x
             cross_peers: list = []
             if len(same_industry_peers) < 3 and s.market_cap:
                 exclude_codes = [p.code for p in same_industry_peers] + [s.code]
@@ -438,41 +436,85 @@ def _peer_comparison_section(s: "Snapshot | None") -> str:
         finally:
             db.close()
     except Exception as e:
-        logger.warning("peer comparison: failed for %s (%s); skipping", s.code, e)
-        return ""
+        logger.warning("compute_peers: failed for %s (%s); skipping", s.code, e)
+        return []
 
-    all_peers = list(same_industry_peers) + list(cross_peers)
-    if len(all_peers) < 1:
-        # 完全没可比 (本股无市值且同行业 0 支),放弃
-        return ""
+    def _row(p, is_cross: bool) -> dict:
+        return {
+            "code": p.code,
+            "pe_ratio": p.pe_ratio,
+            "pb_ratio": p.pb_ratio,
+            "change_pct": p.change_pct,
+            "market_cap": p.market_cap,
+            "is_self": False,
+            "is_cross_industry": is_cross,
+        }
 
-    industry_label = s.industry_name or "未分类"
-    if cross_peers:
+    out = [_row(p, False) for p in same_industry_peers]
+    out += [_row(p, True) for p in cross_peers]
+    if not out:
+        return []
+    # 本股放最后
+    out.append({
+        "code": s.code,
+        "pe_ratio": s.pe_ratio,
+        "pb_ratio": s.pb_ratio,
+        "change_pct": s.change_pct,
+        "market_cap": s.market_cap,
+        "is_self": True,
+        "is_cross_industry": False,
+    })
+    return out
+
+
+def _peer_comparison_section(s: "Snapshot | None") -> str:
+    """同业可比 prompt 段 — 调 compute_peers() 拼字符串喂 LLM。
+
+    输出格式跟 6/9 版完全一致(回归:render-prompt 对比前后无差)。
+    Fail-safe: compute_peers 返回 [] → 返回 '' 不阻塞。
+
+    6/9 (A+B):
+    - B. 选取从"市值降序"改"PE 接近本股"(LLM 觉得真可比才引用具体票)
+    - A. 强引导"必须在 deep_analysis 引用 1-2 支具体代码做对比"
+    """
+    rows = compute_peers(s)
+    non_self = [p for p in rows if not p["is_self"]]
+    if not non_self:
+        return ""
+    self_row = next((p for p in rows if p["is_self"]), None)
+
+    n_same = sum(1 for p in non_self if not p["is_cross_industry"])
+    n_cross = sum(1 for p in non_self if p["is_cross_industry"])
+    industry_label = (s.industry_name if s and s.industry_name else "未分类")
+    if n_cross:
         title = (
-            f"\n## 同业可比 (行业「{industry_label}」内 {len(same_industry_peers)} 支 "
-            f"+ 跨行业市值同量级 PE 接近 {len(cross_peers)} 支)"
+            f"\n## 同业可比 (行业「{industry_label}」内 {n_same} 支 "
+            f"+ 跨行业市值同量级 PE 接近 {n_cross} 支)"
         )
     else:
-        title = f"\n## 同业可比 (行业「{industry_label}」内 PE 最接近本股的 {len(all_peers)} 支)"
+        title = f"\n## 同业可比 (行业「{industry_label}」内 PE 最接近本股的 {len(non_self)} 支)"
     lines = [title, "格式: 代码 / PE / PB / 今日%"]
-    peers = all_peers
-    for p in peers:
-        pe = f"{p.pe_ratio:.1f}" if p.pe_ratio is not None else "—"
-        pb = f"{p.pb_ratio:.2f}" if p.pb_ratio is not None else "—"
-        cp = f"{p.change_pct:+.2f}%" if p.change_pct is not None else "—"
-        lines.append(f"- {p.code}: PE {pe} / PB {pb} / {cp}")
+    for p in non_self:
+        pe = f"{p['pe_ratio']:.1f}" if p["pe_ratio"] is not None else "—"
+        pb = f"{p['pb_ratio']:.2f}" if p["pb_ratio"] is not None else "—"
+        cp = f"{p['change_pct']:+.2f}%" if p["change_pct"] is not None else "—"
+        lines.append(f"- {p['code']}: PE {pe} / PB {pb} / {cp}")
 
     # 本股对照
-    self_pe_str = f"{s.pe_ratio:.1f}" if s.pe_ratio is not None else "—"
-    self_pb_str = f"{s.pb_ratio:.2f}" if s.pb_ratio is not None else "—"
-    self_cp_str = f"{s.change_pct:+.2f}%" if s.change_pct is not None else "—"
-    lines.append(f"- **本股 {s.code}: PE {self_pe_str} / PB {self_pb_str} / {self_cp_str}**")
-    # A: 强引导,告诉 LLM **必须**在 deep_analysis 里引用具体可比股票代码,
-    # 不要只说"行业均值"。
+    if self_row:
+        spe = f"{self_row['pe_ratio']:.1f}" if self_row["pe_ratio"] is not None else "—"
+        spb = f"{self_row['pb_ratio']:.2f}" if self_row["pb_ratio"] is not None else "—"
+        scp = f"{self_row['change_pct']:+.2f}%" if self_row["change_pct"] is not None else "—"
+        lines.append(f"- **本股 {self_row['code']}: PE {spe} / PB {spb} / {scp}**")
+
+    # A: 强引导。示例用前 1-2 支非本股 peer;不足 2 支只举 1 支(原版越界 bug 修掉)。
+    ex = f"同业 {non_self[0]['code']} 是 {non_self[0]['pe_ratio']:.0f}"
+    if len(non_self) >= 2 and non_self[1]["pe_ratio"] is not None:
+        ex += f"、{non_self[1]['code']} 是 {non_self[1]['pe_ratio']:.0f}"
     lines.append(
         "**必读使用方式**:在 deep_analysis 的「看多 vs 看空」或「股价剧情」段,"
         "至少引用 1-2 支具体可比股票代码 + PE 数字做对比 (例如 '本股 PE 113,"
-        f"同业 {peers[0].code} 是 {peers[0].pe_ratio:.0f}、{peers[1].code} 是 {peers[1].pe_ratio:.0f},"
+        f"{ex},"
         "本股居中/偏高/偏低')。不要只说'行业均值',那是抽象数字,具体可比股票"
         "才是相对估值锚。"
     )

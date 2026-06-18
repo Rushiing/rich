@@ -720,3 +720,80 @@ def get_analysis_history(
         .all()
     )
     return [AnalysisHistoryItem.from_outcome(o) for o in outcomes]
+
+
+class PeerRow(BaseModel):
+    """同业可比确定性卡一行。本股 is_self=True;跨行业 fallback peer
+    is_cross_industry=True 且财务列可能 None(不在 watchlist 没财报)。"""
+    code: str
+    name: str | None = None
+    pe_ratio: float | None = None
+    pb_ratio: float | None = None
+    change_pct: float | None = None       # 今日%
+    revenue_yoy: float | None = None      # 营收同比增速 %
+    roe: float | None = None              # %
+    gross_margin: float | None = None     # 毛利率 %
+    is_self: bool = False
+    is_cross_industry: bool = False
+
+
+@router.get("/{code}/peers", response_model=list[PeerRow])
+def get_peers(
+    code: str,
+    db: Session = Depends(get_db),
+    user_id: int | None = Depends(require_auth),
+):
+    """同业可比确定性卡数据 — 同行业 PE 最接近本股的 5 支 peer + 本股,
+    每行带 PE/PB/今日% (snapshot) + 营收增速/ROE/毛利率 (financials)。
+
+    纯查数,不过 LLM(确定性、零幻觉)。跟 prompt 的同业可比段共用底层
+    compute_peers() 选取逻辑(一鱼两吃)。跨行业 fallback peer 可能不在
+    watchlist → 无财报 → 财务列 None,前端显示"—"。
+
+    Ownership-scoped 到用户 watchlist(同 analysis-history)。"""
+    owner = resolve_owner(user_id, db)
+    if not _user_watchlist(db, owner).filter(Watchlist.code == code).first():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not in watchlist")
+
+    from ..services.analysis import compute_peers
+    from ..services.financials import batch_latest_for_codes
+
+    s = (
+        db.query(Snapshot)
+        .filter(Snapshot.code == code)
+        .order_by(desc(Snapshot.id))
+        .first()
+    )
+    rows = compute_peers(s)
+    if not rows:
+        return []
+
+    all_codes = [r["code"] for r in rows]
+    fin_map = batch_latest_for_codes(all_codes, n=1)
+    # 全局 watchlist code→name (name 全局一致,不限 owner — 跨行业 peer
+    # 可能在别人 watchlist 里有名字)。从没人加过的 peer → None,前端兜底显 code。
+    name_rows = (
+        db.query(Watchlist.code, Watchlist.name)
+        .filter(Watchlist.code.in_(all_codes))
+        .distinct()
+        .all()
+    )
+    name_map = {c: n for c, n in name_rows}
+
+    out: list[PeerRow] = []
+    for r in rows:
+        fin = fin_map.get(r["code"], [])
+        f0 = fin[0] if fin else None
+        out.append(PeerRow(
+            code=r["code"],
+            name=name_map.get(r["code"]),
+            pe_ratio=r["pe_ratio"],
+            pb_ratio=r["pb_ratio"],
+            change_pct=r["change_pct"],
+            revenue_yoy=(f0.revenue_yoy if f0 else None),
+            roe=(f0.roe if f0 else None),
+            gross_margin=(f0.gross_margin if f0 else None),
+            is_self=r["is_self"],
+            is_cross_industry=r["is_cross_industry"],
+        ))
+    return out

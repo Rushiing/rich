@@ -222,3 +222,32 @@ def latest_for_code(code: str, n: int = 2) -> list[Financial]:
         )
     finally:
         db.close()
+
+
+def batch_latest_for_codes(
+    codes: list[str], n: int = 1,
+) -> dict[str, list[Financial]]:
+    """一次 IN 查询拉多 code 的最新 n 期财报,按 code 分组返回
+    {code: [Financial,...]} (每组按 report_date 倒序,最多 n 行)。
+
+    避免 N+1:同业可比卡(GET /{code}/peers) 要给 5-6 支 peer 各拉一期
+    财报(revenue_yoy/roe/gross_margin)。不在 watchlist 的 peer 没行 →
+    不出现在返回 dict 里,调用方按缺失处理(前端"—")。"""
+    if not codes:
+        return {}
+    db: Session = SessionLocal()
+    try:
+        rows = (
+            db.query(Financial)
+            .filter(Financial.code.in_(codes))
+            .order_by(Financial.report_date.desc())
+            .all()
+        )
+    finally:
+        db.close()
+    by_code: dict[str, list[Financial]] = {}
+    for r in rows:
+        bucket = by_code.setdefault(r.code, [])
+        if len(bucket) < n:
+            bucket.append(r)
+    return by_code
