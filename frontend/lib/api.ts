@@ -189,6 +189,23 @@ export type StockAnalysis = {
   data_completeness?: number | null;
 };
 
+// 6/18: 同业可比确定性卡一行。后台 compute_peers 算好(同行业 PE 最接近
+// 本股 5 支 + 本股),详情页纯渲染不过 LLM。本股 is_self=true 高亮;跨行业
+// fallback peer is_cross_industry=true 且财务列可能 null(不在 watchlist
+// 没财报)→ 前端显示"—"。
+export type PeerRow = {
+  code: string;
+  name: string | null;
+  pe_ratio: number | null;
+  pb_ratio: number | null;
+  change_pct: number | null;     // 今日%
+  revenue_yoy: number | null;    // 营收增速 %
+  roe: number | null;            // %
+  gross_margin: number | null;   // 毛利率 %
+  is_self: boolean;
+  is_cross_industry: boolean;
+};
+
 // 6/3: hit-rate summary for the buy/sell verdicts. Surfaced in list view
 // tooltips + detail page so users see "AI 历史命中 60% (n=48)" alongside
 // the actionable badge — building trust by showing the verdict has real
@@ -447,6 +464,8 @@ export const api = {
     request<AnalysisHistoryItem[]>(
       `/api/stocks/${code}/analysis-history?limit=${limit}`,
     ),
+  getPeers: (code: string) =>
+    request<PeerRow[]>(`/api/stocks/${code}/peers`),
   hitRateSummary: () =>
     request<HitRateSummary>(`/api/stocks/hit-rate-summary`),
   actionItems: () =>

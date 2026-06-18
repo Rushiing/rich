@@ -3,7 +3,7 @@
 import { use, useEffect, useState, type ReactNode } from "react";
 import {
   api, ActionableTier, ActionableTiers, HitRateSummary, Holding, KeyTable, NextDayOutlook,
-  ScenarioAdvice, StockAnalysis, StockDetail, StopLossLevel,
+  PeerRow, ScenarioAdvice, StockAnalysis, StockDetail, StopLossLevel,
   confidenceBucket, confidenceLabel,
 } from "../../../lib/api";
 import Tooltip from "../../_components/Tooltip";
@@ -134,6 +134,7 @@ export default function StockDetailPage({
           {!analysis ? (
             <>
               {detail && <IndustryContextCard detail={detail} />}
+              <PeerComparableCard code={code} />
               <AnalysisHistoryCard code={code} />
               <HoldingCard
                 code={code}
@@ -176,6 +177,7 @@ export default function StockDetailPage({
                 onHoldingChange={setHolding}
               />
               {detail && <IndustryContextCard detail={detail} />}
+              <PeerComparableCard code={code} />
               <AnalysisHistoryCard code={code} />
               <DeepAnalysis
                 md={analysis.deep_analysis}
@@ -1095,6 +1097,111 @@ function PriceAlertBanner({
     }}>
       ⚠️ {msg}
     </div>
+  );
+}
+
+// 6/18: 同业可比确定性卡。后台 compute_peers 算好(同行业 PE 最接近本股
+// 5 支 + 本股),前端纯渲染——数字锁死、零幻觉、完整 5 支、每次一样。跟
+// LLM 在 deep_analysis 里挑着说的叙述形成对照(那个会变会幻觉)。
+// lazy load + silent fail + 不足 2 行(只本股)不渲染。
+function PeerComparableCard({ code }: { code: string }) {
+  const [peers, setPeers] = useState<PeerRow[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.getPeers(code)
+      .then((d) => { if (!cancelled) setPeers(d); })
+      .catch(() => { if (!cancelled) setPeers([]); });  // silent: 补充信息,挂了不阻塞
+    return () => { cancelled = true; };
+  }, [code]);
+
+  // 只有本股 1 行(无可比) → 不渲染整卡
+  if (!peers || peers.filter((p) => !p.is_self).length < 1) return null;
+
+  const fmt = (v: number | null, digits: number, suffix = "") =>
+    v == null ? "—" : `${v.toFixed(digits)}${suffix}`;
+  const fmtSigned = (v: number | null) =>
+    v == null ? "—" : `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
+
+  const hasCross = peers.some((p) => p.is_cross_industry);
+
+  const th: React.CSSProperties = {
+    padding: "6px 8px", textAlign: "right", fontWeight: 500,
+    color: "var(--text-muted)", whiteSpace: "nowrap",
+  };
+  const td: React.CSSProperties = {
+    padding: "7px 8px", textAlign: "right", fontFamily: "monospace",
+    whiteSpace: "nowrap",
+  };
+
+  return (
+    <section style={{
+      marginTop: 16, padding: 14,
+      border: "1px solid var(--border)", borderRadius: 8,
+      background: "var(--surface-alt)",
+    }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 13, color: "var(--text-muted)", fontWeight: 600 }}>同业可比</span>
+        <span style={{ fontSize: 11, color: "var(--text-dim)" }}>
+          PE 最接近本股的可比股 · 数据直出不经 AI
+        </span>
+      </div>
+      <div style={{ overflowX: "auto", margin: "0 -4px" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 460 }}>
+          <thead>
+            <tr style={{ borderBottom: "1px solid var(--border-faint)" }}>
+              <th style={{ ...th, textAlign: "left" }}>股票</th>
+              <th style={th}>PE</th>
+              <th style={th}>PB</th>
+              <th style={th}>营收增速</th>
+              <th style={th}>ROE</th>
+              <th style={th}>毛利率</th>
+              <th style={th}>今日</th>
+            </tr>
+          </thead>
+          <tbody>
+            {peers.map((p) => {
+              const cpColor =
+                p.change_pct == null ? "var(--text-dim)"
+                  : p.change_pct >= 0 ? "#ef4444" : "#22c55e";
+              return (
+                <tr key={p.code} style={{
+                  borderBottom: "1px solid var(--border-faint)",
+                  background: p.is_self ? "var(--surface)" : undefined,
+                  borderLeft: p.is_self ? "2px solid var(--link)" : "2px solid transparent",
+                }}>
+                  <td style={{ padding: "7px 8px", textAlign: "left" }}>
+                    <span style={{ fontWeight: p.is_self ? 700 : 400 }}>
+                      {p.name || p.code}
+                    </span>
+                    <span style={{ color: "var(--text-dim)", fontFamily: "monospace", fontSize: 11, marginLeft: 5 }}>
+                      {p.code}
+                    </span>
+                    {p.is_self && (
+                      <span style={{ color: "var(--link)", fontSize: 10, marginLeft: 5 }}>本股</span>
+                    )}
+                    {p.is_cross_industry && (
+                      <span style={{ color: "var(--text-dim)", fontSize: 10, marginLeft: 5 }}>跨行业</span>
+                    )}
+                  </td>
+                  <td style={td}>{fmt(p.pe_ratio, 1)}</td>
+                  <td style={td}>{fmt(p.pb_ratio, 2)}</td>
+                  <td style={td}>{fmtSigned(p.revenue_yoy)}</td>
+                  <td style={td}>{fmt(p.roe, 1, "%")}</td>
+                  <td style={td}>{fmt(p.gross_margin, 1, "%")}</td>
+                  <td style={{ ...td, color: cpColor }}>{fmtSigned(p.change_pct)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {hasCross && (
+        <div style={{ marginTop: 6, fontSize: 11, color: "var(--text-dim)" }}>
+          注:同行业可比股不足,部分为跨行业市值同量级 PE 接近股;「—」表示该股暂无财报数据。
+        </div>
+      )}
+    </section>
   );
 }
 
