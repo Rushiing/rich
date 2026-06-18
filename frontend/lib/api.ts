@@ -272,6 +272,9 @@ export type PoolEntryRow = {
   days_observed: number;
   thesis: PoolThesis;
   eliminated_reason: string | null;
+  // 6/18: 晋升周(ISO "2026-W25"),批次考核按它聚合。observing 期为 null。
+  cohort_week?: string | null;
+  state_changed_at?: string | null;
 };
 
 export type PoolOverview = {
@@ -279,6 +282,13 @@ export type PoolOverview = {
   observing: PoolEntryRow[];
   eliminated_recent: PoolEntryRow[];
   counts: { observing: number; recommendable: number; eliminated_total: number };
+};
+
+// 6/18: 预选池专属详情(区域分离,不走 /api/stocks)。entry = 该票池内
+// 状态;analysis = 晋升时挂的深度解析(跟自选详情同结构,复用展示组件)。
+export type PoolDetail = {
+  entry: PoolEntryRow;
+  analysis: StockAnalysis | null;
 };
 
 // 5/29: one historical anchor row from AnalysisOutcome. Detail-page
@@ -472,6 +482,8 @@ export const api = {
     request<ActionItemsOut>(`/api/stocks/action-items`),
   poolOverview: () =>
     request<PoolOverview>(`/api/pool`),
+  poolDetail: (code: string) =>
+    request<PoolDetail>(`/api/pool/${code}`),
   // ---- holdings (cost basis) ----
   getHolding: (code: string) =>
     request<Holding | null>(`/api/holdings/${code}`),

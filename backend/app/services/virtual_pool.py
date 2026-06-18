@@ -381,6 +381,8 @@ def pool_overview(db: Session, eliminated_limit: int = 15) -> dict[str, Any]:
             "days_observed": e.days_observed,
             "thesis": e.thesis,
             "eliminated_reason": e.eliminated_reason,
+            "cohort_week": e.cohort_week,
+            "state_changed_at": e.state_changed_at.isoformat() if e.state_changed_at else None,
         }
 
     active = (
