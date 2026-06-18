@@ -1174,9 +1174,13 @@ function PeerComparableCard({ code }: { code: string }) {
                     <span style={{ fontWeight: p.is_self ? 700 : 400 }}>
                       {p.name || p.code}
                     </span>
-                    <span style={{ color: "var(--text-dim)", fontFamily: "monospace", fontSize: 11, marginLeft: 5 }}>
-                      {p.code}
-                    </span>
+                    {/* name 存在才补 code 小标;无 name 时上面已显 code,
+                        不重复(避免 "002636 002636")。 */}
+                    {p.name && (
+                      <span style={{ color: "var(--text-dim)", fontFamily: "monospace", fontSize: 11, marginLeft: 5 }}>
+                        {p.code}
+                      </span>
+                    )}
                     {p.is_self && (
                       <span style={{ color: "var(--link)", fontSize: 10, marginLeft: 5 }}>本股</span>
                     )}
