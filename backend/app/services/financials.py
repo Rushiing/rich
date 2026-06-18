@@ -168,7 +168,10 @@ def pull_for_watchlist(codes: Iterable[str] | None = None) -> dict:
         db: Session = SessionLocal()
         try:
             from ..models import Watchlist
-            codes = [w[0] for w in db.query(Watchlist.code).distinct().all()]
+            from . import virtual_pool as pool_svc
+            # 6/18: watchlist ∪ 活跃预选池 — 让池子票也有财务底座
+            wl = {w[0] for w in db.query(Watchlist.code).distinct().all()}
+            codes = list(wl | pool_svc.active_codes(db))
         finally:
             db.close()
     codes = list(codes)

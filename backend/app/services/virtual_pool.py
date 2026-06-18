@@ -76,6 +76,15 @@ def _active_codes(db: Session) -> set[str]:
     return {r[0] for r in rows}
 
 
+def active_codes(db: Session) -> set[str]:
+    """Public 别名。6/18: 数据抓取 job(snapshot/quotes/financials/kline)
+    用 watchlist ∪ active_codes 当 universe,让活跃池票(尤其 sector_picks
+    通道、不在任何 watchlist 的)也有完整数据底座 — 否则晋升挂的解析因
+    snapshot/财务/新闻缺失变空壳。前台 /stocks 仍按 watchlist 过滤,池子票
+    数据存全局表但不进用户盯盘(区域不打架)。"""
+    return _active_codes(db)
+
+
 def _latest_kline(db: Session, code: str) -> Kline | None:
     return (
         db.query(Kline)

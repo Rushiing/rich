@@ -191,7 +191,10 @@ def run_snapshot_job(post_close: bool = False) -> dict:
     # quote sources. Both are single HTTP round-trips, ~2s combined.
     db: Session = SessionLocal()
     try:
-        codes = [w.code for w in db.query(Watchlist.code).all()]
+        # 6/18: universe = watchlist ∪ 活跃预选池(让池子票也有 snapshot 底座)
+        from . import virtual_pool as pool_svc
+        wl = {w.code for w in db.query(Watchlist.code).all()}
+        codes = list(wl | pool_svc.active_codes(db))
     finally:
         db.close()
 
@@ -326,7 +329,10 @@ def run_quotes_job() -> dict:
     ensure_extra_columns()  # self-heal; same reasoning as run_snapshot_job
     db: Session = SessionLocal()
     try:
-        codes = [w.code for w in db.query(Watchlist.code).all()]
+        # 6/18: universe = watchlist ∪ 活跃预选池(同 run_snapshot_job)
+        from . import virtual_pool as pool_svc
+        wl = {w.code for w in db.query(Watchlist.code).all()}
+        codes = list(wl | pool_svc.active_codes(db))
         if not codes:
             return {"codes": 0, "inserted": 0, "tier": "quotes"}
 

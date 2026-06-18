@@ -845,6 +845,67 @@ def diag_pool_tick():
     return {"started": True}
 
 
+_pool_regen_lock = __import__("threading").Lock()
+_pool_regen_running = {"v": False, "last_result": None}
+
+
+@app.post("/api/_diag/pool-refresh-analysis")
+def diag_pool_refresh_analysis():
+    """给所有 recommendable 票 force 重生深度解析。ASYNC。
+
+    用途:晋升时若该票数据底座没补齐(sector_picks 票缺 snapshot/财务),
+    挂的解析是"数据严重缺失"空壳。6/18 把活跃池纳入日常抓取后,等
+    snapshot/财务补齐(quotes 5min + refresh-financials),跑这个一次性
+    重生有料解析,覆盖空壳。allow_external + anchor_price_override 兜
+    住不在 watchlist 的票。"""
+    import threading
+    with _pool_regen_lock:
+        if _pool_regen_running["v"]:
+            return {"started": False, "already_running": True}
+        _pool_regen_running["v"] = True
+        _pool_regen_running["last_result"] = None
+
+    def _worker():
+        from .db import SessionLocal
+        from .models import PoolEntry
+        from .services import analysis as analysis_svc
+        db = SessionLocal()
+        done = failed = 0
+        try:
+            recs = db.query(PoolEntry).filter(PoolEntry.state == "recommendable").all()
+            for e in recs:
+                try:
+                    analysis_svc.generate(
+                        db, e.code, mode="single", force=True,
+                        allow_external=True, external_name=e.name,
+                        anchor_price_override=e.last_close, cohort=e.cohort_week,
+                    )
+                    done += 1
+                except Exception:
+                    logger.exception("pool-refresh-analysis: %s failed", e.code)
+                    failed += 1
+            _pool_regen_running["last_result"] = {
+                "recommendable": len(recs), "regenerated": done, "failed": failed,
+            }
+        except Exception as ex:
+            _pool_regen_running["last_result"] = {"error": str(ex)}
+        finally:
+            db.close()
+            with _pool_regen_lock:
+                _pool_regen_running["v"] = False
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return {"started": True}
+
+
+@app.get("/api/_diag/pool-refresh-analysis/status")
+def diag_pool_refresh_analysis_status():
+    return {
+        "running": _pool_regen_running["v"],
+        "last_result": _pool_regen_running["last_result"],
+    }
+
+
 @app.get("/api/_diag/pool-status")
 def diag_pool_status():
     """Pool tick status + current pool overview (same payload as the

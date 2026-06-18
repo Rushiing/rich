@@ -235,7 +235,11 @@ def pull_for_watchlist() -> dict:
     each ≈ 1min. Run once per day at 16:30 BJT (post-close)."""
     db: Session = SessionLocal()
     try:
-        codes = [c[0] for c in db.query(Watchlist.code).distinct().all()]
+        # 6/18: watchlist ∪ 活跃预选池(池子票 entry 时 pull_one 过,这里
+        # 让它们跟 watchlist 票同节奏每日刷新)
+        from . import virtual_pool as pool_svc
+        wl = {c[0] for c in db.query(Watchlist.code).distinct().all()}
+        codes = list(wl | pool_svc.active_codes(db))
     finally:
         db.close()
     if not codes:
