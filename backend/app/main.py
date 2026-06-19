@@ -27,6 +27,7 @@ from .models import (  # noqa: F401  (register tables with metadata)
     Kline, SectorPicks, Snapshot, User, Watchlist,
 )
 from .routes import auth as auth_routes
+from .routes import eval as eval_routes
 from .routes import holdings as holdings_routes
 from .routes import market as market_routes
 from .routes import pool as pool_routes
@@ -79,6 +80,7 @@ app.include_router(sectors_routes.router)
 app.include_router(holdings_routes.router)
 app.include_router(market_routes.router)
 app.include_router(pool_routes.router)
+app.include_router(eval_routes.router)
 
 
 @app.post("/api/_diag/refresh-industry-meta")

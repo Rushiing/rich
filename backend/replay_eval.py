@@ -207,6 +207,11 @@ def stage_samples(n_target: int, max_age_days: int, seed: int) -> None:
         picked.extend(rng.sample(pool, k))
 
     rng.shuffle(picked)
+    # Resolve snapshot_ids in one batched query — per-anchor queries to a
+    # remote DB stall on round-trip latency (we saw it stall around 60-100
+    # samples with 150-300ms RTT). Single query + in-memory join is < 1s.
+    snap_ids = _resolve_snapshot_ids_batch(picked)
+    logger.info("resolved snapshot_ids for %d anchors", len(snap_ids))
 
     with SAMPLES_FILE.open("w") as f:
         for i, o in enumerate(picked):
@@ -216,7 +221,7 @@ def stage_samples(n_target: int, max_age_days: int, seed: int) -> None:
             f.write(json.dumps({
                 "sample_id": i,
                 "code": o.code,
-                "snapshot_id": _resolve_snapshot_id(o),
+                "snapshot_id": snap_ids.get(i),
                 "generated_at": ga.isoformat(),
                 "actionable": o.actionable,
                 "anchor_price": o.anchor_price,
@@ -227,27 +232,43 @@ def stage_samples(n_target: int, max_age_days: int, seed: int) -> None:
     logger.info("wrote %d samples → %s", len(picked), SAMPLES_FILE)
 
 
-def _resolve_snapshot_id(o: AnalysisOutcome) -> int | None:
-    """Find the snapshot row that this outcome was anchored on. The
-    AnalysisOutcome doesn't carry snapshot_id directly — we look up the
-    closest snapshot row for (code, generated_at)."""
-    db: Session = SessionLocal()
-    try:
-        ga = o.generated_at
-        if ga.tzinfo is None:
-            ga = ga.replace(tzinfo=timezone.utc)
-        # Snapshot at or just before generated_at. Outcomes are written
-        # right after Analysis persists so the matching snapshot.ts ≈
-        # generated_at to within seconds.
-        snap = (
-            db.query(Snapshot)
-            .filter(Snapshot.code == o.code, Snapshot.ts <= ga + timedelta(minutes=5))
-            .order_by(Snapshot.ts.desc())
-            .first()
-        )
-        return snap.id if snap else None
-    finally:
-        db.close()
+def _resolve_snapshot_ids_batch(anchors: list[AnalysisOutcome]) -> dict[int, int | None]:
+    """Resolve snapshot_id per anchor via parallel point queries — each
+    query touches a tiny LIMIT 1 on (code, ts) which is an indexed lookup,
+    so even on a flaky long-haul connection each round-trip is fast.
+
+    Earlier attempt: one big IN-batch query that pulled ALL snapshots for
+    300 codes. That returned tens of thousands of rows and stalled on
+    bandwidth over the Railway proxy. Per-anchor IS the right shape; just
+    needed to escape the serial RTT trap.
+    """
+    def _one(item):
+        idx, a = item
+        db: Session = SessionLocal()
+        try:
+            ga = a.generated_at
+            if ga.tzinfo is None:
+                ga = ga.replace(tzinfo=timezone.utc)
+            row = (
+                db.query(Snapshot.id)
+                .filter(Snapshot.code == a.code,
+                        Snapshot.ts <= ga + timedelta(minutes=5))
+                .order_by(Snapshot.ts.desc())
+                .first()
+            )
+            return idx, (row[0] if row else None)
+        except Exception as e:
+            logger.warning("resolve snapshot_id failed for anchor %d (%s): %s",
+                           idx, a.code, e)
+            return idx, None
+        finally:
+            db.close()
+
+    out: dict[int, int | None] = {}
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        for idx, sid in pool.map(_one, enumerate(anchors)):
+            out[idx] = sid
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -334,61 +355,85 @@ def _patched_pit(as_of_date_str: str):
 
 def stage_prompts() -> None:
     """For each sample, render the user_prompt + system_prompt under
-    point-in-time kline/financial cutoffs. Writes prompts.jsonl."""
+    point-in-time kline/financial cutoffs. Writes prompts.jsonl
+    line-by-line so it's resumable if the DB connection drops mid-render."""
     if not SAMPLES_FILE.exists():
         logger.error("samples file missing — run `samples` first"); sys.exit(2)
 
     strat = get_strategy(None)
     system_blocks = _system_prompt(strat)
+    system_str = _flatten_system(system_blocks)
 
-    out_lines = []
-    skipped_no_snap = 0
     with SAMPLES_FILE.open() as f:
         samples = [json.loads(line) for line in f]
 
-    for sample in samples:
-        if sample["snapshot_id"] is None:
-            skipped_no_snap += 1
-            continue
-        db: Session = SessionLocal()
-        try:
-            snap: Snapshot | None = db.query(Snapshot).filter(
-                Snapshot.id == sample["snapshot_id"]).first()
-            w: Watchlist | None = db.query(Watchlist).filter(
-                Watchlist.code == sample["code"]).first()
-        finally:
-            db.close()
+    # Resume: anything already in prompts.jsonl gets skipped.
+    done: set[int] = set()
+    if PROMPTS_FILE.exists():
+        with PROMPTS_FILE.open() as f:
+            for line in f:
+                try:
+                    done.add(json.loads(line)["sample_id"])
+                except Exception:
+                    pass
+    todo = [s for s in samples if s["sample_id"] not in done]
+    logger.info("prompts: %d total, %d done, %d todo",
+                len(samples), len(done), len(todo))
 
-        if snap is None:
-            skipped_no_snap += 1
-            continue
-        # Synthetic watchlist if user_id-bound row missing — _user_prompt only
-        # reads w.code/name/exchange.
-        if w is None:
-            w = Watchlist(code=sample["code"], name=sample["code"],
-                          exchange=_infer_exchange(sample["code"]),
-                          user_id=None)
+    skipped_no_snap = 0
+    rendered = 0
+    failed = 0
+    # Open in append mode; flush after each line so a kill mid-render leaves
+    # everything-so-far on disk.
+    fh = PROMPTS_FILE.open("a")
+    try:
+        for sample in todo:
+            if sample["snapshot_id"] is None:
+                skipped_no_snap += 1
+                continue
+            db: Session = SessionLocal()
+            try:
+                snap: Snapshot | None = db.query(Snapshot).filter(
+                    Snapshot.id == sample["snapshot_id"]).first()
+                w: Watchlist | None = db.query(Watchlist).filter(
+                    Watchlist.code == sample["code"]).first()
+            finally:
+                db.close()
 
-        as_of = snap.ts.date().isoformat()
-        try:
-            with _patched_pit(as_of):
-                user_msg = _user_prompt(w, snap, data_completeness=None)
-        except Exception as e:
-            logger.warning("render failed for sample %d (%s): %s",
-                           sample["sample_id"], sample["code"], e)
-            continue
+            if snap is None:
+                skipped_no_snap += 1
+                continue
+            if w is None:
+                w = Watchlist(code=sample["code"], name=sample["code"],
+                              exchange=_infer_exchange(sample["code"]),
+                              user_id=None)
 
-        out_lines.append({
-            "sample_id": sample["sample_id"],
-            "code": sample["code"],
-            "as_of": as_of,
-            "system": _flatten_system(system_blocks),
-            "user": user_msg,
-        })
+            as_of = snap.ts.date().isoformat()
+            try:
+                with _patched_pit(as_of):
+                    user_msg = _user_prompt(w, snap, data_completeness=None)
+            except Exception as e:
+                logger.warning("render failed for sample %d (%s): %s",
+                               sample["sample_id"], sample["code"], e)
+                failed += 1
+                continue
 
-    PROMPTS_FILE.write_text("\n".join(json.dumps(p, ensure_ascii=False) for p in out_lines))
-    logger.info("rendered %d prompts → %s (skipped %d: no snapshot)",
-                len(out_lines), PROMPTS_FILE, skipped_no_snap)
+            fh.write(json.dumps({
+                "sample_id": sample["sample_id"],
+                "code": sample["code"],
+                "as_of": as_of,
+                "system": system_str,
+                "user": user_msg,
+            }, ensure_ascii=False) + "\n")
+            fh.flush()
+            rendered += 1
+            if rendered % 20 == 0:
+                logger.info("rendered %d/%d", rendered, len(todo))
+    finally:
+        fh.close()
+
+    logger.info("done: rendered %d this run (skipped %d: no snapshot, %d render errors)",
+                rendered, skipped_no_snap, failed)
 
 
 def _flatten_system(blocks: list[dict[str, Any]]) -> str:
