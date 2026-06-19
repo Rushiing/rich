@@ -199,6 +199,36 @@ def stop_eval() -> dict[str, Any]:
     return {"alive": True, "killed": True, "pid": pid}
 
 
+@router.get("/debug")
+def debug_eval() -> dict[str, Any]:
+    """Filesystem peek — what's actually in /app/eval_out, the log
+    content if any, env presence for the keys the script needs. Used
+    to diagnose 'I called /start, /status shows nothing' situations."""
+    info: dict[str, Any] = {
+        "script_path": str(_SCRIPT_PATH),
+        "script_exists": _SCRIPT_PATH.exists(),
+        "out_dir": str(_OUT_DIR),
+        "out_dir_exists": _OUT_DIR.exists(),
+        "cwd_from_start": str(_SCRIPT_PATH.parent),
+        "env_present": {
+            "DATABASE_URL": bool(os.environ.get("DATABASE_URL")),
+            "ANTHROPIC_API_KEY": bool(os.environ.get("ANTHROPIC_API_KEY")),
+            "ANTHROPIC_BASE_URL": bool(os.environ.get("ANTHROPIC_BASE_URL")),
+            "VOLCENGINE_API_KEY": bool(os.environ.get("VOLCENGINE_API_KEY")),
+            "VOLCENGINE_BASE_URL": bool(os.environ.get("VOLCENGINE_BASE_URL")),
+        },
+    }
+    if _OUT_DIR.exists():
+        info["out_dir_contents"] = sorted(
+            f"{p.name} ({p.stat().st_size}B)" for p in _OUT_DIR.iterdir()
+        )
+        if _LOG_FILE.exists():
+            info["log_full"] = _LOG_FILE.read_text(errors="replace")
+        if _PID_FILE.exists():
+            info["pid_file_content"] = _PID_FILE.read_text().strip()
+    return info
+
+
 @router.delete("/reset")
 def reset_eval(confirm: str = "") -> dict[str, Any]:
     """Wipe eval_out/ entirely. Pass ?confirm=yes to actually do it.
