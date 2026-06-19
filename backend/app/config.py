@@ -38,6 +38,13 @@ class Settings(BaseSettings):
     ANALYSIS_MODEL_B: str = ""
     ANALYSIS_AB_PCT: int = 0  # 0-100; % of (code, day) buckets sent to model B
 
+    # --- Replay eval gateway (火山 ARK coding plan) -------------------------
+    # Separate from ANTHROPIC_* so the eval script can reach candidate models
+    # without touching the production analysis path. Eval-only — runtime
+    # generate() never reads these.
+    VOLCENGINE_BASE_URL: str = ""
+    VOLCENGINE_API_KEY: str = ""
+
     # Toggle the in-process APScheduler. Set False during local tests / when
     # running multiple replicas (only one should schedule).
     SCHEDULER_ENABLED: bool = True
