@@ -337,6 +337,22 @@ def diag_outcomes_stats():
     return outcomes_svc.hit_rate_stats()
 
 
+@app.get("/api/_diag/outcomes-stats-by-model")
+def diag_outcomes_stats_by_model(since_days: int | None = None):
+    """A/B read-out grouped by `model` (not prompt_version).
+
+    Designed for the 6/20 火山 migration A/B: minimax-m3 (default A, 70%)
+    vs kimi-k2.6 (B, 30%). Compare buckets head-to-head — buy excess_d5,
+    sell excess_d5, hit_rate_dedup — to decide the live winner.
+
+    `?since_days=N` filters anchors generated in the last N days. After
+    flipping the env vars set since_days to "days since flip" so legacy
+    kimi-k2.5 anchors don't drag the average. Omit to include all-time.
+    """
+    from .services import outcomes as outcomes_svc
+    return outcomes_svc.hit_rate_by_model(since_days=since_days)
+
+
 @app.get("/api/_diag/nd-outlook-stats")
 def diag_nd_outlook_stats():
     """Score next_day_outlook.trend (看涨/看平/看跌) against actual next-day

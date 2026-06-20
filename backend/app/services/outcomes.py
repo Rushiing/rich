@@ -12,7 +12,7 @@ trading days later" is just "the Nth kline row dated after generated_at".
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -253,6 +253,90 @@ def hit_rate_stats() -> dict[str, Any]:
         })
     summary.sort(key=lambda x: (x["prompt_version"], x["actionable"]))
     return {"total_scored": len(rows), "buckets": summary}
+
+
+def hit_rate_by_model(since_days: int | None = None) -> dict[str, Any]:
+    """Same scoring as hit_rate_stats but grouped by `model` instead of
+    `prompt_version`. Built for the 6/20 A/B between minimax-m3 (default A)
+    and kimi-k2.6 (B, 30%) — direct head-to-head readout.
+
+    `since_days` filters to anchors generated in the last N days. Set this
+    to the days since the A/B started so old data on the previous model
+    doesn't pollute the average. None = all-time (legacy data included).
+    """
+    db: Session = SessionLocal()
+    try:
+        q = db.query(AnalysisOutcome).filter(AnalysisOutcome.return_d5.isnot(None))
+        if since_days is not None:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
+            q = q.filter(AnalysisOutcome.generated_at >= cutoff)
+        rows = q.all()
+    finally:
+        db.close()
+
+    if not rows:
+        return {"total_scored": 0, "buckets": [], "since_days": since_days}
+
+    # Same-day baseline. Note: baseline is taken across the FULL rowset,
+    # not per-model — comparing minimax vs kimi on the same tape, baseline
+    # has to be common ground.
+    by_day: dict[str, list[float]] = {}
+    for o in rows:
+        by_day.setdefault(_gen_day(o), []).append(o.return_d5)
+    day_baseline = {day: _median(vals) for day, vals in by_day.items()}
+
+    # Dedup: last anchor per (code, gen_day), regardless of model. A stock
+    # that flipped from kimi to minimax intraday only counts under whichever
+    # model produced its EOD verdict.
+    last_per_code_day: dict[tuple, AnalysisOutcome] = {}
+    for o in rows:
+        key = (o.code, _gen_day(o))
+        cur = last_per_code_day.get(key)
+        if cur is None or o.generated_at > cur.generated_at:
+            last_per_code_day[key] = o
+    dedup_ids = {id(o) for o in last_per_code_day.values()}
+
+    buckets: dict[tuple, dict[str, Any]] = {}
+    for o in rows:
+        key = (o.model or "?", o.actionable)
+        b = buckets.setdefault(key, {
+            "model": o.model or "?",
+            "actionable": o.actionable,
+            "n": 0, "hits": 0, "sum_return_d5": 0.0, "sum_excess_d5": 0.0,
+            "n_unique": 0, "hits_unique": 0,
+        })
+        b["n"] += 1
+        b["sum_return_d5"] += o.return_d5
+        b["sum_excess_d5"] += o.return_d5 - day_baseline[_gen_day(o)]
+        hit = _is_hit(o.actionable, o.return_d5)
+        if hit:
+            b["hits"] += 1
+        if id(o) in dedup_ids:
+            b["n_unique"] += 1
+            if hit:
+                b["hits_unique"] += 1
+
+    summary = []
+    for b in buckets.values():
+        n = b["n"]
+        nu = b["n_unique"]
+        directional = b["actionable"] in ("建议买入", "建议卖出")
+        summary.append({
+            "model": b["model"],
+            "actionable": b["actionable"],
+            "n": n,
+            "n_unique": nu,
+            "hit_rate": round(b["hits"] / n * 100, 1) if (directional and n) else None,
+            "hit_rate_dedup": round(b["hits_unique"] / nu * 100, 1) if (directional and nu) else None,
+            "avg_return_d5": round(b["sum_return_d5"] / n, 2) if n else None,
+            "excess_return_d5": round(b["sum_excess_d5"] / n, 2) if n else None,
+        })
+    summary.sort(key=lambda x: (x["model"], x["actionable"]))
+    return {
+        "total_scored": len(rows),
+        "since_days": since_days,
+        "buckets": summary,
+    }
 
 
 # 看平 band for nd_outlook_stats: |d1 return| within this % counts as a
