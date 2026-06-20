@@ -199,6 +199,55 @@ def stop_eval() -> dict[str, Any]:
     return {"alive": True, "killed": True, "pid": pid}
 
 
+@router.get("/errors/{combo}")
+def errors_eval(combo: str, limit: int = 50) -> dict[str, Any]:
+    """For a given (model_mode) combo, return aggregated error strings +
+    a few sample lines. Used to diagnose 'why did this model fail so much'
+    — was it rate limit (429), context overflow, schema drift, or what.
+
+    `combo` is the file stem, e.g. `kimi-k2.5_single` or `glm-5.2_debate`.
+    """
+    runs_dir = _OUT_DIR / "runs"
+    path = runs_dir / f"{combo}.jsonl"
+    if not path.exists():
+        raise HTTPException(404, f"{path.name} not found")
+
+    import json as _json
+    from collections import Counter
+    error_counter: Counter = Counter()
+    samples: list[dict[str, Any]] = []
+    total = ok = 0
+    with path.open() as f:
+        for line in f:
+            try:
+                r = _json.loads(line)
+            except Exception:
+                continue
+            total += 1
+            if r.get("schema_ok"):
+                ok += 1
+                continue
+            err = (r.get("error") or "no error string")[:200]
+            error_counter[err] += 1
+            if len(samples) < min(limit, 10):
+                samples.append({
+                    "sample_id": r.get("sample_id"),
+                    "code": r.get("code"),
+                    "wall_time_s": r.get("wall_time_s"),
+                    "error": err,
+                })
+    return {
+        "combo": combo,
+        "total": total,
+        "schema_ok": ok,
+        "errors_total": total - ok,
+        "error_groups": [
+            {"count": c, "error": e} for e, c in error_counter.most_common(limit)
+        ],
+        "samples": samples,
+    }
+
+
 @router.get("/debug")
 def debug_eval() -> dict[str, Any]:
     """Filesystem peek — what's actually in /app/eval_out, the log
