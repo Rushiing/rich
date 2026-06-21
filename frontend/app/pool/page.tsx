@@ -13,7 +13,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { api, PoolEntryRow, PoolOverview } from "../../lib/api";
+import { api, MySectors, PoolEntryRow, PoolOverview } from "../../lib/api";
 
 const STATE_META: Record<string, { label: string; color: string; hint: string }> = {
   recommendable: {
@@ -36,19 +36,55 @@ const STATE_META: Record<string, { label: string; color: string; hint: string }>
 const SOURCE_LABEL: Record<string, string> = {
   rules: "规则筛选",
   sector_picks: "板块精选",
+  designated: "指定板块",
 };
+
+// designated 通道用绿色系跟另两个区分;其余沿用原配色。
+const SOURCE_COLOR: Record<string, { fg: string; bg: string }> = {
+  rules: { fg: "#93c5fd", bg: "rgba(59,130,246,0.12)" },
+  sector_picks: { fg: "#d8b4fe", bg: "rgba(168,85,247,0.12)" },
+  designated: { fg: "#6ee7b7", bg: "rgba(16,185,129,0.14)" },
+};
+
+// 命中关注板块的票:左边框高亮 + ⭐。匹配的是 thesis.sector(designated
+// 通道写 theme,sector_picks 写 sina 板块名)。
+function isWatched(r: PoolEntryRow, watched: Set<string>): boolean {
+  const sec = r.thesis?.sector;
+  return !!sec && watched.has(sec);
+}
 
 export default function PoolPage() {
   const [data, setData] = useState<PoolOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const [mySectors, setMySectors] = useState<MySectors | null>(null);
 
   useEffect(() => {
     api.poolOverview()
       .then(setData)
       .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
+    // Supplementary — silent failure shouldn't break the pool view.
+    api.getMySectors().then(setMySectors).catch(() => {});
   }, []);
+
+  async function toggleSector(theme: string) {
+    if (!mySectors) return;
+    const next = mySectors.selected.includes(theme)
+      ? mySectors.selected.filter((s) => s !== theme)
+      : [...mySectors.selected, theme];
+    // Optimistic — reflect immediately, reconcile with server response.
+    setMySectors({ ...mySectors, selected: next });
+    try {
+      const res = await api.setMySectors(next);
+      setMySectors((m) => (m ? { ...m, selected: res.selected } : m));
+    } catch {
+      // revert on failure
+      setMySectors((m) => (m ? { ...m, selected: mySectors.selected } : m));
+    }
+  }
+
+  const watched = new Set(mySectors?.selected ?? []);
 
   return (
     <main style={{ padding: 20, maxWidth: 1080, margin: "0 auto" }}>
@@ -59,6 +95,33 @@ export default function PoolPage() {
         </span>
       </header>
 
+      {mySectors && mySectors.available.length > 0 && (
+        <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>关注板块</span>
+          {mySectors.available.map((theme) => {
+            const on = watched.has(theme);
+            return (
+              <button
+                key={theme}
+                onClick={() => toggleSector(theme)}
+                style={{
+                  fontSize: 12, padding: "3px 10px", borderRadius: 14,
+                  cursor: "pointer",
+                  border: on ? "1px solid #f59e0b" : "1px solid var(--border-mid)",
+                  background: on ? "rgba(245,158,11,0.15)" : "transparent",
+                  color: on ? "#f59e0b" : "var(--text-soft)",
+                }}
+              >
+                {on ? "★ " : ""}{theme}
+              </button>
+            );
+          })}
+          <span style={{ fontSize: 11, color: "var(--text-faint)" }}>
+            选中后，命中的票会高亮置顶
+          </span>
+        </div>
+      )}
+
       {loading && <p style={{ color: "var(--text-faint)", marginTop: 24 }}>加载中…</p>}
       {err && <p style={{ color: "#ef4444", marginTop: 24, fontSize: 13 }}>{err}</p>}
 
@@ -67,9 +130,9 @@ export default function PoolPage() {
           <div style={{ marginTop: 10, color: "var(--text-muted)", fontSize: 13 }}>
             观察中 {data.counts.observing} · 可推荐 {data.counts.recommendable} · 累计淘汰 {data.counts.eliminated_total}
           </div>
-          <BatchSection rows={data.recommendable} />
-          <Group state="observing" rows={data.observing} />
-          <Group state="eliminated" rows={data.eliminated_recent} />
+          <BatchSection rows={data.recommendable} watched={watched} />
+          <Group state="observing" rows={data.observing} watched={watched} />
+          <Group state="eliminated" rows={data.eliminated_recent} watched={watched} />
           {data.counts.observing === 0 && data.counts.recommendable === 0
             && data.eliminated_recent.length === 0 && (
             <p style={{ color: "var(--text-faint)", marginTop: 32, fontSize: 13 }}>
@@ -84,7 +147,7 @@ export default function PoolPage() {
 }
 
 // 可推荐区域:按批次(晋升周 cohort_week)聚合成卡片。每批 = 一个可考核单位。
-function BatchSection({ rows }: { rows: PoolEntryRow[] }) {
+function BatchSection({ rows, watched }: { rows: PoolEntryRow[]; watched: Set<string> }) {
   const meta = STATE_META.recommendable;
   if (rows.length === 0) return null;
 
@@ -110,13 +173,13 @@ function BatchSection({ rows }: { rows: PoolEntryRow[] }) {
         <span style={{ color: "var(--text-faint)", fontSize: 12 }}>{meta.hint}</span>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 14 }}>
-        {cohorts.map((c) => <BatchCard key={c} cohort={c} rows={byCohort.get(c)!} />)}
+        {cohorts.map((c) => <BatchCard key={c} cohort={c} rows={byCohort.get(c)!} watched={watched} />)}
       </div>
     </section>
   );
 }
 
-function BatchCard({ cohort, rows }: { cohort: string; rows: PoolEntryRow[] }) {
+function BatchCard({ cohort, rows, watched }: { cohort: string; rows: PoolEntryRow[]; watched: Set<string> }) {
   const weekNum = /-W(\d+)/.exec(cohort)?.[1];
   const title = weekNum ? `第 ${weekNum} 周批次` : cohort;
   // 批次至今收益 = 等权平均(若你跟这批建议等额建仓的收益)
@@ -151,25 +214,31 @@ function BatchCard({ cohort, rows }: { cohort: string; rows: PoolEntryRow[] }) {
         <span style={{ color: "var(--text-muted)" }}>正在为这一批积累 5 日数据 · 预计 6 月底首次揭晓</span>
       </div>
 
-      {/* 批次成分股,每支链到 /pool/{code}(系统推荐区域) */}
+      {/* 批次成分股,每支链到 /pool/{code}(系统推荐区域)。关注板块命中的置顶 */}
       <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 4 }}>
-        {rows.map((r) => {
+        {[...rows]
+          .sort((a, b) => Number(isWatched(b, watched)) - Number(isWatched(a, watched)))
+          .map((r) => {
           const rc = r.return_pct == null ? "var(--text-muted)" : r.return_pct >= 0 ? "#ef4444" : "#22c55e";
+          const sc = SOURCE_COLOR[r.source] ?? SOURCE_COLOR.rules;
+          const w = isWatched(r, watched);
           return (
             <a key={r.id} href={`/pool/${r.code}`} style={{
               display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
               padding: "5px 8px", borderRadius: 5, textDecoration: "none",
-              background: "var(--surface)", border: "1px solid var(--border-faint)",
+              background: w ? "rgba(245,158,11,0.08)" : "var(--surface)",
+              border: "1px solid var(--border-faint)",
+              borderLeft: w ? "2px solid #f59e0b" : "1px solid var(--border-faint)",
             }}>
               <span style={{ display: "flex", alignItems: "baseline", gap: 6, minWidth: 0 }}>
+                {w && <span style={{ color: "#f59e0b", fontSize: 11 }}>★</span>}
                 <span style={{ color: "var(--text)", fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {r.name || r.code}
                 </span>
                 <span style={{ fontFamily: "monospace", color: "var(--text-faint)", fontSize: 11 }}>{r.code}</span>
                 <span style={{
                   fontSize: 10, padding: "0 4px", borderRadius: 3,
-                  color: r.source === "rules" ? "#93c5fd" : "#d8b4fe",
-                  background: r.source === "rules" ? "rgba(59,130,246,0.12)" : "rgba(168,85,247,0.12)",
+                  color: sc.fg, background: sc.bg,
                 }}>
                   {SOURCE_LABEL[r.source] ?? r.source}
                 </span>
@@ -185,9 +254,13 @@ function BatchCard({ cohort, rows }: { cohort: string; rows: PoolEntryRow[] }) {
   );
 }
 
-function Group({ state, rows }: { state: string; rows: PoolEntryRow[] }) {
+function Group({ state, rows, watched }: { state: string; rows: PoolEntryRow[]; watched: Set<string> }) {
   const meta = STATE_META[state];
   if (!meta || rows.length === 0) return null;
+  // 关注板块命中的票排前面(eliminated 区不重排 — 那是历史记录,按时间更自然)
+  const ordered = state === "eliminated"
+    ? rows
+    : [...rows].sort((a, b) => Number(isWatched(b, watched)) - Number(isWatched(a, watched)));
   return (
     <section style={{ marginTop: 22 }}>
       <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 8 }}>
@@ -212,10 +285,17 @@ function Group({ state, rows }: { state: string; rows: PoolEntryRow[] }) {
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
-              <tr key={r.id} style={{ borderTop: "1px solid var(--border-faint)" }}>
-                <td style={td}>
+            {ordered.map((r) => {
+              const sc = SOURCE_COLOR[r.source] ?? SOURCE_COLOR.rules;
+              const w = isWatched(r, watched);
+              return (
+              <tr key={r.id} style={{
+                borderTop: "1px solid var(--border-faint)",
+                background: w ? "rgba(245,158,11,0.06)" : undefined,
+              }}>
+                <td style={{ ...td, borderLeft: w ? "2px solid #f59e0b" : undefined }}>
                   <a href={`/pool/${r.code}`} style={{ color: "var(--text)", textDecoration: "none" }}>
+                    {w && <span style={{ color: "#f59e0b", marginRight: 3 }}>★</span>}
                     {r.name || r.code}
                     <span style={{ fontFamily: "monospace", color: "var(--text-faint)", fontSize: 12, marginLeft: 4 }}>
                       {r.code}
@@ -225,8 +305,7 @@ function Group({ state, rows }: { state: string; rows: PoolEntryRow[] }) {
                 <td style={td}>
                   <span style={{
                     fontSize: 11, padding: "1px 6px", borderRadius: 4,
-                    background: r.source === "rules" ? "rgba(59,130,246,0.15)" : "rgba(168,85,247,0.15)",
-                    color: r.source === "rules" ? "#93c5fd" : "#d8b4fe",
+                    background: sc.bg, color: sc.fg,
                   }}>
                     {SOURCE_LABEL[r.source] ?? r.source}
                   </span>
@@ -261,7 +340,8 @@ function Group({ state, rows }: { state: string; rows: PoolEntryRow[] }) {
                   )}
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>

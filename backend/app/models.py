@@ -38,6 +38,11 @@ class User(Base):
     # password_hash can't log in via /auth/login; they need an admin reset
     # or fall back to the legacy SMS dev path until that's removed.
     password_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # 6/20: per-user 关注板块 — display-layer preference only. The pool
+    # itself stays global (see virtual_pool.PRIORITY_SECTORS); this just
+    # drives highlight/pin of matching entries on the /pool page. List of
+    # theme strings matching PoolEntry.thesis.sector. NULL/[] = no prefs.
+    preferred_sectors: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
 
 
 class InviteCode(Base):

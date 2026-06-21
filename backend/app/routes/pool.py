@@ -7,13 +7,15 @@ the daily pool tick (services/virtual_pool.py). The "recommended" state
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from ..auth import require_auth
 from ..db import get_db
-from ..models import Analysis, PoolEntry
+from ..models import Analysis, PoolEntry, User
 from ..services import virtual_pool as pool_svc
+from ..services.users import resolve_owner
 
 router = APIRouter(prefix="/api/pool", tags=["pool"], dependencies=[Depends(require_auth)])
 
@@ -24,6 +26,53 @@ def get_pool(db: Session = Depends(get_db)):
     recently eliminated (+ counts). Shared across users — the pool is
     system state, not per-user."""
     return pool_svc.pool_overview(db)
+
+
+@router.get("/my-sectors")
+def get_my_sectors(
+    db: Session = Depends(get_db),
+    user_id: int | None = Depends(require_auth),
+):
+    """The current user's 关注板块 prefs + the full pickable theme list.
+
+    available = the designated-channel priority themes (the curated set
+    that's guaranteed to enter the pool). selected = this user's saved
+    picks. Display-layer only — does not change what enters the pool.
+    """
+    available = [s["theme"] for s in pool_svc.PRIORITY_SECTORS]
+    owner = resolve_owner(user_id, db)
+    selected: list[str] = []
+    if owner is not None:
+        u = db.query(User).filter(User.id == owner).first()
+        if u is not None and u.preferred_sectors:
+            selected = list(u.preferred_sectors)
+    return {"available": available, "selected": selected}
+
+
+class MySectorsUpdate(BaseModel):
+    sectors: list[str]
+
+
+@router.put("/my-sectors")
+def set_my_sectors(
+    body: MySectorsUpdate,
+    db: Session = Depends(get_db),
+    user_id: int | None = Depends(require_auth),
+):
+    """Save the user's 关注板块 picks. Silently drops anything not in the
+    available theme list so a stale client can't write garbage."""
+    owner = resolve_owner(user_id, db)
+    if owner is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="关注板块需要登录账号")
+    valid = {s["theme"] for s in pool_svc.PRIORITY_SECTORS}
+    cleaned = [s for s in body.sectors if s in valid]
+    u = db.query(User).filter(User.id == owner).first()
+    if u is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    u.preferred_sectors = cleaned
+    db.commit()
+    return {"selected": cleaned}
 
 
 @router.get("/{code}")

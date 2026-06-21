@@ -96,6 +96,8 @@ _POSTGRES_BACKFILL = [
     # analysis_outcomes.cohort 让晋升票 anchor 可按批统计买卖建议命中率。
     ("virtual_pool", "cohort_week",         "VARCHAR(8)"),
     ("analysis_outcomes", "cohort",         "VARCHAR(8)"),
+    # 6/20: per-user 关注板块 (display-layer highlight of pool entries).
+    ("users", "preferred_sectors",          "JSONB"),
 ]
 
 

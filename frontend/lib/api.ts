@@ -260,7 +260,7 @@ export type PoolEntryRow = {
   id: number;
   code: string;
   name: string | null;
-  source: "rules" | "sector_picks";
+  source: "rules" | "sector_picks" | "designated";
   state: "observing" | "recommendable" | "recommended" | "eliminated";
   entered_at: string | null;
   entry_date: string;
@@ -289,6 +289,13 @@ export type PoolOverview = {
 export type PoolDetail = {
   entry: PoolEntryRow;
   analysis: StockAnalysis | null;
+};
+
+// 6/20: per-user 关注板块. available = pickable priority themes;
+// selected = this user's saved picks. Highlights matching pool entries.
+export type MySectors = {
+  available: string[];
+  selected: string[];
 };
 
 // 5/29: one historical anchor row from AnalysisOutcome. Detail-page
@@ -484,6 +491,14 @@ export const api = {
     request<PoolOverview>(`/api/pool`),
   poolDetail: (code: string) =>
     request<PoolDetail>(`/api/pool/${code}`),
+  // per-user 关注板块 (display-layer highlight; pool itself stays global)
+  getMySectors: () =>
+    request<MySectors>(`/api/pool/my-sectors`),
+  setMySectors: (sectors: string[]) =>
+    request<{ selected: string[] }>(`/api/pool/my-sectors`, {
+      method: "PUT",
+      body: JSON.stringify({ sectors }),
+    }),
   // ---- holdings (cost basis) ----
   getHolding: (code: string) =>
     request<Holding | null>(`/api/holdings/${code}`),
