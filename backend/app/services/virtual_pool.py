@@ -55,6 +55,26 @@ MA20_GRACE_DAYS = 3
 # outcomes data showed, plus the thesis still intact.
 PROMOTE_MIN_DAYS = 5
 
+# 6/20: 指定板块通道 (designated). 内测用户反馈"多关注高科技 + 有色金属
+# 板块的选股"。rules 通道只扫自选池、sector_picks 只覆盖当日 LLM TOP-5,
+# 高科技/有色若当天没领涨就永远不进池 → 覆盖盲区。这条通道固定扫一组
+# 优先板块,不靠当日排名。全局生效(不是 per-user)— 池子的核心价值是按
+# 批次可对账的成绩单,per-user 会把样本碎成 1/10 毁掉对账,个性化交给
+# 展示层(User.preferred_sectors 高亮)。
+#
+# sina 新浪行业只有 49 个粗板块,半导体/计算机/软件/通信 全揉进「电子信息」,
+# 没有更细的分类(eastmoney 行业板块在 Railway 被墙)。质量闸够严,粗
+# universe 也能筛出干净的票。theme 是入池 thesis.sector 标签 + per-user
+# 偏好匹配的 canonical key。
+PRIORITY_SECTORS = [
+    {"theme": "科技·电子信息", "label": "new_dzxx"},  # 247 家:软件/IT/通信/半导体杂烩
+    {"theme": "科技·电子器件", "label": "new_dzqj"},  # 152 家:元件/半导体硬件
+    {"theme": "有色金属",      "label": "new_ysjs"},  # 72 家
+]
+# 每个 sina 板块按当日涨幅取 top N 进短名单,再 per-code 拉 K线/财报验闸。
+# 471 只全拉扛不住;短名单把 per-code 调用压到 ~60 次/日。
+DESIGNATED_SHORTLIST = 20
+
 
 def _bjt_today() -> str:
     return datetime.now(timezone(timedelta(hours=8))).date().isoformat()
@@ -223,6 +243,92 @@ def scan_sector_picks_channel(db: Session) -> dict[str, int]:
     return {"scanned": scanned, "entered": entered}
 
 
+def scan_designated_sectors_channel(db: Session) -> dict[str, int]:
+    """Fixed priority-sector scan — covers 高科技 + 有色金属 regardless of
+    daily ranking. For each sina sector:
+      1. one stock_sector_detail call → all constituents (cheap, has
+         changepercent / amount / turnoverratio)
+      2. shortlist: non-ST, trading (amount>0), top DESIGNATED_SHORTLIST
+         by today's changepercent
+      3. per-code gate (rules-equivalent, adapted for non-watchlist codes):
+         - breakout_20d: close ≥ max(last-20 closes) — computed from kline
+         - turnover relative strength: turnoverratio ≥ sector median
+           (big_inflow substitute — main_net_flow needs a snapshot we don't
+            have for non-watchlist constituents)
+         - profit_yoy > 0: from financials (pulled per-code if missing)
+    """
+    import statistics
+    from . import financials as fin_svc
+    from . import kline as kline_svc
+    from .scraper import _safe_with_timeout
+    import akshare as ak
+
+    active = _active_codes(db)
+    entered = scanned = 0
+    for spec in PRIORITY_SECTORS:
+        theme, label = spec["theme"], spec["label"]
+        df = _safe_with_timeout(ak.stock_sector_detail, sector=label, _timeout=12.0)
+        if df is None or len(df) == 0:
+            logger.warning("designated: sector_detail empty for %s (%s)", theme, label)
+            continue
+
+        rows: list[tuple[str, str, float, float]] = []  # code, name, chg, turnover
+        for _, r in df.iterrows():
+            code = str(r.get("code") or "").strip()
+            name = str(r.get("name") or "").strip()
+            try:
+                chg = float(r.get("changepercent") or 0)
+                amount = float(r.get("amount") or 0)
+                turnover = float(r.get("turnoverratio") or 0)
+            except (ValueError, TypeError):
+                continue
+            if not code or _is_st(name) or amount <= 0:
+                continue
+            rows.append((code, name, chg, turnover))
+        if not rows:
+            continue
+
+        median_turnover = statistics.median([r[3] for r in rows]) if rows else 0.0
+        rows.sort(key=lambda x: x[2], reverse=True)  # by today's changepercent
+        shortlist = rows[:DESIGNATED_SHORTLIST]
+
+        for code, name, _chg, turnover in shortlist:
+            if code in active:
+                continue
+            scanned += 1
+            # gate 1: breakout_20d from kline
+            try:
+                kline_svc.pull_one(code)
+            except Exception as e:
+                logger.warning("designated %s: kline pull failed (%s)", code, e)
+            recent = kline_svc.recent_for_code(code, days=20)
+            closes = [k.close for k in recent if k.close is not None]
+            if not closes or closes[-1] < max(closes) - 1e-9:
+                continue  # not a fresh 20-day high
+            # gate 2: turnover relative strength (big_inflow substitute)
+            if turnover < median_turnover:
+                continue
+            # gate 3: profit_yoy > 0 — pull financials if we don't have them
+            fin = fin_svc.latest_for_code(code, n=1)
+            if not fin:
+                try:
+                    fin_svc.pull_for_code(code)
+                    fin = fin_svc.latest_for_code(code, n=1)
+                except Exception as e:
+                    logger.warning("designated %s: financials pull failed (%s)", code, e)
+            if not fin or fin[0].profit_yoy is None or fin[0].profit_yoy <= 0:
+                continue
+            evidence = [
+                "突破 20 日新高",
+                f"板块「{theme}」内换手强度靠前",
+                f"最新净利同比 {fin[0].profit_yoy:+.0f}%",
+            ]
+            if _enter(db, code, name, "designated", evidence, sector=theme):
+                entered += 1
+                active.add(code)
+    return {"scanned": scanned, "entered": entered}
+
+
 # ---------------------------------------------------------------------------
 # Evaluation
 # ---------------------------------------------------------------------------
@@ -365,6 +471,7 @@ def run_pool_tick() -> dict[str, Any]:
         result["evaluate"] = evaluate_all(db)
         result["rules"] = scan_rules_channel(db)
         result["sector_picks"] = scan_sector_picks_channel(db)
+        result["designated"] = scan_designated_sectors_channel(db)
         logger.info("pool tick: %s", result)
         return result
     finally:
