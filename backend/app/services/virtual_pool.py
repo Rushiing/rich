@@ -55,6 +55,14 @@ MA20_GRACE_DAYS = 3
 # outcomes data showed, plus the thesis still intact.
 PROMOTE_MIN_DAYS = 5
 
+
+def _invalidation_drop_pct(code: str) -> float:
+    """硬失效线跌幅,按板块涨跌幅等比缩放(0.7×limit)。主板 10%→7.0
+    (= INVALIDATION_DROP_PCT,零回归)、科创/创业 20%→14.0、北交 30%→21.0。
+    -7% 对科创板 ±20% 波动太紧会被正常波动误杀,等比放大保持同一套风险容忍度。"""
+    from .signals import _limit_pct
+    return round(0.7 * _limit_pct(code), 1)
+
 # 6/20: 指定板块通道 (designated). 内测用户反馈"多关注高科技 + 有色金属
 # 板块的选股"。rules 通道只扫自选池、sector_picks 只覆盖当日 LLM TOP-5,
 # 高科技/有色若当天没领涨就永远不进池 → 覆盖盲区。这条通道固定扫一组
@@ -116,14 +124,17 @@ def _latest_kline(db: Session, code: str) -> Kline | None:
 
 def _build_thesis(
     entry_close: float, evidence: list[str], sector: str | None = None,
+    code: str = "",
 ) -> dict[str, Any]:
-    inv_price = round(entry_close * (1 - INVALIDATION_DROP_PCT / 100), 2)
+    drop = _invalidation_drop_pct(code) if code else INVALIDATION_DROP_PCT
+    inv_price = round(entry_close * (1 - drop / 100), 2)
     t: dict[str, Any] = {
         "summary": " + ".join(evidence) if evidence else "",
         "evidence": evidence,
         "invalidation_price": inv_price,
+        "invalidation_drop_pct": drop,  # 按板块缩放(科创 14 / 主板 7),淘汰文案读它
         "invalidation_rule": (
-            f"收盘跌破 {inv_price}（入池价 -{INVALIDATION_DROP_PCT:.0f}%）"
+            f"收盘跌破 {inv_price}（入池价 -{drop:.0f}%）"
             f"，或入池 {MA20_GRACE_DAYS} 个交易日后收于 MA20 下方，即淘汰"
         ),
     }
@@ -154,7 +165,7 @@ def _enter(
         state="observing",
         entry_close=k.close,
         entry_date=k.date,
-        thesis=_build_thesis(k.close, evidence, sector=sector),
+        thesis=_build_thesis(k.close, evidence, sector=sector, code=code),
         last_close=k.close,
         last_date=k.date,
         return_pct=0.0,
@@ -173,8 +184,9 @@ def _enter(
 def scan_rules_channel(db: Session) -> dict[str, int]:
     """Watchlist universe: latest snapshot has breakout_20d AND big_inflow,
     latest financials show profit_yoy > 0, name is not ST, not already
-    active in the pool."""
+    active in the pool。科创板未盈利硬科技免 profit 门槛(宽进)。"""
     from . import financials as fin_svc
+    from .stocks import market_board
 
     active = _active_codes(db)
     names: dict[str, str] = {
@@ -197,13 +209,21 @@ def scan_rules_channel(db: Session) -> dict[str, int]:
         if not ({"breakout_20d", "big_inflow"} <= sigs):
             continue
         fin_rows = fin_svc.latest_for_code(code, n=1)
-        if not fin_rows or fin_rows[0].profit_yoy is None or fin_rows[0].profit_yoy <= 0:
+        profit_yoy = fin_rows[0].profit_yoy if fin_rows else None
+        is_star = market_board(code) == "star"
+        # 宽进(科创板):未盈利硬科技放行,profit 门槛对它们不适用;突破+主力
+        # 流入两闸照留。其余板块仍卡 profit_yoy>0。
+        if not is_star and (profit_yoy is None or profit_yoy <= 0):
             continue
-        evidence = [
-            "突破 20 日新高",
-            f"主力净流入 {snap.main_net_flow / 1e8:.1f} 亿" if snap.main_net_flow else "主力大额流入",
-            f"最新净利同比 {fin_rows[0].profit_yoy:+.0f}%",
-        ]
+        flow_ev = (
+            f"主力净流入 {snap.main_net_flow / 1e8:.1f} 亿"
+            if snap.main_net_flow else "主力大额流入"
+        )
+        evidence = ["突破 20 日新高", flow_ev]
+        if profit_yoy is not None and profit_yoy > 0:
+            evidence.append(f"最新净利同比 {profit_yoy:+.0f}%")
+        elif is_star:
+            evidence.append("科创板·未盈利成长股")
         if _enter(db, code, name, "rules", evidence):
             entered += 1
     return {"scanned": scanned, "entered": entered}
@@ -260,6 +280,7 @@ def scan_designated_sectors_channel(db: Session) -> dict[str, int]:
     import statistics
     from . import financials as fin_svc
     from . import kline as kline_svc
+    from .stocks import market_board
     from .scraper import _safe_with_timeout
     import akshare as ak
 
@@ -308,7 +329,8 @@ def scan_designated_sectors_channel(db: Session) -> dict[str, int]:
             # gate 2: turnover relative strength (big_inflow substitute)
             if turnover < median_turnover:
                 continue
-            # gate 3: profit_yoy > 0 — pull financials if we don't have them
+            # gate 3: profit_yoy > 0 — pull financials if we don't have them。
+            # 宽进:科创板未盈利硬科技免此门槛(突破+换手两闸已过),其余仍卡。
             fin = fin_svc.latest_for_code(code, n=1)
             if not fin:
                 try:
@@ -316,13 +338,15 @@ def scan_designated_sectors_channel(db: Session) -> dict[str, int]:
                     fin = fin_svc.latest_for_code(code, n=1)
                 except Exception as e:
                     logger.warning("designated %s: financials pull failed (%s)", code, e)
-            if not fin or fin[0].profit_yoy is None or fin[0].profit_yoy <= 0:
+            profit_yoy = fin[0].profit_yoy if fin else None
+            is_star = market_board(code) == "star"
+            if not is_star and (profit_yoy is None or profit_yoy <= 0):
                 continue
-            evidence = [
-                "突破 20 日新高",
-                f"板块「{theme}」内换手强度靠前",
-                f"最新净利同比 {fin[0].profit_yoy:+.0f}%",
-            ]
+            evidence = ["突破 20 日新高", f"板块「{theme}」内换手强度靠前"]
+            if profit_yoy is not None and profit_yoy > 0:
+                evidence.append(f"最新净利同比 {profit_yoy:+.0f}%")
+            elif is_star:
+                evidence.append("科创板·未盈利成长股")
             if _enter(db, code, name, "designated", evidence, sector=theme):
                 entered += 1
                 active.add(code)
@@ -389,13 +413,16 @@ def _evaluate_entry(db: Session, e: PoolEntry) -> str:
     latest = bars[-1]
     inv_price = (e.thesis or {}).get("invalidation_price")
 
-    # Elimination — hard price floor, then MA20 after grace.
+    # Elimination — hard price floor, then MA20 after grace. 硬失效价(inv_price)
+    # 入池时已按板块缩放存进 thesis,这里读存储值即自动市场化;文案的跌幅%
+    # 同样读 thesis(老票没存则回退主板 7%)。
+    drop_pct = float((e.thesis or {}).get("invalidation_drop_pct", INVALIDATION_DROP_PCT))
     if inv_price is not None and last_close < float(inv_price):
         e.state = "eliminated"
         e.state_changed_at = now
         e.eliminated_reason = (
             f"收盘 {last_close:.2f} 跌破失效线 {float(inv_price):.2f}"
-            f"（入池价 -{INVALIDATION_DROP_PCT:.0f}%）"
+            f"（入池价 -{drop_pct:.0f}%）"
         )
     elif (e.days_observed >= MA20_GRACE_DAYS
           and latest.ma20 is not None and last_close < latest.ma20):
