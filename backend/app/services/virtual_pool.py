@@ -528,7 +528,8 @@ def backfill_missing_analyses(db: Session) -> dict[str, int]:
         .all()
     }
     missing = [e for e in recs if e.code not in have]
-    done = failed = 0
+    done = 0
+    errors: list[dict[str, str]] = []  # 把吞掉的异常吐回来,免翻 Railway 日志
     if missing:
         from . import analysis as analysis_svc
         for e in missing:
@@ -540,10 +541,13 @@ def backfill_missing_analyses(db: Session) -> dict[str, int]:
                 )
                 done += 1
                 logger.info("pool backfill %s: analysis generated", e.code)
-            except Exception:
+            except Exception as ex:
                 logger.exception("pool backfill %s: still failing", e.code)
-                failed += 1
-    return {"missing": len(missing), "backfilled": done, "failed": failed}
+                errors.append({"code": e.code, "error": f"{type(ex).__name__}: {ex}"[:240]})
+    return {
+        "missing": len(missing), "backfilled": done,
+        "failed": len(errors), "errors": errors,
+    }
 
 
 def pool_overview(db: Session, eliminated_limit: int = 15) -> dict[str, Any]:
