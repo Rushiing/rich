@@ -200,11 +200,15 @@ def hit_rate_stats() -> dict[str, Any]:
     finally:
         db.close()
 
-    # Same-day baseline: median return_d5 of all scored anchors that day.
-    by_day: dict[str, list[float]] = {}
+    # Same-day, same-market baseline: median return_d5 of all scored anchors
+    # that day *within the same board* (主板/科创/创业/北交). 科创板 ±20%
+    # 波动若混进主板基线会带偏主板超额,故按 (day, market) 隔离 — 主板只跟
+    # 主板比、科创只跟科创比。市场按 code 前缀实时派生,无 DB 列。
+    from .stocks import market_board
+    by_seg: dict[tuple, list[float]] = {}
     for o in rows:
-        by_day.setdefault(_gen_day(o), []).append(o.return_d5)
-    day_baseline = {day: _median(vals) for day, vals in by_day.items()}
+        by_seg.setdefault((_gen_day(o), market_board(o.code)), []).append(o.return_d5)
+    seg_baseline = {k: _median(vals) for k, vals in by_seg.items()}
 
     # Dedup set: last anchor per (code, gen_day).
     last_per_code_day: dict[tuple, AnalysisOutcome] = {}
@@ -227,7 +231,7 @@ def hit_rate_stats() -> dict[str, Any]:
         })
         b["n"] += 1
         b["sum_return_d5"] += o.return_d5
-        b["sum_excess_d5"] += o.return_d5 - day_baseline[_gen_day(o)]
+        b["sum_excess_d5"] += o.return_d5 - seg_baseline[(_gen_day(o), market_board(o.code))]
         hit = _is_hit(o.actionable, o.return_d5)
         if hit:
             b["hits"] += 1
@@ -277,13 +281,15 @@ def hit_rate_by_model(since_days: int | None = None) -> dict[str, Any]:
     if not rows:
         return {"total_scored": 0, "buckets": [], "since_days": since_days}
 
-    # Same-day baseline. Note: baseline is taken across the FULL rowset,
-    # not per-model — comparing minimax vs kimi on the same tape, baseline
-    # has to be common ground.
-    by_day: dict[str, list[float]] = {}
+    # Same-day, same-market baseline. Baseline is across all models (A/B 比
+    # 模型要同 tape,baseline 得是公共地面),但**按 market 隔离** —— 不同
+    # 板块波动量级不同(科创 ±20% vs 主板 ±10%),混在一条基线里会让科创票
+    # 的 excess 把主板带偏。同 market 内 minimax vs kimi 仍共享基线、公平。
+    from .stocks import market_board
+    by_seg: dict[tuple, list[float]] = {}
     for o in rows:
-        by_day.setdefault(_gen_day(o), []).append(o.return_d5)
-    day_baseline = {day: _median(vals) for day, vals in by_day.items()}
+        by_seg.setdefault((_gen_day(o), market_board(o.code)), []).append(o.return_d5)
+    seg_baseline = {k: _median(vals) for k, vals in by_seg.items()}
 
     # Dedup: last anchor per (code, gen_day), regardless of model. A stock
     # that flipped from kimi to minimax intraday only counts under whichever
@@ -307,7 +313,7 @@ def hit_rate_by_model(since_days: int | None = None) -> dict[str, Any]:
         })
         b["n"] += 1
         b["sum_return_d5"] += o.return_d5
-        b["sum_excess_d5"] += o.return_d5 - day_baseline[_gen_day(o)]
+        b["sum_excess_d5"] += o.return_d5 - seg_baseline[(_gen_day(o), market_board(o.code))]
         hit = _is_hit(o.actionable, o.return_d5)
         if hit:
             b["hits"] += 1

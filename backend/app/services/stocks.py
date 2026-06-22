@@ -46,6 +46,28 @@ def detect_exchange(code: str) -> str:
     return "unknown"
 
 
+def market_board(code: str) -> str:
+    """6 位 A 股代码 → 板块粒度。detect_exchange 只到交易所(sh/sz/bj),
+    但科创板隔离(±20% 波动 vs 主板 ±10%)需要 board 粒度。
+
+    688/689 → star(科创),30 → chinext(创业),60/00/002/001/003 →
+    main(主板),8/4/92 → bse(北交),其余 → unknown。
+
+    用于 outcomes 的 per-(day, market) baseline 隔离 + 后续科创板独立轨。
+    NOTE: 前缀逻辑当前在多处重复(detect_exchange / signals._limit_pct /
+    kline._tencent_symbol 等),统一收敛是独立的技术债,这里只新增 board 粒度。
+    """
+    if code.startswith(("688", "689")):
+        return "star"
+    if code.startswith("30"):
+        return "chinext"
+    if code.startswith(("60", "00")):
+        return "main"
+    if code.startswith(("8", "4", "92")):
+        return "bse"
+    return "unknown"
+
+
 def _fetch_name_eastmoney(code: str) -> str | None:
     """Per-code lookup via akshare's `stock_individual_info_em`. Used only
     as a fallback when the primary Tencent batch path doesn't have the

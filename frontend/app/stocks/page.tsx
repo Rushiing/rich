@@ -3,6 +3,8 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { api, ActionItemsOut, AnalysisBrief, HitRateSummary, StockRow, confidenceBucket, confidenceLabel } from "../../lib/api";
 import Tooltip from "../_components/Tooltip";
+import { groupByBoard } from "../../lib/market";
+import { SegmentHeader } from "../_components/SegmentSection";
 
 // While a snapshot job is running we re-pull /api/stocks at this cadence so
 // rows surface as their data lands. 5s feels responsive without hammering.
@@ -101,6 +103,21 @@ function groupOf(r: StockRow): GroupKey {
   return "other"; // 不建议入手 / 待生成 / 未知 actionable 都归这里
 }
 
+const DEFAULT_COLLAPSED: Record<GroupKey, boolean> = Object.fromEntries(
+  GROUP_DEFS.map((g) => [g.key, g.defaultCollapsed]),
+) as Record<GroupKey, boolean>;
+
+// 市场为外层后,买卖分组退成每个 market 区内部的中性次序。把一段 rows
+// 按 actionable 分组(starred 置顶),供市场区内复用。
+function actionableGroups(segRows: StockRow[]): Record<GroupKey, StockRow[]> {
+  const g: Record<GroupKey, StockRow[]> = { buy: [], sell: [], watch: [], other: [] };
+  for (const r of segRows) g[groupOf(r)].push(r);
+  for (const k of Object.keys(g) as GroupKey[]) {
+    g[k].sort((a, b) => Number(b.starred) - Number(a.starred));
+  }
+  return g;
+}
+
 // A股 continuous-trading window check, locked to Asia/Shanghai regardless
 // of where the user's browser thinks it is. Padded ±5min around each
 // session edge so the post-9:30-open and post-15:00-close cron writes
@@ -156,13 +173,11 @@ export default function StocksPage() {
   const [filter, setFilter] = useState<string | null>(null);
   // Per-group fold state. Initialized from GROUP_DEFS' defaults; only
   // applies when filter === null (the grouped view). Filter mode flattens.
-  const [collapsed, setCollapsed] = useState<Record<GroupKey, boolean>>(
-    () => Object.fromEntries(
-      GROUP_DEFS.map((g) => [g.key, g.defaultCollapsed]),
-    ) as Record<GroupKey, boolean>,
-  );
-  function toggleGroup(k: GroupKey) {
-    setCollapsed((c) => ({ ...c, [k]: !c[k] }));
+  // Key is now `${board}:${actionable}` (市场为外层后,折叠按市场×买卖独立)。
+  // 空初始 → 默认折叠态由 actionable 的 defaultCollapsed 兜底(见渲染处)。
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  function toggleGroup(ck: string, current: boolean) {
+    setCollapsed((c) => ({ ...c, [ck]: !current }));
   }
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollDeadline = useRef<number>(0);
@@ -353,19 +368,8 @@ export default function StocksPage() {
     }
   }
 
-  // Bucket rows into the four groups while preserving server-side ordering
-  // (strong-signal first, then |change_pct| desc). Then locally float
-  // starred rows to the top of each group — this guarantees the optimistic
-  // toggle reorders rows immediately, instead of waiting for the silent
-  // refresh round-trip. Array.sort in modern JS is stable, so non-starred
-  // rows keep their server-given relative order.
-  const groupedRows: Record<GroupKey, StockRow[]> = {
-    buy: [], sell: [], watch: [], other: [],
-  };
-  for (const r of rows) groupedRows[groupOf(r)].push(r);
-  for (const k of Object.keys(groupedRows) as GroupKey[]) {
-    groupedRows[k].sort((a, b) => Number(b.starred) - Number(a.starred));
-  }
+  // 默认视图的分桶移到渲染处(市场为外层 → 每个市场区内再按 actionable 分,
+  // 见 actionableGroups)。这里只保留筛选态的 starred 置顶。
   // Filter mode: same starred-first treatment so the flat list also reacts.
   const visibleRowsSorted = filter === null
     ? visibleRows
@@ -535,37 +539,47 @@ export default function StocksPage() {
           )}
           {/* Filter mode: flat list of whichever bucket is selected. */}
           {!loading && filter !== null && visibleRowsSorted.map((r) => stockRow(r, toggleStar))}
-          {/* Default mode: grouped, with collapsible non-act sections. */}
-          {!loading && filter === null && GROUP_DEFS.map(({ key, label, color }) => {
-            const groupRows = groupedRows[key];
-            if (groupRows.length === 0) return null;
-            const isCollapsed = collapsed[key];
-            return (
-              <Fragment key={key}>
-                <tr
-                  onClick={() => toggleGroup(key)}
-                  style={{ cursor: "pointer", background: "var(--bg)" }}
-                >
-                  <td colSpan={11} style={{
-                    padding: "8px 10px",
-                    borderTop: "1px solid var(--border-soft)",
-                    borderBottom: "1px solid var(--border-soft)",
-                    fontSize: 12,
-                    userSelect: "none",
-                  }}>
-                    <span style={{ display: "inline-block", width: 14, color: "var(--text-faint)" }}>
-                      {isCollapsed ? "▸" : "▾"}
-                    </span>
-                    <span style={{ color, fontWeight: 600, marginRight: 8 }}>
-                      {label}
-                    </span>
-                    <span style={{ color: "var(--text-muted)" }}>({groupRows.length})</span>
-                  </td>
-                </tr>
-                {!isCollapsed && groupRows.map((r) => stockRow(r, toggleStar))}
-              </Fragment>
-            );
-          })}
+          {/* Default mode: 市场为外层(科创板 teal 摘出),买卖分组退到每个
+              市场区内部的中性折叠次序。强调权给市场维度,符合「一次只强调一个
+              维度」规范。行模板(stockRow)不变。 */}
+          {!loading && filter === null && groupByBoard(rows, (r) => r.code).map((seg) => (
+            <Fragment key={seg.board}>
+              <SegmentHeader as="row" colSpan={11} board={seg.board} count={seg.items.length} />
+              {(() => {
+                const segGroups = actionableGroups(seg.items);
+                return GROUP_DEFS.map(({ key, label }) => {
+                  const groupRows = segGroups[key];
+                  if (groupRows.length === 0) return null;
+                  const ck = `${seg.board}:${key}`;
+                  const isCollapsed = collapsed[ck] ?? DEFAULT_COLLAPSED[key];
+                  return (
+                    <Fragment key={ck}>
+                      <tr
+                        onClick={() => toggleGroup(ck, isCollapsed)}
+                        style={{ cursor: "pointer", background: "var(--bg)" }}
+                      >
+                        <td colSpan={11} style={{
+                          padding: "6px 10px 6px 22px",
+                          borderBottom: "1px solid var(--border-faint)",
+                          fontSize: 12,
+                          userSelect: "none",
+                        }}>
+                          <span style={{ display: "inline-block", width: 14, color: "var(--text-faint)" }}>
+                            {isCollapsed ? "▸" : "▾"}
+                          </span>
+                          <span style={{ color: "var(--text-soft)", marginRight: 8 }}>
+                            {label}
+                          </span>
+                          <span style={{ color: "var(--text-muted)" }}>({groupRows.length})</span>
+                        </td>
+                      </tr>
+                      {!isCollapsed && groupRows.map((r) => stockRow(r, toggleStar))}
+                    </Fragment>
+                  );
+                });
+              })()}
+            </Fragment>
+          ))}
         </tbody>
       </table>
       </div>

@@ -12,8 +12,10 @@
  * /stocks(用户自选区域)。点系统推荐票看的是预选池专属详情,不污染自选。
  */
 
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { api, MySectors, PoolEntryRow, PoolOverview } from "../../lib/api";
+import { groupByBoard, type Board } from "../../lib/market";
+import { SegmentHeader } from "../_components/SegmentSection";
 
 const STATE_META: Record<string, { label: string; color: string; hint: string }> = {
   recommendable: {
@@ -146,23 +148,11 @@ export default function PoolPage() {
   );
 }
 
-// 可推荐区域:按批次(晋升周 cohort_week)聚合成卡片。每批 = 一个可考核单位。
+// 可推荐区域:外层按市场分区(科创板 teal 摘出),内层每个市场区再按批次
+// (晋升周 cohort_week)聚合成卡片。每批 = 一个可考核单位。
 function BatchSection({ rows, watched }: { rows: PoolEntryRow[]; watched: Set<string> }) {
   const meta = STATE_META.recommendable;
   if (rows.length === 0) return null;
-
-  // 按 cohort_week 分组;晋升前没记 cohort 的老票归"早期入选"
-  const byCohort = new Map<string, PoolEntryRow[]>();
-  for (const r of rows) {
-    const k = r.cohort_week || "早期入选";
-    (byCohort.get(k) ?? byCohort.set(k, []).get(k)!).push(r);
-  }
-  // 新周在前;"早期入选"垫底
-  const cohorts = [...byCohort.keys()].sort((a, b) => {
-    if (a === "早期入选") return 1;
-    if (b === "早期入选") return -1;
-    return b.localeCompare(a);
-  });
 
   return (
     <section style={{ marginTop: 22 }}>
@@ -172,16 +162,38 @@ function BatchSection({ rows, watched }: { rows: PoolEntryRow[]; watched: Set<st
         </span>
         <span style={{ color: "var(--text-faint)", fontSize: 12 }}>{meta.hint}</span>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 14 }}>
-        {cohorts.map((c) => <BatchCard key={c} cohort={c} rows={byCohort.get(c)!} watched={watched} />)}
-      </div>
+      {groupByBoard(rows, (r) => r.code).map((seg) => {
+        // 该市场内按 cohort_week 分组;晋升前没记 cohort 的老票归"早期入选"
+        const byCohort = new Map<string, PoolEntryRow[]>();
+        for (const r of seg.items) {
+          const k = r.cohort_week || "早期入选";
+          (byCohort.get(k) ?? byCohort.set(k, []).get(k)!).push(r);
+        }
+        const cohorts = [...byCohort.keys()].sort((a, b) => {
+          if (a === "早期入选") return 1;
+          if (b === "早期入选") return -1;
+          return b.localeCompare(a);
+        });
+        return (
+          <div key={seg.board} style={{ marginTop: 12 }}>
+            <SegmentHeader as="div" board={seg.board} count={seg.items.length} />
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 14, marginTop: 8 }}>
+              {cohorts.map((c) => (
+                <BatchCard key={`${seg.board}:${c}`} cohort={c} rows={byCohort.get(c)!} watched={watched} board={seg.board} />
+              ))}
+            </div>
+          </div>
+        );
+      })}
     </section>
   );
 }
 
-function BatchCard({ cohort, rows, watched }: { cohort: string; rows: PoolEntryRow[]; watched: Set<string> }) {
+function BatchCard({ cohort, rows, watched, board }: { cohort: string; rows: PoolEntryRow[]; watched: Set<string>; board: Board }) {
   const weekNum = /-W(\d+)/.exec(cohort)?.[1];
   const title = weekNum ? `第 ${weekNum} 周批次` : cohort;
+  // 基线随市场:科创板对科创50,其余对中证500(阶段2 填真实数字)
+  const benchmark = board === "科创板" ? "科创50" : "中证500";
   // 批次至今收益 = 等权平均(若你跟这批建议等额建仓的收益)
   const valid = rows.filter((r) => r.return_pct != null);
   const avg = valid.length ? valid.reduce((s, r) => s + (r.return_pct ?? 0), 0) / valid.length : null;
@@ -210,7 +222,7 @@ function BatchCard({ cohort, rows, watched }: { cohort: string; rows: PoolEntryR
         background: "var(--surface)", border: "1px dashed var(--border-mid)",
         fontSize: 11.5, color: "var(--text-faint)", lineHeight: 1.6,
       }}>
-        📊 相对中证500超额 + 买卖建议命中率<br />
+        📊 相对{benchmark}超额 + 买卖建议命中率<br />
         <span style={{ color: "var(--text-muted)" }}>正在为这一批积累 5 日数据 · 预计 6 月底首次揭晓</span>
       </div>
 
@@ -285,7 +297,10 @@ function Group({ state, rows, watched }: { state: string; rows: PoolEntryRow[]; 
             </tr>
           </thead>
           <tbody>
-            {ordered.map((r) => {
+            {groupByBoard(ordered, (r) => r.code).map((seg) => (
+            <Fragment key={seg.board}>
+            <SegmentHeader as="row" colSpan={9} board={seg.board} count={seg.items.length} />
+            {seg.items.map((r) => {
               const sc = SOURCE_COLOR[r.source] ?? SOURCE_COLOR.rules;
               const w = isWatched(r, watched);
               return (
@@ -342,6 +357,8 @@ function Group({ state, rows, watched }: { state: string; rows: PoolEntryRow[]; 
               </tr>
               );
             })}
+            </Fragment>
+            ))}
           </tbody>
         </table>
       </div>
