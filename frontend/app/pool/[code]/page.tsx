@@ -81,7 +81,9 @@ export default function PoolDetailPage({
             ? <AnalysisView analysis={data.analysis} />
             : (
               <p style={{ marginTop: 16, color: "var(--text-faint)", fontSize: 13 }}>
-                该票尚无 AI 解析(晋升成"可推荐"时自动生成)。
+                {data.entry.state === "recommendable"
+                  ? "AI 解析生成中,稍后刷新查看 —— 晋升瞬间到解析就绪有几十秒延迟,系统也会自动补全。"
+                  : "该票尚无 AI 解析(晋升成「可推荐」时自动生成)。"}
               </p>
             )}
         </>

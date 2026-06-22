@@ -924,6 +924,38 @@ def diag_pool_refresh_analysis_status():
     }
 
 
+@app.post("/api/_diag/pool-backfill-analysis")
+def diag_pool_backfill_analysis():
+    """只给「recommendable 但缺 Analysis 行」的票补生成(missing-only)。ASYNC。
+
+    跟 pool-refresh-analysis 的区别:refresh 是 force 重生【所有】recommendable
+    (会重锚已有解析的健康票);backfill 只补【缺失】的那几支,不动健康票的
+    锚点。用于即时修复晋升时 generate 失败留下的不一致(如 002084),不必等
+    下个 16:45 tick(tick 现在也内置了这道兜底)。复用 _pool_regen_lock。"""
+    import threading
+    with _pool_regen_lock:
+        if _pool_regen_running["v"]:
+            return {"started": False, "already_running": True}
+        _pool_regen_running["v"] = True
+        _pool_regen_running["last_result"] = None
+
+    def _worker():
+        from .db import SessionLocal
+        from .services import virtual_pool as pool_svc
+        db = SessionLocal()
+        try:
+            _pool_regen_running["last_result"] = pool_svc.backfill_missing_analyses(db)
+        except Exception as ex:
+            _pool_regen_running["last_result"] = {"error": str(ex)}
+        finally:
+            db.close()
+            with _pool_regen_lock:
+                _pool_regen_running["v"] = False
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return {"started": True}
+
+
 @app.get("/api/_diag/pool-status")
 def diag_pool_status():
     """Pool tick status + current pool overview (same payload as the

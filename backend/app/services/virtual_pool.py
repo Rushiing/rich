@@ -499,10 +499,51 @@ def run_pool_tick() -> dict[str, Any]:
         result["rules"] = scan_rules_channel(db)
         result["sector_picks"] = scan_sector_picks_channel(db)
         result["designated"] = scan_designated_sectors_channel(db)
+        # 自愈:晋升挂解析是 best-effort,失败不回滚晋升 → 票会卡在
+        # recommendable-无解析(如 002084)。每个 tick 兜底补生成,系统
+        # 最终一致(失败的下个 tick 重试)。正常为 0。
+        result["backfill"] = backfill_missing_analyses(db)
         logger.info("pool tick: %s", result)
         return result
     finally:
         db.close()
+
+
+def backfill_missing_analyses(db: Session) -> dict[str, int]:
+    """给「recommendable 但没有 Analysis 行」的票补生成解析。
+
+    根因:_evaluate_entry 晋升分支先 commit 状态、再 inline 调 generate
+    (best-effort,LLM 失败被 except 吞掉、不回滚晋升、不重试)。所以任何
+    一次 generate 失败都会留下 recommendable-无解析的不一致,且永不自愈。
+    这个兜底每个 tick 扫一遍补齐,把"晋升即有解析"从 best-effort 升成
+    eventually-consistent。"""
+    from ..models import Analysis
+    recs = db.query(PoolEntry).filter(PoolEntry.state == "recommendable").all()
+    if not recs:
+        return {"missing": 0, "backfilled": 0, "failed": 0}
+    have = {
+        c for (c,) in db.query(Analysis.code)
+        .filter(Analysis.code.in_([e.code for e in recs]))
+        .distinct()
+        .all()
+    }
+    missing = [e for e in recs if e.code not in have]
+    done = failed = 0
+    if missing:
+        from . import analysis as analysis_svc
+        for e in missing:
+            try:
+                analysis_svc.generate(
+                    db, e.code, mode="single",
+                    allow_external=True, external_name=e.name,
+                    cohort=e.cohort_week, anchor_price_override=e.last_close,
+                )
+                done += 1
+                logger.info("pool backfill %s: analysis generated", e.code)
+            except Exception:
+                logger.exception("pool backfill %s: still failing", e.code)
+                failed += 1
+    return {"missing": len(missing), "backfilled": done, "failed": failed}
 
 
 def pool_overview(db: Session, eliminated_limit: int = 15) -> dict[str, Any]:
