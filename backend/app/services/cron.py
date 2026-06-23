@@ -778,11 +778,19 @@ def _smart_analyze_tick():
 
 
 def _outcomes_tick():
-    """Daily post-close: fill forward returns on analysis outcomes. Runs
-    after _kline_tick (16:30) so the latest close is already in the DB."""
+    """Daily post-close:维护 analysis outcomes 的前向收益。Runs after
+    _kline_tick (16:30) so the latest close is already in the DB.
+
+    6/23(codex 终审):从 backfill_outcomes(只填空)换成 recompute_returns_
+    from_close(同批次重读全表 + 盖 clean 戳 + 清不可验证 horizon)。recompute
+    是 backfill 的超集,这样:① clean 行每日自维护(对客统计无需手动 recompute);
+    ② 对抗 qfq 历史价后续除权漂移(每日按当前 K 线重算);③ 消除 backfill 回填
+    破坏 clean 的那条残留路径(已没有单独 backfill 在 cron 里跑了)。
+    backfill_outcomes 函数 + 手动 diag 端点保留,供 ad-hoc 用。"""
     try:
         from . import outcomes as outcomes_svc
-        outcomes_svc.backfill_outcomes()
+        res = outcomes_svc.recompute_returns_from_close()
+        logger.info("outcomes tick (recompute): %s", res)
     except Exception:
         logger.exception("outcomes tick failed")
 
