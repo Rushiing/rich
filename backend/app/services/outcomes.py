@@ -305,12 +305,18 @@ def hit_rate_stats() -> dict[str, Any]:
       end-of-day verdict — and recomputes the hit rate on that set. The
       gap between hit_rate and hit_rate_dedup is the clustering inflation.
 
+    6/23 (codex P2):对客超额只用「复权安全」的行 —— anchor_close 非空表示
+    return 已用同批次 qfq 基准算(见 recompute_returns_from_close)。K线滚动缓存
+    淘汰、无法清算的老行(anchor_close 为空)排除在对客 claim 之外,宁可分母小、
+    不拿混基准的数糊弄用户。
+
     Returns a dict the diag endpoint serializes directly."""
     db: Session = SessionLocal()
     try:
         rows = (
             db.query(AnalysisOutcome)
             .filter(AnalysisOutcome.return_d5.isnot(None))
+            .filter(AnalysisOutcome.anchor_close.isnot(None))  # clean 复权基准
             .all()
         )
     finally:
@@ -386,7 +392,12 @@ def hit_rate_by_model(since_days: int | None = None) -> dict[str, Any]:
     """
     db: Session = SessionLocal()
     try:
-        q = db.query(AnalysisOutcome).filter(AnalysisOutcome.return_d5.isnot(None))
+        # codex P2:只用复权安全的行(anchor_close 非空),同 hit_rate_stats。
+        q = (
+            db.query(AnalysisOutcome)
+            .filter(AnalysisOutcome.return_d5.isnot(None))
+            .filter(AnalysisOutcome.anchor_close.isnot(None))
+        )
         if since_days is not None:
             cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
             q = q.filter(AnalysisOutcome.generated_at >= cutoff)
