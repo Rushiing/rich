@@ -86,11 +86,15 @@ def record_anchor(
     db.commit()
 
 
-def backfill_outcomes() -> dict:
+def backfill_outcomes(db: Session | None = None) -> dict:
     """Walk outcomes with unfilled horizons, fill close_dN / return_dN from
     the klines table. Idempotent — only fills columns that are still NULL
-    and have enough trading days elapsed. Returns counters."""
-    db: Session = SessionLocal()
+    and have enough trading days elapsed. Returns counters.
+
+    db 可注入(测试用 in-memory sqlite);默认走 SessionLocal。"""
+    own = db is None
+    if own:
+        db = SessionLocal()
     filled = scanned = 0
     try:
         # Rows with at least one unfilled horizon, or missing the
@@ -155,11 +159,18 @@ def backfill_outcomes() -> dict:
                 setattr(o, return_attr, (bar.close - basis) / basis * 100.0)
                 changed = True
             if changed:
+                # codex 终审 P1:backfill 填某个 horizon 用的是已落库 anchor_close,
+                # 不保证跟本次 forward bar 同批次(可能跨期 qfq 漂移),所以这行不能
+                # 再算 clean。清掉 recompute 盖的 clean 标记 —— 否则旧 timestamp +
+                # backfill 新填的 return_dN 会一起混进对客 clean 统计。等下次
+                # recompute 同批次复核后才重新 clean。
+                o.returns_recomputed_at = None
                 o.updated_at = datetime.now(timezone.utc)
                 filled += 1
         db.commit()
     finally:
-        db.close()
+        if own:
+            db.close()
     logger.info("outcomes backfill: scanned=%d filled=%d", scanned, filled)
     return {"scanned": scanned, "filled": filled}
 

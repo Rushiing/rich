@@ -21,7 +21,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
 from app.models import AnalysisOutcome, Kline
-from app.services.outcomes import recompute_returns_from_close
+from app.services.outcomes import recompute_returns_from_close, backfill_outcomes
 
 
 def _fresh_session():
@@ -180,6 +180,58 @@ def test_nonpositive_anchor_close_goes_no_basis():
     print("✓ anchor_close<=0 → no_basis,原值不动、无 recomputed 标记")
 
 
+def test_backfill_after_recompute_drops_clean_mark():
+    """codex 终审 P1 的端到端反例 + 修复证明:
+    recompute 时 future 短、清空 d5 并盖 timestamp → K 线长出来 → backfill 回填
+    d5 → backfill 必须清掉 timestamp,否则 backfill 填的 d5(已落库 anchor_close,
+    不保证同批次)会混进 clean。"""
+    db = _fresh_session()
+    code = "600000"
+    # 初始只有锚点 + 3 根未来(不够 d5)
+    for d, c in [("2026-06-01", 10.0), ("2026-06-02", 10.2),
+                 ("2026-06-03", 10.4), ("2026-06-04", 10.6)]:
+        db.add(Kline(code=code, date=d, close=c))
+    db.add(AnalysisOutcome(
+        id=1, code=code, generated_at=datetime(2026, 6, 1, 2, 0, tzinfo=timezone.utc),
+        actionable="建议买入", anchor_price=10.5,
+    ))
+    db.commit()
+
+    recompute_returns_from_close(db=db)
+    o = db.query(AnalysisOutcome).filter_by(code=code).first()
+    assert o.return_d5 is None and o.returns_recomputed_at is not None  # d5 清空、行盖戳
+
+    # K 线长出第 5、6 根 → d5 现在够了
+    db.add(Kline(code=code, date="2026-06-05", close=10.8))
+    db.add(Kline(code=code, date="2026-06-06", close=11.0))
+    db.commit()
+
+    backfill_outcomes(db=db)
+    o = db.query(AnalysisOutcome).filter_by(code=code).first()
+    # backfill 填了 d5,但必须清掉 clean 标记 → 不会被当 clean
+    assert o.return_d5 is not None, "backfill 应填 d5"
+    assert o.returns_recomputed_at is None, "backfill 必须清 clean 标记(P1 修复)"
+    print("✓ backfill 回填 d5 后清掉 clean 标记(P1 端到端)")
+
+
+def test_no_basis_clears_existing_timestamp():
+    """codex P2:原本有 returns_recomputed_at 的行,后来变 no_basis → 必须清掉戳。"""
+    db = _fresh_session()
+    code = "600000"
+    db.add(Kline(code=code, date="2026-06-10", close=20.0))  # 只有 gen_day 之后的
+    db.add(AnalysisOutcome(
+        id=1, code=code, generated_at=datetime(2026, 6, 1, 2, 0, tzinfo=timezone.utc),
+        actionable="建议买入", anchor_price=10.5,
+        returns_recomputed_at=datetime(2026, 6, 2, tzinfo=timezone.utc),  # 旧 clean 戳
+    ))
+    db.commit()
+    res = recompute_returns_from_close(db=db)
+    o = db.query(AnalysisOutcome).filter_by(code=code).first()
+    assert res["no_basis"] == 1
+    assert o.returns_recomputed_at is None, "no_basis 必须清掉旧 clean 戳"
+    print("✓ no_basis 清掉已有 clean 标记")
+
+
 if __name__ == "__main__":
     test_recompute_uses_current_klines_not_stale_stored()
     test_idempotent_second_run()
@@ -187,4 +239,6 @@ if __name__ == "__main__":
     test_dividend_span_moves_return()
     test_future_short_of_d5_clears_d5_not_leave_stale()
     test_nonpositive_anchor_close_goes_no_basis()
+    test_backfill_after_recompute_drops_clean_mark()
+    test_no_basis_clears_existing_timestamp()
     print("\nALL PASS")
