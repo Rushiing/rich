@@ -103,6 +103,9 @@ _POSTGRES_BACKFILL = [
     ("analysis_outcomes", "buy_high",       "DOUBLE PRECISION"),
     ("analysis_outcomes", "target_low",     "DOUBLE PRECISION"),
     ("analysis_outcomes", "stop_price",     "DOUBLE PRECISION"),
+    # 6/23 (codex P1):return 已用同批次 qfq 基准清算过的时间戳。非空 = clean
+    # (数据自证)。对客统计(hit_rate_stats 等)只用非空行。
+    ("analysis_outcomes", "returns_recomputed_at", "TIMESTAMPTZ"),
     # 6/20: per-user 关注板块 (display-layer highlight of pool entries).
     ("users", "preferred_sectors",          "JSONB"),
 ]

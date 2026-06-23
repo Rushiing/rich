@@ -796,6 +796,9 @@ def diag_model_ab_stats():
         )
 
         # 3. 已评分的按 (model, actionable) 命中 — 买/卖向才算 hit
+        # 注(codex P3):这是内部 A/B debug,**不加 clean 过滤** —— 否则
+        # recompute 没跑过时直接空,A/B 读数失效。基准可能混。最终选型决策
+        # 请以 clean-only 的 hit_rate_by_model(outcomes-stats-by-model)为准。
         scored = (
             db.query(AnalysisOutcome)
             .filter(

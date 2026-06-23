@@ -73,7 +73,8 @@ def test_recompute_uses_current_klines_not_stale_stored():
     assert abs(o.return_d5 - 10.0) < 1e-9, o.return_d5
     assert res["clean"] == 1 and res["no_basis"] == 0
     assert res["changed"] == 1
-    print("✓ 重读当前 Kline、忽略脏 close_dN/anchor_close")
+    assert o.returns_recomputed_at is not None  # clean → 数据自证标记
+    print("✓ 重读当前 Kline、忽略脏 close_dN/anchor_close + 盖 recomputed 标记")
 
 
 def test_idempotent_second_run():
@@ -132,9 +133,54 @@ def test_dividend_span_moves_return():
     print("✓ 跨除权:4.76% → 10.00%(基准修正)")
 
 
+def test_future_short_of_d5_does_not_touch_d5():
+    """future 不足 5 根:只填能填的(d1/d3),d5 保持原值不误改(codex P2b)。"""
+    db = _fresh_session()
+    code = "600000"
+    # 锚点日 + 只有 3 个未来交易日(不够 d5)
+    for d, c in [("2026-06-01", 10.0), ("2026-06-02", 10.2),
+                 ("2026-06-03", 10.4), ("2026-06-04", 10.6)]:
+        db.add(Kline(code=code, date=d, close=c))
+    db.add(AnalysisOutcome(
+        id=1, code=code, generated_at=datetime(2026, 6, 1, 2, 0, tzinfo=timezone.utc),
+        actionable="建议买入", anchor_price=10.5,
+        return_d5=99.0,  # 哨兵:不该被动
+    ))
+    db.commit()
+    recompute_returns_from_close(db=db)
+    o = db.query(AnalysisOutcome).filter_by(code=code).first()
+    # d3 = 第 3 根未来 bar = 06-04(10.6),return_d3=(10.6-10.0)/10.0=6%
+    # d5 没有第 5 根 → 保持哨兵 99.0 不动
+    assert o.close_d3 is not None and abs(o.return_d3 - 6.0) < 1e-9, o.return_d3
+    assert abs(o.return_d5 - 99.0) < 1e-9, o.return_d5
+    print("✓ future 不足 d5:只填 d1/d3,d5 不误改")
+
+
+def test_nonpositive_anchor_close_goes_no_basis():
+    """anchor_bar.close <= 0(脏 K 线):走 no_basis,anchor/returns 都不动(codex P2b)。"""
+    db = _fresh_session()
+    code = "600000"
+    db.add(Kline(code=code, date="2026-06-01", close=0.0))   # 脏:收盘 0
+    db.add(Kline(code=code, date="2026-06-06", close=11.0))
+    db.add(AnalysisOutcome(
+        id=1, code=code, generated_at=datetime(2026, 6, 1, 2, 0, tzinfo=timezone.utc),
+        actionable="建议买入", anchor_price=10.5,
+        anchor_close=9.9, return_d5=3.0,
+    ))
+    db.commit()
+    res = recompute_returns_from_close(db=db)
+    o = db.query(AnalysisOutcome).filter_by(code=code).first()
+    assert res["no_basis"] == 1 and res["clean"] == 0, res
+    assert abs(o.anchor_close - 9.9) < 1e-9 and abs(o.return_d5 - 3.0) < 1e-9  # 不动
+    assert o.returns_recomputed_at is None  # 没清算 → 不该有标记
+    print("✓ anchor_close<=0 → no_basis,原值不动、无 recomputed 标记")
+
+
 if __name__ == "__main__":
     test_recompute_uses_current_klines_not_stale_stored()
     test_idempotent_second_run()
     test_no_basis_when_kline_purged()
     test_dividend_span_moves_return()
+    test_future_short_of_d5_does_not_touch_d5()
+    test_nonpositive_anchor_close_goes_no_basis()
     print("\nALL PASS")

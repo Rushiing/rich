@@ -239,8 +239,13 @@ def recompute_returns_from_close(db: Session | None = None) -> dict:
                         n_d5 += 1
                     setattr(o, f"return_d{h}", new_ret)
                     row_changed = True
+            # clean 行:盖"已用当前 qfq 同批次清算"的时间戳(数据自证 clean,
+            # 对客统计据此过滤);每次重跑刷新,透出清算新鲜度。changed 仍只
+            # 计真实值移动,所以幂等(二次 changed=0)不受影响。
+            now = datetime.now(timezone.utc)
+            o.returns_recomputed_at = now
+            o.updated_at = now
             if row_changed:
-                o.updated_at = datetime.now(timezone.utc)
                 changed += 1
         db.commit()
     finally:
@@ -316,7 +321,9 @@ def hit_rate_stats() -> dict[str, Any]:
         rows = (
             db.query(AnalysisOutcome)
             .filter(AnalysisOutcome.return_d5.isnot(None))
-            .filter(AnalysisOutcome.anchor_close.isnot(None))  # clean 复权基准
+            # clean 数据自证:return 已用同批次 qfq 重算过(codex P1)。比
+            # anchor_close 非空更严 —— 后者只说明有锚点价,不保证 return 已清算。
+            .filter(AnalysisOutcome.returns_recomputed_at.isnot(None))
             .all()
         )
     finally:
@@ -392,11 +399,11 @@ def hit_rate_by_model(since_days: int | None = None) -> dict[str, Any]:
     """
     db: Session = SessionLocal()
     try:
-        # codex P2:只用复权安全的行(anchor_close 非空),同 hit_rate_stats。
+        # clean 数据自证:return 已用同批次 qfq 重算过(codex P1),同 hit_rate_stats。
         q = (
             db.query(AnalysisOutcome)
             .filter(AnalysisOutcome.return_d5.isnot(None))
-            .filter(AnalysisOutcome.anchor_close.isnot(None))
+            .filter(AnalysisOutcome.returns_recomputed_at.isnot(None))
         )
         if since_days is not None:
             cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
@@ -738,6 +745,9 @@ def hit_rate_by_confidence() -> dict[str, Any]:
             .filter(
                 AnalysisOutcome.confidence.isnot(None),
                 AnalysisOutcome.actionable.in_(["建议买入", "建议卖出"]),
+                # codex P3:置信度分档命中也只用 clean 行(我们在审计里引用过
+                # 它的数,口径要跟对客 hit_rate 一致,别混基准)。
+                AnalysisOutcome.returns_recomputed_at.isnot(None),
             )
             .all()
         )

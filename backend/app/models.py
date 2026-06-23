@@ -447,6 +447,13 @@ class AnalysisOutcome(Base):
     buy_high: Mapped[float | None] = mapped_column(Float, nullable=True)
     target_low: Mapped[float | None] = mapped_column(Float, nullable=True)
     stop_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 6/23 (codex P1):recompute_returns_from_close 用当前 Kline 同批次重算
+    # 这行的 return_dN 时盖的时间戳。非空 = return 已用复权安全基准清算过
+    # (数据自证 clean,不再依赖"recompute 跑没跑过"的运维前提);时间戳还
+    # 透出"清算有多新",对抗 qfq 历史价后续漂移(该周期性重跑)。
+    returns_recomputed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
