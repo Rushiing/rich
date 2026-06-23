@@ -204,18 +204,34 @@ def recompute_returns_from_close(db: Session | None = None) -> dict:
     n_d5 = 0
     sum_abs_d5 = 0.0
     max_abs_d5 = 0.0
+    import bisect
     try:
-        for o in db.query(AnalysisOutcome).all():
+        outcomes = db.query(AnalysisOutcome).all()
+        # 性能(6/23):原来每行 2 次远程 kline 查询,全表 ~3500 行 = ~7000 次
+        # 往返,Railway 跨区 Postgres 下要 20+ 分钟。改成一次性把相关 code 的
+        # K 线读进内存(2 次查询),逐行用 bisect 在内存里定位 anchor/future。
+        codes = {o.code for o in outcomes}
+        bars_by_code: dict[str, list[tuple[str, float | None]]] = {}
+        if codes:
+            for kcode, kdate, kclose in (
+                db.query(Kline.code, Kline.date, Kline.close)
+                .filter(Kline.code.in_(codes))
+                .all()
+            ):
+                bars_by_code.setdefault(kcode, []).append((kdate, kclose))
+            for _bars in bars_by_code.values():
+                _bars.sort(key=lambda x: x[0])  # date 字符串字典序 = 时间序
+        dates_by_code = {c: [d for d, _ in v] for c, v in bars_by_code.items()}
+
+        for o in outcomes:
             scanned += 1
             gen_day = _gen_day(o)
-            # 当前 qfq 表里的锚点日收盘(≤gen_day 最近一根)
-            anchor_bar = (
-                db.query(Kline)
-                .filter(Kline.code == o.code, Kline.date <= gen_day)
-                .order_by(Kline.date.desc())
-                .first()
-            )
-            if anchor_bar is None or anchor_bar.close is None or anchor_bar.close <= 0:
+            bars = bars_by_code.get(o.code, [])
+            dates = dates_by_code.get(o.code, [])
+            # anchor = ≤gen_day 最近一根(等价于原 order_by date desc .first())
+            i = bisect.bisect_right(dates, gen_day)  # 第一个 date > gen_day 的下标
+            anchor_close = bars[i - 1][1] if i > 0 else None
+            if anchor_close is None or anchor_close <= 0:
                 no_basis += 1  # K 线已被滚动缓存淘汰,无法清算,留原 return 值
                 # codex P2:清掉 clean 标记 —— 一行曾经 clean、后来 K 线淘汰变
                 # no_basis,timestamp 不能再代表"当前 K 线仍可复核",否则重复
@@ -225,20 +241,15 @@ def recompute_returns_from_close(db: Session | None = None) -> dict:
                     o.updated_at = datetime.now(timezone.utc)
                 continue
             clean += 1
-            basis = anchor_bar.close
-            future = (
-                db.query(Kline)
-                .filter(Kline.code == o.code, Kline.date > gen_day)
-                .order_by(Kline.date.asc())
-                .all()
-            )
+            basis = anchor_close
+            future = bars[i:]  # date > gen_day,升序(等价原 future 查询)
             row_changed = False
             if o.anchor_close != basis:
                 o.anchor_close = basis
                 row_changed = True
             for h in HORIZONS:
-                bar = future[h - 1] if len(future) >= h else None
-                if bar is None or bar.close is None:
+                bar_close = future[h - 1][1] if len(future) >= h else None
+                if bar_close is None:
                     # codex P1:当前 K 线证明不了这个 horizon → 清空旧 close/return。
                     # returns_recomputed_at 是行级、clean 却是 horizon 级,只有清空
                     # 才能让「return_dN 非空 ⟺ 该 horizon 已用当前 K 线清算」成立,
@@ -250,7 +261,7 @@ def recompute_returns_from_close(db: Session | None = None) -> dict:
                         setattr(o, f"return_d{h}", None)
                         row_changed = True
                     continue
-                new_close = bar.close
+                new_close = bar_close
                 new_ret = (new_close - basis) / basis * 100.0
                 if getattr(o, f"close_d{h}") != new_close:
                     setattr(o, f"close_d{h}", new_close)
