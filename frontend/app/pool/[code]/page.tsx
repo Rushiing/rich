@@ -77,6 +77,22 @@ export default function PoolDetailPage({
       ) : (
         <>
           <EntryCard entry={data.entry} />
+          {/* 过渡提示:晋升(技术面筛选)和 AI 解析是两套独立判断,会出现
+              「可推荐 + 观望/卖出」同屏。机制迭代中,先用这句把"可推荐≠建议买入"
+              说破,掐掉无脑追高。AI 转为建议买入时自动消失。 */}
+          {data.analysis
+            && (data.entry.state === "recommendable" || data.entry.state === "recommended")
+            && data.analysis.key_table.actionable !== "建议买入" && (
+            <div style={{
+              marginTop: 12, padding: "10px 14px",
+              borderLeft: "3px solid #f59e0b",
+              background: "rgba(245,158,11,0.06)",
+              fontSize: 12.5, color: "var(--text-soft)", lineHeight: 1.65,
+            }}>
+              <b style={{ color: "#f59e0b" }}>提示</b>:「可推荐」= 通过了系统的<b>技术面筛选</b>(突破新高 + 站稳,已观察 {data.entry.days_observed} 天),
+              <b>不等于现在建议买入</b>。下方 AI 的独立判断此刻是「{data.analysis.key_table.actionable}」—— 以它的理由为准,别只看绿标追进去。
+            </div>
+          )}
           {data.analysis
             ? <AnalysisView analysis={data.analysis} />
             : (
