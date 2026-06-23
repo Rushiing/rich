@@ -60,7 +60,7 @@ export ANTHROPIC_BASE_URL='<dashscope base url>'
 
 # Candidate route — 火山 ARK coding plan, Anthropic-compatible
 export VOLCENGINE_BASE_URL='https://ark.cn-beijing.volces.com/api/coding'
-export VOLCENGINE_API_KEY='ark-cd263b71-c699-4f15-8fea-44b701d832a8-a4059'
+export VOLCENGINE_API_KEY='<volcengine ark key — 从 Railway/控制台取,切勿写进仓库>'
 ```
 
 `DATABASE_URL` needs the password from Railway → Postgres service →
