@@ -133,8 +133,9 @@ def test_dividend_span_moves_return():
     print("✓ 跨除权:4.76% → 10.00%(基准修正)")
 
 
-def test_future_short_of_d5_does_not_touch_d5():
-    """future 不足 5 根:只填能填的(d1/d3),d5 保持原值不误改(codex P2b)。"""
+def test_future_short_of_d5_clears_d5_not_leave_stale():
+    """future 不足 5 根:d3 重算;旧 d5 当前 K 线证明不了 → **清空**(不留旧口径
+    残值混进 clean 统计)。codex P1 反例的回归。"""
     db = _fresh_session()
     code = "600000"
     # 锚点日 + 只有 3 个未来交易日(不够 d5)
@@ -144,16 +145,19 @@ def test_future_short_of_d5_does_not_touch_d5():
     db.add(AnalysisOutcome(
         id=1, code=code, generated_at=datetime(2026, 6, 1, 2, 0, tzinfo=timezone.utc),
         actionable="建议买入", anchor_price=10.5,
-        return_d5=99.0,  # 哨兵:不该被动
+        close_d5=10.9, return_d5=99.0,  # 旧口径残值,当前 K 线撑不到 d5
     ))
     db.commit()
     recompute_returns_from_close(db=db)
     o = db.query(AnalysisOutcome).filter_by(code=code).first()
-    # d3 = 第 3 根未来 bar = 06-04(10.6),return_d3=(10.6-10.0)/10.0=6%
-    # d5 没有第 5 根 → 保持哨兵 99.0 不动
+    # d3 = 第 3 根 = 06-04(10.6),return_d3=6%
     assert o.close_d3 is not None and abs(o.return_d3 - 6.0) < 1e-9, o.return_d3
-    assert abs(o.return_d5 - 99.0) < 1e-9, o.return_d5
-    print("✓ future 不足 d5:只填 d1/d3,d5 不误改")
+    # d5 撑不到 → 清空(关键:不是留 99.0)
+    assert o.return_d5 is None and o.close_d5 is None, (o.return_d5, o.close_d5)
+    # 行盖了 recomputed 标记,但因 return_d5=None,clean d5 统计(return_d5 非空
+    # AND recomputed 非空)不会纳入它 —— 不变式成立
+    assert o.returns_recomputed_at is not None
+    print("✓ future 不足 d5:清空旧 d5(不混进 clean),d3 正常")
 
 
 def test_nonpositive_anchor_close_goes_no_basis():
@@ -181,6 +185,6 @@ if __name__ == "__main__":
     test_idempotent_second_run()
     test_no_basis_when_kline_purged()
     test_dividend_span_moves_return()
-    test_future_short_of_d5_does_not_touch_d5()
+    test_future_short_of_d5_clears_d5_not_leave_stale()
     test_nonpositive_anchor_close_goes_no_basis()
     print("\nALL PASS")

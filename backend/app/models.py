@@ -403,7 +403,10 @@ class AnalysisOutcome(Base):
     close_d3: Mapped[float | None] = mapped_column(Float, nullable=True)
     close_d5: Mapped[float | None] = mapped_column(Float, nullable=True)
     close_d20: Mapped[float | None] = mapped_column(Float, nullable=True)
-    # Forward returns (%), = (close_dN - anchor_price) / anchor_price * 100.
+    # Forward returns (%). 6/23(codex):复权安全口径 = (close_dN - anchor_close)
+    # / anchor_close * 100,close_dN 与 anchor_close 取自当前同一 qfq 批次(见
+    # recompute_returns_from_close)。早期/未清算行可能仍是旧 anchor_price 基准,
+    # 故对客统计只用 returns_recomputed_at 非空的行。
     return_d1: Mapped[float | None] = mapped_column(Float, nullable=True)
     return_d3: Mapped[float | None] = mapped_column(Float, nullable=True)
     return_d5: Mapped[float | None] = mapped_column(Float, nullable=True)

@@ -205,7 +205,13 @@ def recompute_returns_from_close(db: Session | None = None) -> dict:
                 .first()
             )
             if anchor_bar is None or anchor_bar.close is None or anchor_bar.close <= 0:
-                no_basis += 1  # K 线已被滚动缓存淘汰,无法清算,留原值
+                no_basis += 1  # K 线已被滚动缓存淘汰,无法清算,留原 return 值
+                # codex P2:清掉 clean 标记 —— 一行曾经 clean、后来 K 线淘汰变
+                # no_basis,timestamp 不能再代表"当前 K 线仍可复核",否则重复
+                # recompute 后它仍被当 clean 纳入。语义=「当前可清算」而非「曾清算过」。
+                if o.returns_recomputed_at is not None:
+                    o.returns_recomputed_at = None
+                    o.updated_at = datetime.now(timezone.utc)
                 continue
             clean += 1
             basis = anchor_bar.close
@@ -220,10 +226,18 @@ def recompute_returns_from_close(db: Session | None = None) -> dict:
                 o.anchor_close = basis
                 row_changed = True
             for h in HORIZONS:
-                if len(future) < h:
-                    continue
-                bar = future[h - 1]
-                if bar.close is None:
+                bar = future[h - 1] if len(future) >= h else None
+                if bar is None or bar.close is None:
+                    # codex P1:当前 K 线证明不了这个 horizon → 清空旧 close/return。
+                    # returns_recomputed_at 是行级、clean 却是 horizon 级,只有清空
+                    # 才能让「return_dN 非空 ⟺ 该 horizon 已用当前 K 线清算」成立,
+                    # 旧口径残值不再混进 clean 统计。
+                    if getattr(o, f"close_d{h}") is not None:
+                        setattr(o, f"close_d{h}", None)
+                        row_changed = True
+                    if getattr(o, f"return_d{h}") is not None:
+                        setattr(o, f"return_d{h}", None)
+                        row_changed = True
                     continue
                 new_close = bar.close
                 new_ret = (new_close - basis) / basis * 100.0
@@ -310,10 +324,12 @@ def hit_rate_stats() -> dict[str, Any]:
       end-of-day verdict — and recomputes the hit rate on that set. The
       gap between hit_rate and hit_rate_dedup is the clustering inflation.
 
-    6/23 (codex P2):对客超额只用「复权安全」的行 —— anchor_close 非空表示
-    return 已用同批次 qfq 基准算(见 recompute_returns_from_close)。K线滚动缓存
-    淘汰、无法清算的老行(anchor_close 为空)排除在对客 claim 之外,宁可分母小、
-    不拿混基准的数糊弄用户。
+    6/23 (codex P1/P2):对客超额只用「复权安全」的行 —— 过滤 return_d5 非空
+    AND **returns_recomputed_at 非空**。后者由 recompute_returns_from_close 在用
+    当前同批次 qfq 重算该行后盖上,是「数据自证 clean」:有标记 ⟺ 这行 return 已
+    用当前 K 线清算过(撑不到的 horizon 会被清空,不留旧口径残值)。K线滚动缓存
+    淘汰、无法清算的行排除在对客 claim 之外,宁可分母小、不拿混基准的数糊弄用户。
+    ⚠️ 部署后必须先跑 /api/_diag/recompute-returns 才有数(无标记则统计为空)。
 
     Returns a dict the diag endpoint serializes directly."""
     db: Session = SessionLocal()
