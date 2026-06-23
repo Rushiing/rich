@@ -1606,6 +1606,14 @@ def generate(
         # score it against return_d1 — previously the most falsifiable
         # output of the product was never measured.
         nd = kt.get("next_day_outlook") or {}
+        # 6/23 (P0): 价位预测埋点。target_low 取卖出区下限;stop_price 取最紧
+        # 止损(stop_loss_levels[0])—— 防御 list 为空/非 list/缺 price 字段。
+        sl = kt.get("stop_loss_levels")
+        stop_price = (
+            sl[0].get("price")
+            if isinstance(sl, list) and sl and isinstance(sl[0], dict)
+            else None
+        )
         # anchor_price 优先用 override(预选池 sector_picks 晋升票没 snapshot,
         # 传 kline last_close);否则用 snapshot price。没 price → record_anchor
         # 自己 skip。
@@ -1621,6 +1629,10 @@ def generate(
             nd_trend=(nd.get("trend") if isinstance(nd, dict) else None),
             nd_confidence=(nd.get("confidence") if isinstance(nd, dict) else None),
             cohort=cohort,
+            buy_low=kt.get("buy_price_low"),
+            buy_high=kt.get("buy_price_high"),
+            target_low=kt.get("sell_price_low"),
+            stop_price=stop_price,
         )
     except Exception:
         logger.exception("outcome anchor failed for %s (non-fatal)", code)

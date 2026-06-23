@@ -36,6 +36,10 @@ def record_anchor(
     nd_trend: str | None = None,
     nd_confidence: str | None = None,
     cohort: str | None = None,
+    buy_low: float | None = None,
+    buy_high: float | None = None,
+    target_low: float | None = None,
+    stop_price: float | None = None,
 ) -> None:
     """Insert an outcome anchor. Called from analysis.generate() right
     after the Analysis row is persisted. No-op when anchor_price is
@@ -47,7 +51,12 @@ def record_anchor(
     haven't been updated (e.g. unit tests, batch backfills).
 
     6/10: model (A/B bucketing) + nd_trend/nd_confidence (next_day_outlook
-    scoring — see nd_outlook_stats). All optional, None for legacy sites."""
+    scoring — see nd_outlook_stats). All optional, None for legacy sites.
+
+    6/23 (P0): buy_low/buy_high/target_low/stop_price — the LLM's price
+    predictions (买入区/目标区/最紧止损), captured at anchor time so
+    price_level_stats can later score them against forward klines. All
+    default None so old call sites stay unaffected."""
     if anchor_price is None or anchor_price <= 0:
         logger.info("outcome anchor skipped for %s — no anchor price", code)
         return
@@ -69,6 +78,10 @@ def record_anchor(
         nd_trend=nd_trend,
         nd_confidence=nd_confidence,
         cohort=cohort,
+        buy_low=buy_low,
+        buy_high=buy_high,
+        target_low=target_low,
+        stop_price=stop_price,
     ))
     db.commit()
 
@@ -442,6 +455,141 @@ def nd_outlook_stats() -> dict[str, Any]:
         "by_trend": _fmt(by_trend),
         "by_nd_confidence": _fmt(by_conf),
     }
+
+
+# Windows (in trading days) over which price predictions are scored.
+# Two horizons so we see both the short fuse (d5, matches return_d5 / the
+# nd scoring cadence) and the fuller swing-trade window (d20). Like
+# nd_outlook_stats this is a query-time recompute over forward klines — no
+# free-text valid_window parsing, no new stored columns.
+PRICE_LEVEL_WINDOWS = [5, 20]
+
+
+def price_level_stats() -> dict[str, Any]:
+    """Score the LLM's price predictions (买入区/目标区/最紧止损) against
+    forward klines. Mirror of nd_outlook_stats — pure埋点+打分, query-time.
+
+    For each anchor that carries a buy_low (i.e. was recorded after the
+    6/23 price埋点 went live) and has at least one forward kline, we walk
+    the bars strictly after the anchor's generation day, in date order,
+    within each window and measure:
+
+      - touched_buy:  window min(low) ≤ buy_high  (did price reach the buy区?)
+      - reached_target: window max(high) ≥ target_low  (did it hit目标?)
+      - hit_stop:     window min(low) ≤ stop_price  (did it trip止损?)
+      - target_first / stop_first / neither: scanning bars in order, which
+        triggered first — high ≥ target_low or low ≤ stop_price. This is the
+        only metric that needs ordered iteration; the other three are pure
+        window extrema. Counted only when both target_low and stop_price
+        are present on the anchor.
+
+    Forward klines come from the same place backfill_outcomes reads them:
+    klines for this code dated strictly after gen_day, ascending.
+
+    Anchors recorded before the price埋点 (buy_low IS NULL) are excluded, so
+    `scored` will sit near 0 until new anchors accumulate — that's expected.
+
+    Returns {scored, windows: {d5: {...}, d20: {...}}}."""
+    db: Session = SessionLocal()
+    try:
+        rows = (
+            db.query(AnalysisOutcome)
+            .filter(AnalysisOutcome.buy_low.isnot(None))
+            .all()
+        )
+
+        # Per-window accumulators.
+        agg: dict[int, dict[str, int]] = {
+            w: {
+                "n": 0,
+                "touched_buy": 0,
+                "reached_target": 0,
+                "hit_stop": 0,
+                # target-vs-stop ordering (needs both levels present)
+                "ordered_n": 0,
+                "target_first": 0,
+                "stop_first": 0,
+                "neither": 0,
+            }
+            for w in PRICE_LEVEL_WINDOWS
+        }
+        scored = 0
+
+        for o in rows:
+            gen_day = _gen_day(o)
+            future = (
+                db.query(Kline)
+                .filter(Kline.code == o.code, Kline.date > gen_day)
+                .order_by(Kline.date.asc())
+                .all()
+            )
+            if not future:
+                continue
+            scored += 1
+
+            for w in PRICE_LEVEL_WINDOWS:
+                bars = future[:w]
+                if not bars:
+                    continue
+                lows = [b.low for b in bars if b.low is not None]
+                highs = [b.high for b in bars if b.high is not None]
+                a = agg[w]
+                a["n"] += 1
+
+                if o.buy_high is not None and lows and min(lows) <= o.buy_high:
+                    a["touched_buy"] += 1
+                if o.target_low is not None and highs and max(highs) >= o.target_low:
+                    a["reached_target"] += 1
+                if o.stop_price is not None and lows and min(lows) <= o.stop_price:
+                    a["hit_stop"] += 1
+
+                # Ordered target-vs-stop: only meaningful when both levels
+                # exist. Walk bars in date order; first bar to satisfy either
+                # condition decides. A bar that satisfies both in the same
+                # day is scored as stop_first (conservative — the tighter
+                # downside risk is assumed to have triggered intraday).
+                if o.target_low is not None and o.stop_price is not None:
+                    a["ordered_n"] += 1
+                    outcome = "neither"
+                    for b in bars:
+                        hit_stop = b.low is not None and b.low <= o.stop_price
+                        hit_tgt = b.high is not None and b.high >= o.target_low
+                        if hit_stop:
+                            outcome = "stop_first"
+                            break
+                        if hit_tgt:
+                            outcome = "target_first"
+                            break
+                    a[outcome] += 1
+    finally:
+        db.close()
+
+    def _pct(hits: int, n: int) -> float | None:
+        return round(hits / n * 100, 1) if n else None
+
+    windows: dict[str, dict[str, Any]] = {}
+    for w in PRICE_LEVEL_WINDOWS:
+        a = agg[w]
+        n = a["n"]
+        on = a["ordered_n"]
+        windows[f"d{w}"] = {
+            "n": n,
+            "touched_buy": a["touched_buy"],
+            "touched_buy_rate": _pct(a["touched_buy"], n),
+            "reached_target": a["reached_target"],
+            "reached_target_rate": _pct(a["reached_target"], n),
+            "hit_stop": a["hit_stop"],
+            "hit_stop_rate": _pct(a["hit_stop"], n),
+            # target-vs-stop ordering
+            "ordered_n": on,
+            "target_first": a["target_first"],
+            "stop_first": a["stop_first"],
+            "neither": a["neither"],
+            "target_first_rate": _pct(a["target_first"], on),
+            "stop_first_rate": _pct(a["stop_first"], on),
+        }
+
+    return {"scored": scored, "windows": windows}
 
 
 def hit_rate_by_confidence() -> dict[str, Any]:

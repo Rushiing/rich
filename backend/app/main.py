@@ -364,6 +364,18 @@ def diag_nd_outlook_stats():
     return outcomes_svc.nd_outlook_stats()
 
 
+@app.get("/api/_diag/price-level-stats")
+def diag_price_level_stats():
+    """Score the LLM's price predictions (买入区/目标区/最紧止损) against
+    forward klines — the price analogue of nd-outlook-stats, tracked since
+    6/23. Per window (d5/d20): 触买入区率 / 到目标率 / 触止损率, plus the
+    ordered 止损vs目标先后 (target_first / stop_first / neither). Only anchors
+    recorded after the 6/23 price埋点 carry buy_low, so `scored` stays near 0
+    until new anchors with forward klines accumulate — expected, not a bug."""
+    from .services import outcomes as outcomes_svc
+    return outcomes_svc.price_level_stats()
+
+
 @app.post("/api/_diag/refresh-klines")
 def diag_refresh_klines():
     """One-shot K-line bootstrap. Phase 9's _kline_tick fires at 16:30 BJT

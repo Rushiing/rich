@@ -437,6 +437,17 @@ class AnalysisOutcome(Base):
     # 自选解析 cohort=None。阶段2 按 cohort 统计这批晋升票的买卖建议命中率。
     cohort: Mapped[str | None] = mapped_column(String(8), nullable=True)
 
+    # 6/23 (P0): 价位预测前向埋点。LLM 每次解析在 key_table 给出买入区/目标区/
+    # 止损,但从没被记进锚点、从没打过分 —— 只知道方向(nd_trend)战绩,不知道
+    # 价位准不准。这 4 列照抄 nd_trend 那套"埋点+打分":buy_low/buy_high ←
+    # key_table.buy_price_low/high;target_low ← sell_price_low;stop_price ←
+    # 最紧止损 stop_loss_levels[0]['price']。nullable —— 只有新锚点带,老行 NULL,
+    # 由 price_level_stats() 在前向 kline 到位后打分(初期 scored≈0,数据往后积累)。
+    buy_low: Mapped[float | None] = mapped_column(Float, nullable=True)
+    buy_high: Mapped[float | None] = mapped_column(Float, nullable=True)
+    target_low: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stop_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
     )

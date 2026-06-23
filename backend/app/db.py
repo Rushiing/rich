@@ -96,6 +96,13 @@ _POSTGRES_BACKFILL = [
     # analysis_outcomes.cohort 让晋升票 anchor 可按批统计买卖建议命中率。
     ("virtual_pool", "cohort_week",         "VARCHAR(8)"),
     ("analysis_outcomes", "cohort",         "VARCHAR(8)"),
+    # 6/23 (P0): 价位预测前向埋点。新锚点把 key_table 的买入区/目标区/最紧
+    # 止损记进来,price_level_stats() 据此打分(触买入区/到目标/触止损/止损vs
+    # 目标先后)。老行 NULL,不影响任何现有打分。
+    ("analysis_outcomes", "buy_low",        "DOUBLE PRECISION"),
+    ("analysis_outcomes", "buy_high",       "DOUBLE PRECISION"),
+    ("analysis_outcomes", "target_low",     "DOUBLE PRECISION"),
+    ("analysis_outcomes", "stop_price",     "DOUBLE PRECISION"),
     # 6/20: per-user 关注板块 (display-layer highlight of pool entries).
     ("users", "preferred_sectors",          "JSONB"),
 ]
