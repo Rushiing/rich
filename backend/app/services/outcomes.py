@@ -164,38 +164,72 @@ def backfill_outcomes() -> dict:
     return {"scanned": scanned, "filled": filled}
 
 
-def recompute_returns_from_close() -> dict:
-    """一次性修正(codex 审计):历史 return_dN 是用未复权 anchor_price 当基准
-    算的(bug),重算成用 anchor_close(qfq 复权安全),跟 close_dN 同基准。
+def recompute_returns_from_close(db: Session | None = None) -> dict:
+    """一次性修正(codex 审计 P1):同批次复权重算。
 
-    只动「有 anchor_close 且对应 close_dN 已填」的行;老行(无 anchor_close)
-    无复权基准、留原值。幂等(同输入重跑同结果)。
+    第一版 bug:return_dN = (qfq close − 未复权 anchor_price)/anchor_price,
+    基准混用。但只把基准换成已落库的 anchor_close 还不够 —— Kline 是 qfq 序列、
+    每日 pull_one 会 upsert 近 90 日,前复权历史价会随后续除权送转被整体改写;
+    而 close_dN 一旦 backfill 填过就不再更新。于是 anchor_close 和 close_dN 可能
+    来自**不同**的 qfq 快照,残留隐性混用。
 
-    返回里带 d5 收益的「改了多少行 + 平均绝对变化(pp) + 最大变化」—— 用来
-    判断这个 bug 到底有多大影响:多数票 5 日内无除权,delta≈0;只有跨除权
-    日的票会显著移动。买入超额是否仍成立,以重算后重跑 hit_rate_stats 为准。"""
-    db: Session = SessionLocal()
-    scanned = changed = 0
+    所以这里**不信任已落库的 close_dN/anchor_close**:对每行从**当前** Kline 表
+    一次性重读 anchor_bar(≤gen_day 最近一根)+ future(>gen_day 升序),在同一
+    读视图里同时重写 anchor_close、close_dN、return_dN —— 保证三者来自同一套
+    当前 qfq 表。固定 Kline 状态下幂等。
+
+    限制(诚实):Kline 是 60-90 日滚动缓存,更老的 outcome 没有可重读的 K 线
+    (anchor_bar 取不到)→ 计入 no_basis、留原值,无法清算。所以"被审计过的
+    复权安全收益"只覆盖 K 线仍在缓存的近窗口;对客 claim 应据此界定。
+
+    返回 d5 的「改动行数 + 平均/最大绝对变化(pp)」量化 bug 影响;clean/no_basis
+    给出可清算的分母。买入超额是否仍成立,以重算后重跑 hit_rate_stats 为准。
+
+    db 可注入(测试用 in-memory sqlite);默认走 SessionLocal。"""
+    own = db is None
+    if own:
+        db = SessionLocal()
+    scanned = changed = clean = no_basis = 0
     n_d5 = 0
     sum_abs_d5 = 0.0
     max_abs_d5 = 0.0
     try:
-        rows = (
-            db.query(AnalysisOutcome)
-            .filter(AnalysisOutcome.anchor_close.isnot(None))
-            .all()
-        )
-        for o in rows:
+        for o in db.query(AnalysisOutcome).all():
             scanned += 1
-            basis = o.anchor_close
-            if basis is None or basis <= 0:
+            gen_day = _gen_day(o)
+            # 当前 qfq 表里的锚点日收盘(≤gen_day 最近一根)
+            anchor_bar = (
+                db.query(Kline)
+                .filter(Kline.code == o.code, Kline.date <= gen_day)
+                .order_by(Kline.date.desc())
+                .first()
+            )
+            if anchor_bar is None or anchor_bar.close is None or anchor_bar.close <= 0:
+                no_basis += 1  # K 线已被滚动缓存淘汰,无法清算,留原值
                 continue
+            clean += 1
+            basis = anchor_bar.close
+            future = (
+                db.query(Kline)
+                .filter(Kline.code == o.code, Kline.date > gen_day)
+                .order_by(Kline.date.asc())
+                .all()
+            )
             row_changed = False
+            if o.anchor_close != basis:
+                o.anchor_close = basis
+                row_changed = True
             for h in HORIZONS:
-                cval = getattr(o, f"close_d{h}")
-                if cval is None:
+                if len(future) < h:
                     continue
-                new_ret = (cval - basis) / basis * 100.0
+                bar = future[h - 1]
+                if bar.close is None:
+                    continue
+                new_close = bar.close
+                new_ret = (new_close - basis) / basis * 100.0
+                if getattr(o, f"close_d{h}") != new_close:
+                    setattr(o, f"close_d{h}", new_close)
+                    row_changed = True
                 old_ret = getattr(o, f"return_d{h}")
                 if old_ret is None or abs(new_ret - old_ret) > 1e-9:
                     if h == 5 and old_ret is not None:
@@ -210,15 +244,19 @@ def recompute_returns_from_close() -> dict:
                 changed += 1
         db.commit()
     finally:
-        db.close()
+        if own:
+            db.close()
     avg_abs_d5 = round(sum_abs_d5 / n_d5, 3) if n_d5 else 0.0
     logger.info(
-        "recompute returns from anchor_close: scanned=%d changed=%d "
-        "d5_moved=%d avg_abs_d5=%.3f max_abs_d5=%.3f",
-        scanned, changed, n_d5, avg_abs_d5, max_abs_d5,
+        "recompute returns (same-batch qfq): scanned=%d clean=%d no_basis=%d "
+        "changed=%d d5_moved=%d avg_abs_d5=%.3f max_abs_d5=%.3f",
+        scanned, clean, no_basis, changed, n_d5, avg_abs_d5, max_abs_d5,
     )
     return {
-        "scanned": scanned, "changed": changed,
+        "scanned": scanned,
+        "clean": clean,             # 可清算(K线仍在缓存)— 对客 claim 的分母
+        "no_basis": no_basis,       # K线已淘汰、无法清算、留原值
+        "changed": changed,
         "d5_rows_moved": n_d5,
         "avg_abs_d5_delta_pct": avg_abs_d5,
         "max_abs_d5_delta_pct": round(max_abs_d5, 3),
