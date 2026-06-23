@@ -146,9 +146,13 @@ def backfill_outcomes() -> dict:
                 bar = future[h - 1]
                 if bar.close is None:
                     continue
+                # 复权安全(codex 审计修正):return 基准用 anchor_close(qfq
+                # 锚点日收盘),跟前向 bar.close(同为 qfq)同一复权基准;
+                # anchor_close 缺失(老行)才回退 anchor_price。原来拿未复权的
+                # anchor_price 比 qfq 的 bar.close,跨除权日会系统性扭曲收益。
+                basis = o.anchor_close if o.anchor_close is not None else o.anchor_price
                 setattr(o, close_attr, bar.close)
-                setattr(o, return_attr,
-                        (bar.close - o.anchor_price) / o.anchor_price * 100.0)
+                setattr(o, return_attr, (bar.close - basis) / basis * 100.0)
                 changed = True
             if changed:
                 o.updated_at = datetime.now(timezone.utc)
@@ -158,6 +162,67 @@ def backfill_outcomes() -> dict:
         db.close()
     logger.info("outcomes backfill: scanned=%d filled=%d", scanned, filled)
     return {"scanned": scanned, "filled": filled}
+
+
+def recompute_returns_from_close() -> dict:
+    """一次性修正(codex 审计):历史 return_dN 是用未复权 anchor_price 当基准
+    算的(bug),重算成用 anchor_close(qfq 复权安全),跟 close_dN 同基准。
+
+    只动「有 anchor_close 且对应 close_dN 已填」的行;老行(无 anchor_close)
+    无复权基准、留原值。幂等(同输入重跑同结果)。
+
+    返回里带 d5 收益的「改了多少行 + 平均绝对变化(pp) + 最大变化」—— 用来
+    判断这个 bug 到底有多大影响:多数票 5 日内无除权,delta≈0;只有跨除权
+    日的票会显著移动。买入超额是否仍成立,以重算后重跑 hit_rate_stats 为准。"""
+    db: Session = SessionLocal()
+    scanned = changed = 0
+    n_d5 = 0
+    sum_abs_d5 = 0.0
+    max_abs_d5 = 0.0
+    try:
+        rows = (
+            db.query(AnalysisOutcome)
+            .filter(AnalysisOutcome.anchor_close.isnot(None))
+            .all()
+        )
+        for o in rows:
+            scanned += 1
+            basis = o.anchor_close
+            if basis is None or basis <= 0:
+                continue
+            row_changed = False
+            for h in HORIZONS:
+                cval = getattr(o, f"close_d{h}")
+                if cval is None:
+                    continue
+                new_ret = (cval - basis) / basis * 100.0
+                old_ret = getattr(o, f"return_d{h}")
+                if old_ret is None or abs(new_ret - old_ret) > 1e-9:
+                    if h == 5 and old_ret is not None:
+                        d = abs(new_ret - old_ret)
+                        sum_abs_d5 += d
+                        max_abs_d5 = max(max_abs_d5, d)
+                        n_d5 += 1
+                    setattr(o, f"return_d{h}", new_ret)
+                    row_changed = True
+            if row_changed:
+                o.updated_at = datetime.now(timezone.utc)
+                changed += 1
+        db.commit()
+    finally:
+        db.close()
+    avg_abs_d5 = round(sum_abs_d5 / n_d5, 3) if n_d5 else 0.0
+    logger.info(
+        "recompute returns from anchor_close: scanned=%d changed=%d "
+        "d5_moved=%d avg_abs_d5=%.3f max_abs_d5=%.3f",
+        scanned, changed, n_d5, avg_abs_d5, max_abs_d5,
+    )
+    return {
+        "scanned": scanned, "changed": changed,
+        "d5_rows_moved": n_d5,
+        "avg_abs_d5_delta_pct": avg_abs_d5,
+        "max_abs_d5_delta_pct": round(max_abs_d5, 3),
+    }
 
 
 def _gen_day(o: AnalysisOutcome) -> str:

@@ -195,6 +195,46 @@ def diag_backfill_outcomes_status():
     }
 
 
+_recompute_lock = __import__("threading").Lock()
+_recompute_running = {"v": False, "last_result": None}
+
+
+@app.post("/api/_diag/recompute-returns")
+def diag_recompute_returns():
+    """一次性修正(codex 审计的 return-basis bug),ASYNC。把历史 return_dN
+    从未复权 anchor_price 基准重算成 anchor_close(qfq 复权安全)。跑完看
+    status 的 changed / avg_abs_d5_delta_pct(判断 bug 影响多大),再重跑
+    /api/_diag/outcomes-stats 看买入超额 +6pp 是否仍成立。幂等,可重跑。"""
+    import threading
+    from .services import outcomes as outcomes_svc
+
+    with _recompute_lock:
+        if _recompute_running["v"]:
+            return {"started": False, "already_running": True}
+        _recompute_running["v"] = True
+        _recompute_running["last_result"] = None
+
+    def _worker():
+        try:
+            _recompute_running["last_result"] = outcomes_svc.recompute_returns_from_close()
+        except Exception as e:
+            _recompute_running["last_result"] = {"error": str(e)}
+        finally:
+            with _recompute_lock:
+                _recompute_running["v"] = False
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return {"started": True}
+
+
+@app.get("/api/_diag/recompute-returns/status")
+def diag_recompute_returns_status():
+    return {
+        "running": _recompute_running["v"],
+        "last_result": _recompute_running["last_result"],
+    }
+
+
 @app.get("/api/_diag/outcomes-kline-coverage")
 def diag_outcomes_kline_coverage():
     """Per-anchor inspection: for a sample of recent unscored outcomes,
