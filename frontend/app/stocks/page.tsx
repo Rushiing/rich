@@ -2,6 +2,7 @@
 
 import { Fragment, useEffect, useRef, useState } from "react";
 import { api, ActionItemsOut, AnalysisBrief, HitRateSummary, StockRow, confidenceBucket, confidenceLabel } from "../../lib/api";
+import { getFunnelState, setFunnelState } from "../../lib/holdingFunnel";
 import Tooltip from "../_components/Tooltip";
 import { groupByBoard } from "../../lib/market";
 import { SegmentHeader } from "../_components/SegmentSection";
@@ -981,6 +982,53 @@ function hexA(hex: string, a: number): string {
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
 }
 
+// 列表行内的轻量「持/未」点选 —— 写同一份 localStorage 的 held 位
+// （详情页漏斗共用）。列表只捕获"持有吗"这一个最便宜、最高含金量的 bit，
+// 盈亏/风险留到详情页。SSR 安全：初值在挂载后才从 localStorage 读，避免
+// 服务端渲染与客户端不一致（hydration mismatch）。
+function HeldToggle({ code }: { code: string }) {
+  // null = 尚未从 localStorage 读出（SSR / 首帧），不上色。
+  // 列表页只在用户**显式标记过**该票时才点亮"持有" —— 不沿用详情页漏斗
+  // 的 held:true 默认（那是给建议用的偏置，不该让列表把没标过的票全涂红、
+  // 替用户断言持仓）。所以这里探 localStorage 是否真有该 code 的条目。
+  const [held, setHeld] = useState<boolean | null>(null);
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(`rich:funnel:${code}`);
+      setHeld(raw ? JSON.parse(raw).held === true : false);
+    } catch {
+      setHeld(false);
+    }
+  }, [code]);
+  const active = held === true;
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        const next = !active;
+        setHeld(next);
+        setFunnelState(code, { held: next });
+      }}
+      title={active ? "已标记持有，点一下取消" : "标记为持有"}
+      style={{
+        padding: "1px 7px",
+        borderRadius: 10,
+        border: `1px solid ${active ? "#ef4444" : "var(--border)"}`,
+        background: active ? "rgba(239, 68, 68, 0.15)" : "transparent",
+        color: active ? "#ef4444" : "var(--text-dim)",
+        fontSize: 11,
+        fontWeight: active ? 600 : 400,
+        cursor: "pointer",
+        whiteSpace: "nowrap",
+        lineHeight: 1.4,
+      }}
+    >
+      {active ? "持有" : "未持"}
+    </button>
+  );
+}
+
 // Single-row renderer — extracted so both grouped and filter-flat modes
 // share one source of truth. `onToggleStar` is required because the star
 // toggle needs access to component state, but rest of the row is pure
@@ -1011,7 +1059,12 @@ function stockRow(r: StockRow, onToggleStar: (code: string) => void) {
         <span style={{ color: "var(--text-faint)", marginRight: 4 }}>{exchangeLabel[r.exchange] || ""}</span>
         {r.code}
       </td>
-      <td style={td}>{r.name}</td>
+      <td style={td}>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          {r.name}
+          <HeldToggle code={r.code} />
+        </span>
+      </td>
       <td style={{
         ...td,
         textAlign: "right",

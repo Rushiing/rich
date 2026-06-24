@@ -3,16 +3,31 @@
 import { use, useEffect, useState, type ReactNode } from "react";
 import {
   api, ActionableTier, ActionableTiers, HitRateSummary, Holding, KeyTable, NextDayOutlook,
-  PeerRow, ScenarioAdvice, StockAnalysis, StockDetail, StopLossLevel,
+  PeerRow, StockAnalysis, StockDetail, StopLossLevel,
   confidenceBucket, confidenceLabel,
 } from "../../../lib/api";
+// 持仓决策漏斗状态 —— per-stock localStorage（held/盈亏/风险偏好三个点选），
+// 详情页漏斗与列表页轻量持仓位共用同一份持久化。
+import {
+  FunnelState, PnlBucket, TierKey,
+  getFunnelState, setFunnelState, pnlBucketFromPct, scenarioKeyFor,
+} from "../../../lib/holdingFunnel";
 import Tooltip from "../../_components/Tooltip";
 
-type TierKey = "aggressive" | "neutral" | "conservative";
+// 漏斗三行的点选定义：盈亏档 + 风险偏好。颜色沿用 A股语境（红=进取/涨、绿=保守/跌）。
 const TIER_DEFS: { key: TierKey; label: string; color: string }[] = [
   { key: "aggressive",   label: "激进", color: "#ef4444" },
   { key: "neutral",      label: "中立", color: "#9ca3af" },
   { key: "conservative", label: "保守", color: "#22c55e" },
+];
+// 盈亏档点选：盈=红、平=灰、亏=绿（与个股涨跌色一致）。label 写明幅度——
+// 这三档映射到 LLM 按幅度写的情境(big_gain≥10%/small/big_loss≤-10%),按钮
+// 自带幅度才能让用户选对档:浮盈 3% 该点「小幅波动」而非「大幅浮盈」,否则会
+// 拿到不匹配的止盈式建议。
+const PNL_DEFS: { key: PnlBucket; label: string; color: string }[] = [
+  { key: "盈", label: "大幅浮盈", color: "#ef4444" },
+  { key: "平", label: "小幅波动", color: "#9ca3af" },
+  { key: "亏", label: "大幅浮亏", color: "#22c55e" },
 ];
 
 export default function StockDetailPage({
@@ -161,6 +176,7 @@ export default function StockDetailPage({
                 <DebateBanner code={code} onJump={() => jumpToDebateSection()} />
               )}
               <KeyTableCard
+                code={code}
                 kt={analysis.key_table}
                 currentPrice={detail?.price ?? null}
                 hitRate={hitRate}
@@ -646,19 +662,33 @@ function FreshnessBar({
 }
 
 function KeyTableCard({
-  kt, currentPrice, hitRate, holdingPnlPct = null,
+  code, kt, currentPrice, hitRate, holdingPnlPct = null,
 }: {
+  // 漏斗状态用 code 做 per-stock localStorage key。
+  code: string;
   kt: KeyTable;
   currentPrice: number | null;
   hitRate: HitRateSummary | null;
-  // S1: user's actual P&L % (null = no holding recorded). Drives the
-  // scenario-advice quadrant highlight.
+  // S1: user's actual P&L % (null = no holding recorded). 仅在没存过漏斗状态时
+  // 用来预填盈亏档（已录成本价 → 反映其浮盈/浮亏档），不写回 localStorage。
   holdingPnlPct?: number | null;
 }) {
-  // Three-tier toggle state. Default to "neutral" — that's the LLM's
-  // top-level actionable + position_pct, so the card initially shows what
-  // it always showed pre-Phase-8.
-  const [tier, setTier] = useState<TierKey>("neutral");
+  // 决策漏斗状态：持仓 / 盈亏 / 风险偏好。默认（Rush 拍板）持有·盈·激进。
+  // 初值优先级：localStorage 存过 → 用存的；否则若已录成本价（holdingPnlPct
+  // 非空）→ 预填 held=true + 盈亏档（仅作初值，不落库）；否则默认。
+  const [funnel, setFunnel] = useState<FunnelState>(() => {
+    const s = getFunnelState(code);
+    const stored = typeof window !== "undefined" && window.localStorage.getItem(`rich:funnel:${code}`);
+    if (!stored && holdingPnlPct != null) {
+      return { ...s, held: true, pnl: pnlBucketFromPct(holdingPnlPct) };
+    }
+    return s;
+  });
+  // 点选写回 localStorage 并刷新本地状态。
+  const updateFunnel = (partial: Partial<FunnelState>) =>
+    setFunnel(setFunnelState(code, partial));
+
+  const tier = funnel.tier;
   const tiers = kt.actionable_tiers;
 
   // Pick the active tier's view-model. When actionable_tiers is missing
@@ -680,6 +710,9 @@ function KeyTableCard({
     view.action === "建议卖出" ? "#22c55e" :   // 绿=卖/跌
     view.action === "不建议入手" ? "#6b7280" :
     "#9ca3af";                                  // 观望
+
+  // 漏斗出口：持仓 + 盈亏 → 选中 scenario_advice 的一条。
+  const scenarioText = kt.scenario_advice?.[scenarioKeyFor(funnel.held, funnel.pnl)];
 
   return (
     <section style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 12 }}>
@@ -841,92 +874,161 @@ function KeyTableCard({
         actionable={view.action}
       />
 
-      {/* 5/28: 置信度独立块. Moved out of the KtRow table (where it was
-          a buried one-line cell) so users can see at a glance how much
-          weight to give this verdict. Low confidence + 买/卖 ⇒ dashed
-          yellow border to flag "model said this but isn't sure". */}
-      <ConfidenceCard
-        confidence={kt.confidence}
-        reason={kt.confidence_reason}
-        actionable={view.action}
-      />
+      {/* 甜区漏斗（决策第一屏）：持仓 → 盈亏 → 风险，三行都"可点可不点"。
+          一个有边框的容器框住，轻量 chip 行。默认 持有·盈·激进，已给一版建议。 */}
+      <div style={{
+        padding: 14, border: "1px solid var(--border)", borderRadius: 8,
+        background: "var(--surface)", display: "flex", flexDirection: "column", gap: 10,
+      }}>
+        {/* ① 持仓 */}
+        <FunnelRow label="持仓">
+          <FunnelChip
+            label="持有" active={funnel.held} color="#ef4444"
+            onClick={() => updateFunnel({ held: true })}
+          />
+          <FunnelChip
+            label="未持仓" active={!funnel.held} color="#9ca3af"
+            onClick={() => updateFunnel({ held: false })}
+          />
+        </FunnelRow>
+        {/* ② 盈亏（仅持有时显示） */}
+        {funnel.held && (
+          <FunnelRow label="盈亏">
+            {PNL_DEFS.map(({ key, label, color }) => (
+              <FunnelChip
+                key={key} label={label} active={funnel.pnl === key} color={color}
+                onClick={() => updateFunnel({ pnl: key })}
+              />
+            ))}
+          </FunnelRow>
+        )}
+        {/* ③ 风险偏好（复用 TIER_DEFS）。仅在模型给了三档时可点；
+            legacy 行没有 actionable_tiers，整行不渲染，跟原逻辑一致。 */}
+        {tiers && (
+          <FunnelRow label="风险">
+            {TIER_DEFS.map(({ key, label, color }) => (
+              <FunnelChip
+                key={key} label={label} active={funnel.tier === key} color={color}
+                onClick={() => updateFunnel({ tier: key })}
+              />
+            ))}
+            <span style={{ color: "var(--text-faint)", fontSize: 11, marginLeft: 4 }}>
+              （建议仓位 / 买卖价 / 持有时间会跟着切）
+            </span>
+          </FunnelRow>
+        )}
+      </div>
 
-      {/* Tier toggle — only renders when the model actually emitted three
-          tiers. Legacy rows (no actionable_tiers) skip the segmented
-          control entirely so the layout stays the same. */}
-      {tiers && (
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <span style={{ color: "var(--text-muted)", fontSize: 12 }}>风险偏好：</span>
-          <div style={{
-            display: "inline-flex",
-            border: "1px solid var(--border)",
-            borderRadius: 6,
-            overflow: "hidden",
-          }}>
-            {TIER_DEFS.map(({ key, label, color }) => {
-              const active = tier === key;
-              return (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => setTier(key)}
-                  style={{
-                    padding: "5px 14px",
-                    background: active ? color : "transparent",
-                    color: active ? "var(--bg)" : "var(--text-soft)",
-                    border: "none",
-                    fontSize: 12,
-                    fontWeight: active ? 600 : 400,
-                    cursor: "pointer",
-                  }}
-                >
-                  {label}
-                </button>
-              );
-            })}
+      {/* 漏斗出口：选中情境那句话 —— 替代原独立 ScenarioAdviceCard，
+          由漏斗点选（持仓+盈亏）驱动，作为一句醒目建议。 */}
+      {scenarioText && (
+        <div style={{
+          padding: "14px 16px", border: "1px solid var(--border)", borderRadius: 8,
+          background: "rgba(59, 130, 246, 0.08)", borderLeft: "3px solid #3b82f6",
+        }}>
+          <div style={{ color: "var(--text-muted)", fontSize: 12, marginBottom: 6 }}>
+            {funnel.held ? `若你${funnel.pnl === "盈" ? "大幅浮盈" : funnel.pnl === "亏" ? "大幅浮亏" : "小幅波动"}持有` : "若你尚未持仓"}
           </div>
-          <span style={{ color: "var(--text-faint)", fontSize: 11 }}>
-            （表里"建议仓位 / 合理买入价 / 持有时间"会跟着切）
-          </span>
+          <div style={{ color: "var(--text)", fontSize: 15, lineHeight: 1.6 }}>
+            {scenarioText}
+          </div>
         </div>
       )}
 
-      {/* Key prices / positions table. The eight-dimension star scorecard
-          was removed — every dimension was coming back at 5⭐ from the LLM,
-          which is noise. We keep the synthesized "综合评级" inline below
-          since that's the one risk signal that actually varies. */}
+      {/* 关键数据 table（driven by view=tiers[tier]）。按持仓裁剪：
+          持有 → 突出 合理卖出价 / 建议仓位 / 持有时间；
+          未持仓 → 突出 合理买入价 / 建议仓位。
+          模型综合判断已移到下方降级区。 */}
       <div style={{ border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
         <div style={{ padding: "10px 14px", background: "var(--surface-alt)", color: "var(--text-muted)", fontSize: 12 }}>关键数据</div>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <tbody>
-            <KtRow label="合理买入价" value={`${view.buy_price_low.toFixed(2)} – ${view.buy_price_high.toFixed(2)}`} />
-            <KtRow label="合理卖出价" value={`${kt.sell_price_low.toFixed(2)} – ${kt.sell_price_high.toFixed(2)}`} />
-            <KtRow label="建议仓位" value={`${view.position_pct.toFixed(0)}%`} />
-            <KtRow label="持有时间" value={view.hold_period} />
-            {/* 置信度 has moved to its own ConfidenceCard above — was a
-                low-impact row buried in the table. Kept overall here since
-                it's the one synthesized rating that varies and reads well
-                as a one-cell value. */}
-            {kt.risk_scores?.overall && (
-              <KtRow label="模型综合判断" value={kt.risk_scores.overall} />
+            {funnel.held ? (
+              <>
+                <KtRow label="合理卖出价" value={`${kt.sell_price_low.toFixed(2)} – ${kt.sell_price_high.toFixed(2)}`} />
+                <KtRow label="建议仓位" value={`${view.position_pct.toFixed(0)}%`} />
+                <KtRow label="持有时间" value={view.hold_period} />
+                <KtRow label="合理买入价（加仓参考）" value={`${view.buy_price_low.toFixed(2)} – ${view.buy_price_high.toFixed(2)}`} />
+              </>
+            ) : (
+              <>
+                <KtRow label="合理买入价" value={`${view.buy_price_low.toFixed(2)} – ${view.buy_price_high.toFixed(2)}`} />
+                <KtRow label="建议仓位" value={`${view.position_pct.toFixed(0)}%`} />
+                <KtRow label="合理卖出价（参考）" value={`${kt.sell_price_low.toFixed(2)} – ${kt.sell_price_high.toFixed(2)}`} />
+              </>
             )}
           </tbody>
         </table>
       </div>
-
-      {/* Phase 9: next-day price outlook (technical + capital + news driven) */}
-      {kt.next_day_outlook && <NextDayOutlookCard outlook={kt.next_day_outlook} />}
 
       {/* Stop-loss tiers — most important for high-risk picks */}
       {kt.stop_loss_levels && kt.stop_loss_levels.length > 0 && (
         <StopLossCard levels={kt.stop_loss_levels} />
       )}
 
-      {/* Scenario-based advice — what to do based on current holding state */}
-      {kt.scenario_advice && (
-        <ScenarioAdviceCard advice={kt.scenario_advice} pnlPct={holdingPnlPct} />
-      )}
+      {/* 降级区（漏斗下方）：模型自评置信度 / 次日走势 / 模型综合判断。
+          这三块未校准，用更弱的视觉（整体降透明度 + 更小字 + 标"仅供参考"）
+          包一下，提示用户"参考，别当准"。 */}
+      <div style={{ opacity: 0.7, display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ color: "var(--text-faint)", fontSize: 11 }}>
+          以下为模型自评，未经校准，仅供参考
+        </div>
+        {/* 5/28: 置信度独立块。低置信 + 买/卖 ⇒ dashed 黄边 警示。 */}
+        <ConfidenceCard
+          confidence={kt.confidence}
+          reason={kt.confidence_reason}
+          actionable={view.action}
+        />
+        {/* Phase 9: next-day price outlook (technical + capital + news driven) */}
+        {kt.next_day_outlook && <NextDayOutlookCard outlook={kt.next_day_outlook} />}
+        {/* 模型综合判断 —— 从关键数据移来，一行小字。 */}
+        {kt.risk_scores?.overall && (
+          <div style={{ fontSize: 12, color: "var(--text-soft)" }}>
+            模型综合判断：<b style={{ color: "var(--text)" }}>{kt.risk_scores.overall}</b>
+          </div>
+        )}
+      </div>
     </section>
+  );
+}
+
+// 漏斗一行：左侧标签 + 右侧 chip 组。轻量行布局，复用现有间距风格。
+function FunnelRow({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+      <span style={{ color: "var(--text-muted)", fontSize: 12, minWidth: 32 }}>{label}</span>
+      {children}
+    </div>
+  );
+}
+
+// 漏斗点选 chip：选中 = 实色填充 + 深色字；未选 = 透明 + 边框。
+// 复用现有 chip/button 内联样式语汇（圆角 + 细边 + 小字）。
+function FunnelChip({
+  label, active, color, onClick,
+}: {
+  label: string;
+  active: boolean;
+  color: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        padding: "4px 14px",
+        borderRadius: 14,
+        border: `1px solid ${active ? color : "var(--border)"}`,
+        background: active ? color : "transparent",
+        color: active ? "var(--bg)" : "var(--text-soft)",
+        fontSize: 12,
+        fontWeight: active ? 600 : 400,
+        cursor: "pointer",
+      }}
+    >
+      {label}
+    </button>
   );
 }
 
@@ -1365,74 +1467,6 @@ function StopLossCard({ levels }: { levels: StopLossLevel[] }) {
   );
 }
 
-// S1 quadrant thresholds: |P&L| ≥ 10% counts as "大幅". Matches the
-// colloquial reading of the LLM's 大幅浮盈/浮亏 labels; not configurable
-// until someone actually asks.
-const BIG_PNL_PCT = 10;
-
-function scenarioKeyForPnl(pnlPct: number | null): keyof ScenarioAdvice {
-  if (pnlPct == null) return "not_holding";
-  if (pnlPct >= BIG_PNL_PCT) return "holding_big_gain";
-  if (pnlPct <= -BIG_PNL_PCT) return "holding_big_loss";
-  return "holding_small";
-}
-
-function ScenarioAdviceCard({
-  advice, pnlPct = null,
-}: {
-  advice: ScenarioAdvice;
-  // S1: user's real P&L %; selects which quadrant is "yours". null =
-  // no holding recorded → 未持仓 is the active row.
-  pnlPct?: number | null;
-}) {
-  const items: { label: string; key: keyof ScenarioAdvice; text: string }[] = [
-    { label: "未持仓",       key: "not_holding",      text: advice.not_holding },
-    { label: "已持仓 · 大幅浮盈", key: "holding_big_gain", text: advice.holding_big_gain },
-    { label: "已持仓 · 小幅",     key: "holding_small",    text: advice.holding_small },
-    { label: "已持仓 · 大幅浮亏", key: "holding_big_loss", text: advice.holding_big_loss },
-  ];
-  const activeKey = scenarioKeyForPnl(pnlPct);
-  return (
-    <div style={{ border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
-      <div style={{ padding: "10px 14px", background: "var(--surface-alt)", color: "var(--text-muted)", fontSize: 12 }}>
-        按持仓情境
-        {pnlPct != null && (
-          <span style={{ marginLeft: 8, color: pnlPct >= 0 ? "#ef4444" : "#22c55e" }}>
-            你的浮动 {pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(1)}%
-          </span>
-        )}
-      </div>
-      <div>
-        {items.map((it, i) => {
-          const active = it.key === activeKey;
-          return (
-            <div
-              key={i}
-              style={{
-                display: "flex",
-                padding: "10px 14px",
-                borderTop: i === 0 ? undefined : "1px solid var(--border-faint)",
-                gap: 12,
-                background: active ? "rgba(59, 130, 246, 0.10)" : undefined,
-                borderLeft: active ? "3px solid #3b82f6" : "3px solid transparent",
-              }}
-            >
-              <span style={{ color: active ? "var(--text)" : "var(--text-muted)", fontSize: 13, minWidth: 130, fontWeight: active ? 600 : 400 }}>
-                {it.label}
-                {active && (
-                  <span style={{ display: "block", fontSize: 11, color: "#60a5fa", fontWeight: 400 }}>
-                    ← 你的现状
-                  </span>
-                )}
-              </span>
-              <span style={{ color: "var(--text)", fontSize: 13, lineHeight: 1.5, flex: 1 }}>{it.text}</span>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 function DeepAnalysis({
   md, open, onToggle,
