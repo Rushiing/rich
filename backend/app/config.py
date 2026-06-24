@@ -55,6 +55,16 @@ class Settings(BaseSettings):
     # locked unless this is explicitly flipped on Railway.
     AUTH_DISABLED: bool = False
 
+    # 6/24 安全收紧(codex 广审):
+    # DIAG_TOKEN —— 非空时,所有 /api/_diag/*(含 eval)请求必须带 header
+    # `X-Diag-Token: <值>` 才放行(见 main.py 的中间件)。空 = 本地 dev 不设防。
+    # 生产在 Railway 设一个随机值;ops curl 带上即可。保护"能烧额度/删 eval/触发
+    # 任务"的诊断面,且未来新 diag 端点默认继承保护(中间件按路径前缀,不靠逐个加)。
+    DIAG_TOKEN: str = ""
+    # COOKIE_SECURE —— 生产 HTTPS 下应 True(cookie 仅经 HTTPS 传)。本地 HTTP
+    # 调试默认 False。Railway 设 COOKIE_SECURE=true。
+    COOKIE_SECURE: bool = False
+
     # --- Phase 6: SMS auth + admin migration -------------------------------
     # Aliyun SMS credentials. When ALIYUN_SMS_ACCESS_KEY_ID is empty we run
     # in dev mode: the verification code is fixed at SMS_DEV_CODE and only

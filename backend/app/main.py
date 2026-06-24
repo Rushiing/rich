@@ -1,3 +1,4 @@
+import hmac
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -19,6 +20,7 @@ except Exception:  # pragma: no cover — defensive
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from .config import settings
 from .db import Base, engine, ensure_extra_columns, migrate_watchlist_pk, snapshot_columns
@@ -72,6 +74,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _diag_token_guard(request, call_next):
+    """6/24 安全(codex 广审):/api/_diag/*(含 /api/_diag/replay-eval/* eval)
+    在 settings.DIAG_TOKEN 非空时,必须带 `X-Diag-Token: <值>` 头才放行,否则
+    403。按**路径前缀**拦,所有现有 + 未来 diag 端点默认受保护 —— 不靠逐个端点
+    加守卫(codex:每个新 debug 端点都得记得加守卫迟早漏)。DIAG_TOKEN 空 =
+    本地 dev 不设防。常量时间比较防时序侧信道。"""
+    if request.url.path.startswith("/api/_diag") and settings.DIAG_TOKEN:
+        supplied = request.headers.get("x-diag-token", "")
+        if not hmac.compare_digest(supplied, settings.DIAG_TOKEN):
+            return JSONResponse(
+                {"detail": "diag endpoints require a valid X-Diag-Token header"},
+                status_code=403,
+            )
+    return await call_next(request)
+
 
 app.include_router(auth_routes.router)
 app.include_router(watchlist_routes.router)

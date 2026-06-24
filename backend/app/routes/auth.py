@@ -45,7 +45,7 @@ def _set_session_cookie(response: Response, user_id: int) -> None:
     response.set_cookie(
         key=COOKIE_NAME, value=token,
         httponly=True, samesite="lax",
-        secure=False,  # set True behind HTTPS in production
+        secure=settings.COOKIE_SECURE,  # 生产 HTTPS 用 True(Railway 设 COOKIE_SECURE=true)
         max_age=COOKIE_MAX_AGE, path="/",
     )
 
@@ -192,7 +192,7 @@ def legacy_login(body: LegacyLoginRequest, response: Response):
     response.set_cookie(
         key=COOKIE_NAME, value=token,
         httponly=True, samesite="lax",
-        secure=False,
+        secure=settings.COOKIE_SECURE,
         max_age=COOKIE_MAX_AGE, path="/",
     )
     return {"ok": True}
