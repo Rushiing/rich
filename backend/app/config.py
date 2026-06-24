@@ -56,10 +56,11 @@ class Settings(BaseSettings):
     AUTH_DISABLED: bool = False
 
     # 6/24 安全收紧(codex 广审):
-    # DIAG_TOKEN —— 非空时,所有 /api/_diag/*(含 eval)请求必须带 header
-    # `X-Diag-Token: <值>` 才放行(见 main.py 的中间件)。空 = 本地 dev 不设防。
-    # 生产在 Railway 设一个随机值;ops curl 带上即可。保护"能烧额度/删 eval/触发
-    # 任务"的诊断面,且未来新 diag 端点默认继承保护(中间件按路径前缀,不靠逐个加)。
+    # DIAG_TOKEN —— /api/_diag/*(含 eval)放行所需的 `X-Diag-Token: <值>` 头值
+    # (见 main.py 中间件,常量时间比较)。生产在 Railway 设一个随机值;ops curl
+    # 带上即可。**注意:默认 fail-closed —— DIAG_TOKEN 为空时 diag 全 403 锁死
+    # (除非 DEV_DIAG_OPEN=true),不会裸奔。** 保护"能烧额度/删 eval/触发任务"的
+    # 诊断面,未来新 diag 端点按路径前缀默认继承保护。
     DIAG_TOKEN: str = ""
     # DEV_DIAG_OPEN —— 本地 dev 显式放开 diag(不要 token)。**默认 False =
     # fail-closed**:生产只要不设这个,diag 就要求 token;万一 DIAG_TOKEN 也漏配,

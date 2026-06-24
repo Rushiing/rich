@@ -47,6 +47,16 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # 安全姿态自检(codex 二审):AUTH_DISABLED / DEV_DIAG_OPEN 是 dev 逃生门,
+    # 误留生产=裸奔。代码无法强制(本就是 dev 开关),但启动时大声告警,让漏配
+    # 在 Railway 日志里一眼看见,而不是无声裸奔。
+    if settings.AUTH_DISABLED:
+        logging.getLogger("rich.security").warning(
+            "SECURITY: AUTH_DISABLED=true —— 全站免登录,凭 URL 即可访问任意数据。"
+            "仅限本地/测试,生产必须 false。")
+    if settings.DEV_DIAG_OPEN:
+        logging.getLogger("rich.security").warning(
+            "SECURITY: DEV_DIAG_OPEN=true —— /api/_diag/* 完全不设防。仅限本地,生产勿设。")
     # MVP: create tables on startup. Switch to Alembic when we need column changes.
     Base.metadata.create_all(bind=engine)
     # create_all doesn't add columns to existing tables; close that gap.
