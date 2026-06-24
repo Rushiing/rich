@@ -99,7 +99,13 @@ async def _diag_token_guard(request, call_next):
             and request.method != "OPTIONS":
         if not settings.DEV_DIAG_OPEN:
             supplied = request.headers.get("x-diag-token", "")
-            if not settings.DIAG_TOKEN or not hmac.compare_digest(supplied, settings.DIAG_TOKEN):
+            # 6/24 修:hmac.compare_digest 传 str 时,任一边含非 ASCII 字符就抛
+            # TypeError → 500(diag 全挂)。先 encode 成 bytes,compare_digest 对
+            # bytes 不挑字符集、仍是常数时间。非 ASCII 的 token 现在会正常 403 不匹配,
+            # 而不是 500。
+            if not settings.DIAG_TOKEN or not hmac.compare_digest(
+                supplied.encode("utf-8"), settings.DIAG_TOKEN.encode("utf-8")
+            ):
                 return JSONResponse(
                     {"detail": "diag endpoints require a valid X-Diag-Token header"},
                     status_code=403,
