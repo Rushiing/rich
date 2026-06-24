@@ -705,7 +705,7 @@ function KeyTableCard({
               fontWeight: 500,
               whiteSpace: "nowrap",
             }}>
-              <span style={{ color: "var(--text-muted)" }}>⏱</span>
+              <span style={{ color: "var(--text-muted)" }}>⏱ 参考时效</span>
               {kt.valid_window}
             </span>
           )}
@@ -908,7 +908,7 @@ function KeyTableCard({
                 it's the one synthesized rating that varies and reads well
                 as a one-cell value. */}
             {kt.risk_scores?.overall && (
-              <KtRow label="综合评级" value={kt.risk_scores.overall} />
+              <KtRow label="模型综合判断" value={kt.risk_scores.overall} />
             )}
           </tbody>
         </table>
@@ -951,7 +951,8 @@ function NextDayOutlookCard({ outlook }: { outlook: NextDayOutlook }) {
       }}>
         <span>次日走势预判</span>
         <span style={{ color: "var(--text-dim)" }}>·</span>
-        <span style={{ color: confidenceColor }}>置信度 {outlook.confidence}</span>
+        <span style={{ color: confidenceColor }}>模型自评 {outlook.confidence}</span>
+        <span style={{ color: "var(--text-faint)", fontSize: 11 }}>· 仅供参考</span>
       </div>
       <div style={{ padding: "14px 16px" }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 16, flexWrap: "wrap" }}>
@@ -959,7 +960,7 @@ function NextDayOutlookCard({ outlook }: { outlook: NextDayOutlook }) {
             {outlook.trend}
           </span>
           <span style={{ color: "var(--text-soft)", fontSize: 13, fontFamily: "monospace" }}>
-            目标区间 {outlook.target_low.toFixed(2)} – {outlook.target_high.toFixed(2)}
+            模型预估区间 {outlook.target_low.toFixed(2)} – {outlook.target_high.toFixed(2)}
           </span>
         </div>
         {outlook.reasoning && (
@@ -1019,7 +1020,7 @@ function ConfidenceCard({
       borderRadius: 8,
     }}>
       <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
-        <span style={{ color: "var(--text-muted)", fontSize: 13 }}>置信度</span>
+        <span style={{ color: "var(--text-muted)", fontSize: 13 }}>模型自评置信度</span>
         <span style={{ fontSize: 22, fontWeight: 600, color: labelColor, fontFamily: "monospace" }}>
           {numericValue != null ? `${numericValue}` : ""}
           {numericValue != null && <span style={{ fontSize: 13, color: "var(--text-faint)" }}> / 100</span>}
@@ -1267,7 +1268,7 @@ function AnalysisHistoryCard({ code }: { code: string }) {
               <tr style={{ color: "var(--text-muted)", textAlign: "left" }}>
                 <th style={{ padding: "4px 6px", fontWeight: 500 }}>时间</th>
                 <th style={{ padding: "4px 6px", fontWeight: 500 }}>建议</th>
-                <th style={{ padding: "4px 6px", fontWeight: 500 }}>置信</th>
+                <th style={{ padding: "4px 6px", fontWeight: 500 }}>自评置信</th>
                 <th style={{ padding: "4px 6px", fontWeight: 500, textAlign: "right" }}>当时价</th>
                 <th style={{ padding: "4px 6px", fontWeight: 500, textAlign: "right" }}>d1</th>
                 <th style={{ padding: "4px 6px", fontWeight: 500, textAlign: "right" }}>d3</th>
@@ -1535,7 +1536,7 @@ function Footnote({ analysis }: { analysis: StockAnalysis }) {
           LLM had so users can mentally weight the verdict. Optional —
           missing on legacy rows. */}
       {analysis.data_completeness != null && (
-        <> · 输入完整度 {analysis.data_completeness}/100</>
+        <> · 输入材料完整度 {analysis.data_completeness}/100</>
       )}
       <br />
       仅供参考，投资有风险，决策请独立判断。

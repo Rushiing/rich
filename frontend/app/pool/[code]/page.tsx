@@ -198,7 +198,7 @@ function AnalysisView({ analysis }: { analysis: NonNullable<PoolDetail["analysis
             }}>⏱ {kt.valid_window}</span>
           )}
           <span style={{ fontSize: 12, color: confColor }}>
-            置信 {confNum != null ? `${confNum}/100` : confBucket}
+            模型自评 {confNum != null ? `${confNum}/100` : confBucket}
           </span>
         </div>
         {kt.one_line_reason && (

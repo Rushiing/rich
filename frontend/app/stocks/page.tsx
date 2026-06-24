@@ -878,7 +878,7 @@ function ActionableCell({ analysis }: { analysis: AnalysisBrief | null }) {
             content={
               <div>
                 <div style={{ fontWeight: 600, marginBottom: 4 }}>
-                  置信度：{typeof analysis.confidence === "number"
+                  模型自评置信度：{typeof analysis.confidence === "number"
                     ? `${analysis.confidence} / 100`
                     : analysis.confidence}
                 </div>
@@ -966,7 +966,7 @@ function ActionableCell({ analysis }: { analysis: AnalysisBrief | null }) {
           maxWidth: "100%",
           whiteSpace: "normal",
         }}>
-          ⏱ {analysis.valid_window}
+          ⏱ 参考时效 {analysis.valid_window}
         </span>
       )}
     </div>
