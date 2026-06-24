@@ -61,6 +61,11 @@ class Settings(BaseSettings):
     # 生产在 Railway 设一个随机值;ops curl 带上即可。保护"能烧额度/删 eval/触发
     # 任务"的诊断面,且未来新 diag 端点默认继承保护(中间件按路径前缀,不靠逐个加)。
     DIAG_TOKEN: str = ""
+    # DEV_DIAG_OPEN —— 本地 dev 显式放开 diag(不要 token)。**默认 False =
+    # fail-closed**:生产只要不设这个,diag 就要求 token;万一 DIAG_TOKEN 也漏配,
+    # diag 全 403(锁死),不会像以前那样裸奔(codex 安全审计 P1:别把"是否保护"
+    # 交给人工记得配 env)。本地开发设 DEV_DIAG_OPEN=true。
+    DEV_DIAG_OPEN: bool = False
     # COOKIE_SECURE —— 生产 HTTPS 下应 True(cookie 仅经 HTTPS 传)。本地 HTTP
     # 调试默认 False。Railway 设 COOKIE_SECURE=true。
     COOKIE_SECURE: bool = False

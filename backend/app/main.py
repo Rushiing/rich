@@ -78,18 +78,22 @@ app.add_middleware(
 
 @app.middleware("http")
 async def _diag_token_guard(request, call_next):
-    """6/24 安全(codex 广审):/api/_diag/*(含 /api/_diag/replay-eval/* eval)
-    在 settings.DIAG_TOKEN 非空时,必须带 `X-Diag-Token: <值>` 头才放行,否则
-    403。按**路径前缀**拦,所有现有 + 未来 diag 端点默认受保护 —— 不靠逐个端点
-    加守卫(codex:每个新 debug 端点都得记得加守卫迟早漏)。DIAG_TOKEN 空 =
-    本地 dev 不设防。常量时间比较防时序侧信道。"""
-    if request.url.path.startswith("/api/_diag") and settings.DIAG_TOKEN:
-        supplied = request.headers.get("x-diag-token", "")
-        if not hmac.compare_digest(supplied, settings.DIAG_TOKEN):
-            return JSONResponse(
-                {"detail": "diag endpoints require a valid X-Diag-Token header"},
-                status_code=403,
-            )
+    """6/24 安全(codex 广审):护住所有 /api/_diag/*(含 /api/_diag/replay-eval/*
+    eval),按**路径前缀**拦 —— 现有 + 未来 diag 端点默认受保护,不靠逐个加守卫。
+
+    **fail-closed**(codex P1):默认要求 `X-Diag-Token: <DIAG_TOKEN>` 头(常量
+    时间比较)。只有显式 DEV_DIAG_OPEN=true(本地 dev)才放开。所以生产万一漏配
+    DIAG_TOKEN,diag 是全 403 锁死、而不是裸奔。OPTIONS 预检放行交给 CORS。"""
+    path = request.url.path
+    if (path == "/api/_diag" or path.startswith("/api/_diag/")) \
+            and request.method != "OPTIONS":
+        if not settings.DEV_DIAG_OPEN:
+            supplied = request.headers.get("x-diag-token", "")
+            if not settings.DIAG_TOKEN or not hmac.compare_digest(supplied, settings.DIAG_TOKEN):
+                return JSONResponse(
+                    {"detail": "diag endpoints require a valid X-Diag-Token header"},
+                    status_code=403,
+                )
     return await call_next(request)
 
 

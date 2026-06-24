@@ -90,7 +90,9 @@ def require_auth(rich_session: str | None = Cookie(default=None)) -> int | None:
         return None
     if not rich_session:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
-    # Cookie present but v1-shaped while AUTH_DISABLED is off: treat as
-    # anonymous (legacy single-password sessions had no uid). Routes will
-    # 401 on user-scoped paths via resolve_owner returning admin-or-None.
-    return None
+    # Cookie present but v1-shaped while AUTH_DISABLED is off. codex 安全审计
+    # P1:不要再把 v1 当匿名(返回 None)—— 那会让用户态路由经 resolve_owner 的
+    # owner=None 全局兜底(ADMIN_PHONE 漏配时)读/写全局 watchlist。单密码时代
+    # 已结束,强制重新登录拿 v2(带 uid)cookie。于是 AUTH_DISABLED 关掉后
+    # require_auth 只会返回真实 uid 或 401,绝不返回 None → 用户态路由无全局入口。
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
