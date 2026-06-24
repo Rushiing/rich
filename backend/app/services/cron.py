@@ -478,6 +478,7 @@ def run_daily_analysis_job(
     only_stale: bool = True,
     only_missing: bool = False,
     force: bool = False,
+    codes: list[str] | None = None,
 ) -> dict:
     """Generate (and cache) LLM analyses for the watchlist.
 
@@ -518,7 +519,10 @@ def run_daily_analysis_job(
 
     db: Session = SessionLocal()
     try:
-        codes = [c for (c,) in db.query(Watchlist.code).distinct().all()]
+        # codes 显式传入 = 用户触发的批量(已按 owner 隔离,只分析他自己的自选,
+        # 不烧别人的额度);codes=None = cron/admin 全局路径,扫全部 distinct。
+        if codes is None:
+            codes = [c for (c,) in db.query(Watchlist.code).distinct().all()]
         if not codes:
             logger.info("daily analysis job: watchlist empty, skipping")
             return {"codes": 0, "generated": 0, "failed": 0, "skipped": 0}

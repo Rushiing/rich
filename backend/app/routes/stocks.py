@@ -425,12 +425,13 @@ class AnalysisBatchStatus(BaseModel):
     running: bool
 
 
-def _run_analysis_batch_in_background(only_missing: bool):
+def _run_analysis_batch_in_background(only_missing: bool, codes: list[str] | None):
     global _analysis_running
     try:
         # only_missing=True: fill in 待生成 only (skip any v2 cached row).
         # only_missing=False: force regenerate every code.
-        run_daily_analysis_job(only_stale=False, only_missing=only_missing)
+        # codes: owner 隔离过的当前用户自选(见 trigger_batch_analysis)。
+        run_daily_analysis_job(only_stale=False, only_missing=only_missing, codes=codes)
     except Exception:
         logger.exception("batch analysis job failed")
     finally:
@@ -439,7 +440,11 @@ def _run_analysis_batch_in_background(only_missing: bool):
 
 
 @router.post("/analysis/batch", response_model=AnalysisBatchResult)
-def trigger_batch_analysis(only_missing: bool = True):
+def trigger_batch_analysis(
+    only_missing: bool = True,
+    db: Session = Depends(get_db),
+    user_id: int | None = Depends(require_auth),
+):
     """Generate LLM analyses for the watchlist.
 
     Default `only_missing=true` matches the 盯盘 button's "fill 待生成 only"
@@ -449,8 +454,14 @@ def trigger_batch_analysis(only_missing: bool = True):
     Fire-and-forget: launches a daemon thread, returns immediately. The
     frontend polls /analysis/batch/status + /api/stocks to follow progress
     (rows light up with their actionable verdict as each LLM call lands).
-    """
+
+    6/24 安全(codex P1):**只分析当前用户自己的自选**,不再扫全局 watchlist
+    —— 否则一个用户点"批量分析"会烧掉所有人自选的 LLM 额度。owner 解析 + 取
+    自己的 codes 在请求线程里做(后台线程没有 auth 上下文),再传进后台 job。"""
     global _analysis_running
+    owner = resolve_owner(user_id, db)
+    codes = sorted({w.code for w in _user_watchlist(db, owner).all()})
+
     with _analysis_lock:
         if _analysis_running:
             return AnalysisBatchResult(started=False, already_running=True)
@@ -458,7 +469,7 @@ def trigger_batch_analysis(only_missing: bool = True):
 
     threading.Thread(
         target=_run_analysis_batch_in_background,
-        kwargs={"only_missing": only_missing},
+        kwargs={"only_missing": only_missing, "codes": codes},
         daemon=True,
         name="batch-analysis",
     ).start()
