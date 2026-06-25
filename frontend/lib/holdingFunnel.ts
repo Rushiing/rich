@@ -5,6 +5,8 @@
 // ③ 埋点记分(把"已持仓建议含金量高"从肉眼变成验证数)是后端、后续单独做;
 // v1 先 localStorage 把交互跑通。
 
+import { api } from "./api";
+
 export type TierKey = "aggressive" | "neutral" | "conservative";
 export type PnlBucket = "盈" | "平" | "亏";
 export type FunnelState = { held: boolean; pnl: PnlBucket; tier: TierKey };
@@ -59,4 +61,21 @@ export function scenarioKeyFor(held: boolean, pnl: PnlBucket): ScenarioKey {
   if (pnl === "盈") return "holding_big_gain";
   if (pnl === "亏") return "holding_big_loss";
   return "holding_small";
+}
+
+// ③ 服务端埋点:把当前 localStorage 漏斗态 fire-and-forget 上报。同一 code
+// 短时去抖(连点只报最后一次),避免刷接口。失败静默(api.logFunnelChoice
+// 内部已吞)。详情页/列表页两个点选点共用 —— 点完写 localStorage 后调它。
+const _reportTimers: Record<string, ReturnType<typeof setTimeout>> = {};
+export function reportFunnelChoice(code: string): void {
+  if (typeof window === "undefined") return;
+  clearTimeout(_reportTimers[code]);
+  _reportTimers[code] = setTimeout(() => {
+    const s = getFunnelState(code);
+    api.logFunnelChoice(code, {
+      held: s.held,
+      pnl: s.held ? s.pnl : null,
+      tier: s.tier,
+    });
+  }, 800);
 }

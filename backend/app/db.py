@@ -106,6 +106,9 @@ _POSTGRES_BACKFILL = [
     # 6/23 (codex P1):return 已用同批次 qfq 基准清算过的时间戳。非空 = clean
     # (数据自证)。对客统计(hit_rate_stats 等)只用非空行。
     ("analysis_outcomes", "returns_recomputed_at", "TIMESTAMPTZ"),
+    # 6/25 (③ 分析级):每解析的持仓情境方向(看多/看空/中性)dict,
+    # scenario_hit_stats() 据此把情境建议平移到买卖记分口径打分。
+    ("analysis_outcomes", "scenario_directions", "JSONB"),
     # 6/20: per-user 关注板块 (display-layer highlight of pool entries).
     ("users", "preferred_sectors",          "JSONB"),
 ]

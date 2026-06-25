@@ -18,7 +18,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ..db import SessionLocal
-from ..models import AnalysisOutcome, Kline
+from ..models import AnalysisOutcome, FunnelChoice, Kline
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,7 @@ def record_anchor(
     buy_high: float | None = None,
     target_low: float | None = None,
     stop_price: float | None = None,
+    scenario_directions: dict[str, str] | None = None,
 ) -> None:
     """Insert an outcome anchor. Called from analysis.generate() right
     after the Analysis row is persisted. No-op when anchor_price is
@@ -65,6 +66,16 @@ def record_anchor(
     # have to render mixed types.
     if isinstance(confidence, str):
         confidence = {"高": 85, "中": 65, "低": 45}.get(confidence)
+    # ③ 分析级:只留合法的 情境→方向 映射(schema 已约束 enum,这里兜一层,
+    # 防脏数据进打分;空则 None)。
+    sdir: dict[str, str] | None = None
+    if isinstance(scenario_directions, dict):
+        _keys = {"not_holding", "holding_big_gain", "holding_small", "holding_big_loss"}
+        _dirs = {"看多", "看空", "中性"}
+        sdir = {
+            k: v for k, v in scenario_directions.items()
+            if k in _keys and v in _dirs
+        } or None
     db.add(AnalysisOutcome(
         code=code,
         generated_at=generated_at,
@@ -82,6 +93,7 @@ def record_anchor(
         buy_high=buy_high,
         target_low=target_low,
         stop_price=stop_price,
+        scenario_directions=sdir,
     ))
     db.commit()
 
@@ -424,6 +436,141 @@ def hit_rate_stats() -> dict[str, Any]:
         })
     summary.sort(key=lambda x: (x["prompt_version"], x["actionable"]))
     return {"total_scored": len(rows), "buckets": summary}
+
+
+SCENARIO_KEYS = [
+    "not_holding", "holding_big_gain", "holding_small", "holding_big_loss",
+]
+
+
+def _scenario_dir_hit(direction: str, ret: float) -> bool | None:
+    """情境方向命中:看多兑现=涨、看空兑现=跌;中性不评分(None)。"""
+    if direction == "看多":
+        return ret > 0
+    if direction == "看空":
+        return ret < 0
+    return None
+
+
+def scenario_hit_stats(db: Session | None = None) -> dict[str, Any]:
+    """③ 分析级:把每条解析的持仓情境方向(scenario_directions)平移到买卖记分
+    口径,按 4 个情境分桶统计命中率。同 hit_rate_stats 的 clean 口径 —— 只用
+    return_d5 + returns_recomputed_at 非空且 scenario_directions 非空的行;每行
+    的 4 个情境各计一票(同一前向收益、不同方向声明),中性不评分。超额按
+    (日,板块)隔离基线,去重保留每日每股最后锚点。
+
+    ⚠️ 初期 n 很小,/api/_diag/scenario-stats 据此标"样本不足、暂无定论"。"""
+    own = db is None
+    db = db or SessionLocal()
+    try:
+        rows = (
+            db.query(AnalysisOutcome)
+            .filter(AnalysisOutcome.return_d5.isnot(None))
+            .filter(AnalysisOutcome.returns_recomputed_at.isnot(None))
+            .filter(AnalysisOutcome.scenario_directions.isnot(None))
+            .all()
+        )
+    finally:
+        if own:
+            db.close()
+
+    from .stocks import market_board
+    by_seg: dict[tuple, list[float]] = {}
+    for o in rows:
+        by_seg.setdefault((_gen_day(o), market_board(o.code)), []).append(o.return_d5)
+    seg_baseline = {k: _median(v) for k, v in by_seg.items()}
+
+    last_per_code_day: dict[tuple, AnalysisOutcome] = {}
+    for o in rows:
+        key = (o.code, _gen_day(o))
+        cur = last_per_code_day.get(key)
+        if cur is None or o.generated_at > cur.generated_at:
+            last_per_code_day[key] = o
+    dedup_ids = {id(o) for o in last_per_code_day.values()}
+
+    buckets: dict[str, dict[str, Any]] = {
+        k: {"n": 0, "hits": 0, "sum_return_d5": 0.0, "sum_excess_d5": 0.0,
+            "n_unique": 0, "hits_unique": 0, "neutral": 0}
+        for k in SCENARIO_KEYS
+    }
+    for o in rows:
+        sd = o.scenario_directions or {}
+        base = seg_baseline[(_gen_day(o), market_board(o.code))]
+        is_dedup = id(o) in dedup_ids
+        for sk in SCENARIO_KEYS:
+            direction = sd.get(sk)
+            if direction is None:
+                continue
+            hit = _scenario_dir_hit(direction, o.return_d5)
+            b = buckets[sk]
+            if hit is None:
+                b["neutral"] += 1
+                continue
+            b["n"] += 1
+            b["sum_return_d5"] += o.return_d5
+            b["sum_excess_d5"] += o.return_d5 - base
+            if hit:
+                b["hits"] += 1
+            if is_dedup:
+                b["n_unique"] += 1
+                if hit:
+                    b["hits_unique"] += 1
+
+    scenarios = []
+    for sk in SCENARIO_KEYS:
+        b = buckets[sk]
+        n = b["n"]
+        nu = b["n_unique"]
+        scenarios.append({
+            "scenario": sk,
+            "n_scored": n,          # 看多/看空(可评分)样本数
+            "n_neutral": b["neutral"],
+            "n_unique": nu,
+            "hit_rate": round(b["hits"] / n * 100, 1) if n else None,
+            "hit_rate_dedup": round(b["hits_unique"] / nu * 100, 1) if nu else None,
+            "avg_return_d5": round(b["sum_return_d5"] / n, 2) if n else None,
+            "excess_return_d5": round(b["sum_excess_d5"] / n, 2) if n else None,
+        })
+    return {"total_clean_rows": len(rows), "scenarios": scenarios}
+
+
+def funnel_situation_stats(db: Session | None = None) -> dict[str, Any]:
+    """③ 用户级 v1:用户在持仓决策漏斗里真实选的处境分布 —— 把"自选池绝大比例
+    是已持仓"这个内测直觉量化成数。append-only:每点一次一行,所以统计的是
+    "选择动作"分布(同人同票多次点会多计,反映真实交互),不是去重用户态。
+
+    各 (held,pnl) 桶的前向收益留到样本攒够的 checkpoint(需 kline-join,初期
+    n≈0 无意义)。⚠️ 初期样本少。"""
+    own = db is None
+    db = db or SessionLocal()
+    try:
+        rows = db.query(FunnelChoice).all()
+    finally:
+        if own:
+            db.close()
+
+    total = len(rows)
+    held_true = sum(1 for r in rows if r.held)
+    by_situation: dict[str, int] = {}
+    by_pnl: dict[str, int] = {}
+    by_tier: dict[str, int] = {}
+    for r in rows:
+        sit = f"持有·{r.pnl}" if (r.held and r.pnl) else ("持有·?" if r.held else "未持仓")
+        by_situation[sit] = by_situation.get(sit, 0) + 1
+        if r.held and r.pnl:
+            by_pnl[r.pnl] = by_pnl.get(r.pnl, 0) + 1
+        by_tier[r.tier] = by_tier.get(r.tier, 0) + 1
+
+    return {
+        "total_choices": total,
+        "distinct_users": len({r.user_id for r in rows}),
+        "distinct_codes": len({r.code for r in rows}),
+        "held_rate": round(held_true / total * 100, 1) if total else None,
+        "by_situation": by_situation,
+        "by_pnl": by_pnl,
+        "by_tier": by_tier,
+        "note": "仅处境分布(append-only,多次点选多计);各桶前向收益留到样本攒够的 checkpoint",
+    }
 
 
 def hit_rate_by_model(since_days: int | None = None) -> dict[str, Any]:

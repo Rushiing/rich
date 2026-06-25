@@ -509,4 +509,22 @@ export const api = {
     }),
   deleteHolding: (code: string) =>
     request<{ ok: boolean }>(`/api/holdings/${code}`, { method: "DELETE" }),
+  // ---- ③ 持仓决策漏斗埋点 (fire-and-forget) ----
+  // 绝不走 request():后者 401 会跳登录、!ok 会 throw。埋点必须静默 —— 不能
+  // 因未登录/网络问题打断用户;localStorage 仍是 UI 真相。失败全吞。
+  logFunnelChoice: (
+    code: string,
+    state: { held: boolean; pnl: string | null; tier: string },
+  ): void => {
+    try {
+      void fetch(`/api/funnel/${code}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(state),
+        keepalive: true,
+      }).catch(() => {});
+    } catch {
+      /* noop — 埋点失败不影响任何功能 */
+    }
+  },
 };

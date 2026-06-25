@@ -457,6 +457,15 @@ class AnalysisOutcome(Base):
     returns_recomputed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True,
     )
+    # 6/25 (③ 分析级埋点):每次解析按持仓情境给的"方向"(看多/看空/中性),4 情境
+    # not_holding/holding_big_gain/holding_small/holding_big_loss 各一。平移买卖记分
+    # 口径:看多&return_d5>0 或 看空&return_d5<0 = hit,中性不计。骑现成 return_dN
+    # 打分,无需新回填。老行 NULL,scenario_hit_stats() 在前向收益到位后逐步出数。
+    # none_as_null:让 Python None 落成 SQL NULL(不是 JSON 'null'),scenario_hit_stats
+    # 的 .isnot(None) 才能正确排除"没方向"的行(老行 + 无方向行)。
+    scenario_directions: Mapped[dict[str, str] | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True,
+    )
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
@@ -495,6 +504,34 @@ class Holding(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+
+
+class FunnelChoice(Base):
+    """③ 用户级埋点(append-only)。用户在持仓决策漏斗里每点一次,记一条:处境
+    (持仓 / 盈亏档 / 风险偏好)+ 服务端当时锚点价 + 时间。
+
+    **不 upsert** —— 要历史才能事后记分(同 AnalysisOutcome 的锚点思路:一行
+    一个"用户那一刻的处境"锚点)。读数(/api/_diag/funnel-stats)时 join klines
+    现算前向收益 + 看处境分布,不另建回填管线。anchor_close 由服务端写入时取,
+    不信客户端传值。
+    """
+    __tablename__ = "funnel_choices"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    code: Mapped[str] = mapped_column(String(6), nullable=False, index=True)
+    held: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    # 盈亏档 盈/平/亏;held=False 时 NULL。
+    pnl: Mapped[str | None] = mapped_column(String(4), nullable=True)
+    # 风险偏好 aggressive / neutral / conservative。
+    tier: Mapped[str] = mapped_column(String(16), nullable=False)
+    # 服务端写入时取的当时锚点价(qfq 收盘优先)。事后记分基准。
+    anchor_close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True,
     )
 
 

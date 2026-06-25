@@ -721,6 +721,7 @@ ANALYSIS_TOOL = {
                     "position_pct", "hold_period",
                     "stop_loss_levels",
                     "scenario_advice",
+                    "scenario_direction",
                     "actionable_tiers",
                     "next_day_outlook",
                     "risk_scores",
@@ -817,6 +818,35 @@ ANALYSIS_TOOL = {
                             "holding_big_loss": {
                                 "type": "string",
                                 "description": "已持仓且大幅浮亏怎么做。",
+                            },
+                        },
+                    },
+                    "scenario_direction": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": [
+                            "not_holding",
+                            "holding_big_gain",
+                            "holding_small",
+                            "holding_big_loss",
+                        ],
+                        "description": (
+                            "把上面 scenario_advice 每一条归成方向标签,用于事后记分:"
+                            "加仓/补仓/买入=看多;减仓/止盈/止损/离场=看空;持有/观望/"
+                            "等反弹=中性。必须与对应 advice 文本一致。"
+                        ),
+                        "properties": {
+                            "not_holding": {
+                                "type": "string", "enum": ["看多", "看空", "中性"],
+                            },
+                            "holding_big_gain": {
+                                "type": "string", "enum": ["看多", "看空", "中性"],
+                            },
+                            "holding_small": {
+                                "type": "string", "enum": ["看多", "看空", "中性"],
+                            },
+                            "holding_big_loss": {
+                                "type": "string", "enum": ["看多", "看空", "中性"],
                             },
                         },
                     },
@@ -1637,6 +1667,7 @@ def generate(
             buy_high=kt.get("buy_price_high"),
             target_low=kt.get("sell_price_low"),
             stop_price=stop_price,
+            scenario_directions=kt.get("scenario_direction"),
         )
     except Exception:
         logger.exception("outcome anchor failed for %s (non-fatal)", code)

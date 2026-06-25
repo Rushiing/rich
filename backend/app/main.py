@@ -30,6 +30,7 @@ from .models import (  # noqa: F401  (register tables with metadata)
 )
 from .routes import auth as auth_routes
 from .routes import eval as eval_routes
+from .routes import funnel as funnel_routes
 from .routes import holdings as holdings_routes
 from .routes import market as market_routes
 from .routes import pool as pool_routes
@@ -118,6 +119,7 @@ app.include_router(watchlist_routes.router)
 app.include_router(stocks_routes.router)
 app.include_router(sectors_routes.router)
 app.include_router(holdings_routes.router)
+app.include_router(funnel_routes.router)
 app.include_router(market_routes.router)
 app.include_router(pool_routes.router)
 app.include_router(eval_routes.router)
@@ -431,6 +433,25 @@ def diag_outcomes_stats_by_model(since_days: int | None = None):
     """
     from .services import outcomes as outcomes_svc
     return outcomes_svc.hit_rate_by_model(since_days=since_days)
+
+
+@app.get("/api/_diag/scenario-stats")
+def diag_scenario_stats():
+    """③ 分析级:持仓情境建议方向(看多/看空/中性)的命中率,per 4 情境。把
+    scenario_directions 平移到买卖记分口径(看多兑现=涨、看空=跌,中性不计),
+    同 clean/dedup/seg_baseline 口径。⚠️ 初期 n 很小、暂无定论 —— 仅内部看数,
+    勿对客;数字旁的 n_scored 才是可信度。"""
+    from .services import outcomes as outcomes_svc
+    return outcomes_svc.scenario_hit_stats()
+
+
+@app.get("/api/_diag/funnel-stats")
+def diag_funnel_stats():
+    """③ 用户级:用户在持仓决策漏斗里真实选的处境分布(held/盈亏/风险),量化
+    "自选池绝大比例是已持仓"。append-only 多次点选多计。⚠️ 初期样本少;各桶
+    前向收益留到样本攒够的 checkpoint。"""
+    from .services import outcomes as outcomes_svc
+    return outcomes_svc.funnel_situation_stats()
 
 
 @app.get("/api/_diag/nd-outlook-stats")

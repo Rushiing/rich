@@ -11,6 +11,7 @@ import {
 import {
   FunnelState, PnlBucket, TierKey,
   getFunnelState, setFunnelState, pnlBucketFromPct, scenarioKeyFor,
+  reportFunnelChoice,
 } from "../../../lib/holdingFunnel";
 import Tooltip from "../../_components/Tooltip";
 
@@ -684,9 +685,11 @@ function KeyTableCard({
     }
     return s;
   });
-  // 点选写回 localStorage 并刷新本地状态。
-  const updateFunnel = (partial: Partial<FunnelState>) =>
+  // 点选写回 localStorage 并刷新本地状态,同时 fire-and-forget 上报服务端(③ 埋点,去抖)。
+  const updateFunnel = (partial: Partial<FunnelState>) => {
     setFunnel(setFunnelState(code, partial));
+    reportFunnelChoice(code);
+  };
 
   const tier = funnel.tier;
   const tiers = kt.actionable_tiers;

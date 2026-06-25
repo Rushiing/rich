@@ -2,7 +2,7 @@
 
 import { Fragment, useEffect, useRef, useState } from "react";
 import { api, ActionItemsOut, AnalysisBrief, HitRateSummary, StockRow, confidenceBucket, confidenceLabel } from "../../lib/api";
-import { getFunnelState, setFunnelState } from "../../lib/holdingFunnel";
+import { getFunnelState, setFunnelState, reportFunnelChoice } from "../../lib/holdingFunnel";
 import Tooltip from "../_components/Tooltip";
 import { groupByBoard } from "../../lib/market";
 import { SegmentHeader } from "../_components/SegmentSection";
@@ -1009,6 +1009,7 @@ function HeldToggle({ code }: { code: string }) {
         const next = !active;
         setHeld(next);
         setFunnelState(code, { held: next });
+        reportFunnelChoice(code); // ③ 服务端埋点(去抖、静默)
       }}
       title={active ? "已标记持有，点一下取消" : "标记为持有"}
       style={{
