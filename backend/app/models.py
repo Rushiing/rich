@@ -650,3 +650,42 @@ class Analysis(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class SellSignalOutcome(Base):
+    """卖出线 S2 — 风险信号锚点 + 前向收益(复权安全)。**独立于买入 outcomes**
+    (三线解耦:自己的表、自己的记分、自己的战绩,不借买入信用)。
+
+    sell_risk_signal 每触发一次记一条,事后用「避免回撤」口径打分:信号触发后,
+    该票相对同日同板块**是否真的跑输** —— 跑输 = 卖出信号有 edge(避免了回撤)。
+    anchor_close + close_dN 都从 Kline(qfq)同批次取,除权安全;未清算行
+    returns_recomputed_at=NULL,排除出对客统计。⚠️ 初期 n 小,标样本不足、不对客。
+    """
+    __tablename__ = "sell_signal_outcomes"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True, autoincrement=True,
+    )
+    code: Mapped[str] = mapped_column(String(6), nullable=False, index=True)
+    fired_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True,
+    )
+    # 触发的 trigger keys 列表(capital_outflow / below_ma20 / thesis_invalidated /
+    # short_term_divergence)。none_as_null 让空值落 SQL NULL。
+    triggers: Mapped[list | None] = mapped_column(JSON(none_as_null=True), nullable=True)
+    level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # qfq 复权安全锚点(backfill 从 fired 日的 Kline 收盘重取)。
+    anchor_close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    close_d1: Mapped[float | None] = mapped_column(Float, nullable=True)
+    close_d5: Mapped[float | None] = mapped_column(Float, nullable=True)
+    close_d20: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_d1: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_d5: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_d20: Mapped[float | None] = mapped_column(Float, nullable=True)
+    returns_recomputed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )

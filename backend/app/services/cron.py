@@ -831,8 +831,52 @@ def _outcomes_tick():
         from . import outcomes as outcomes_svc
         res = outcomes_svc.recompute_returns_from_close()
         logger.info("outcomes tick (recompute): %s", res)
+        # 卖出线 S2:同批回填 SellSignalOutcome 前向收益(独立表、复权安全、幂等)。
+        from . import sell_outcomes as sell_svc
+        sres = sell_svc.backfill_sell_returns()
+        logger.info("outcomes tick (sell backfill): %s", sres)
     except Exception:
         logger.exception("outcomes tick failed")
+
+
+def _sell_signal_tick():
+    """卖出线 S1+S2 盘后 tick:在**全部自选**上跑 sell_risk_signal,新触发即 anchor
+    一条 SellSignalOutcome(每日每股去重)。S2 的前向回填在 _outcomes_tick(17:00)。
+    纯新增旁路:不碰买入,失败不影响其他 tick。"""
+    try:
+        from .sell_signal import sell_risk_signal
+        from .sell_outcomes import record_sell_signal
+        from ..models import SellSignalOutcome, Watchlist
+        db = SessionLocal()
+        try:
+            now = datetime.now(timezone.utc)
+            bjt_today = now.astimezone(timezone(timedelta(hours=8))).date()
+            day_start = datetime(
+                bjt_today.year, bjt_today.month, bjt_today.day,
+                tzinfo=timezone(timedelta(hours=8)),
+            ).astimezone(timezone.utc)
+            codes = [c for (c,) in db.query(Watchlist.code).distinct().all()]
+            fired = 0
+            for code in codes:
+                sig = sell_risk_signal(db, code, as_of=now)
+                if not sig:
+                    continue
+                # 每日每股去重:今天(BJT)已记过就跳过。
+                dup = (
+                    db.query(SellSignalOutcome.id)
+                    .filter(SellSignalOutcome.code == code)
+                    .filter(SellSignalOutcome.fired_at >= day_start)
+                    .first()
+                )
+                if dup:
+                    continue
+                record_sell_signal(db, code, sig, fired_at=now)
+                fired += 1
+            logger.info("sell-signal tick: scanned=%d fired=%d", len(codes), fired)
+        finally:
+            db.close()
+    except Exception:
+        logger.exception("sell-signal tick failed")
 
 
 # 6/18: cron tick 的最近结果。原本 cron 跑完 run_pool_tick() 丢弃结果,
@@ -963,6 +1007,15 @@ def start_scheduler() -> None:
         id="outcomes_17_00",
         replace_existing=True,
         misfire_grace_time=3600,
+    )
+    # 卖出线 S1+S2:盘后 16:40 BJT(16:30 kline 之后、17:00 outcomes 回填之前),
+    # 在全部自选上跑风险信号、anchor 今日新触发。纯新增旁路,不碰买入。
+    sched.add_job(
+        _sell_signal_tick,
+        CronTrigger(day_of_week="mon-fri", hour=16, minute=40, timezone="Asia/Shanghai"),
+        id="sell_signal_16_40",
+        replace_existing=True,
+        misfire_grace_time=1800,
     )
 
     # 虚拟预选池 daily tick — after klines (16:30), before outcomes (17:00).

@@ -454,6 +454,15 @@ def diag_funnel_stats():
     return outcomes_svc.funnel_situation_stats()
 
 
+@app.get("/api/_diag/sell-signal-stats")
+def diag_sell_signal_stats():
+    """卖出线 S2 claim 闸:风险信号的避免回撤记分。**avg_excess_d5 < 0 = 触发后跑输
+    同板块 = 信号有 edge**(对称买入 +5pp,方向相反)。per-trigger 拆分看哪个触发最准。
+    ⚠️ 初期 n 小、样本不足、不对客 —— 60 天滚动跑赢才能亮『有效』。"""
+    from .services import sell_outcomes as sell_svc
+    return sell_svc.sell_signal_stats()
+
+
 @app.get("/api/_diag/nd-outlook-stats")
 def diag_nd_outlook_stats():
     """Score next_day_outlook.trend (看涨/看平/看跌) against actual next-day
