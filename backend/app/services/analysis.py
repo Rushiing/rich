@@ -1409,11 +1409,15 @@ def generate(
         #     强引导让 LLM 输出多+慢,或者 kimi 整体波动)。调到 120 让
         #     单股 call 更可能 cover p90 延迟。
         #
-        # 100 stocks × 60% trigger × 120s / 5 并发 = 24 min,接近 30 min
-        # cycle 边界。实际触发率通常 ~20%,20×120/5=8 min,充裕。
+        # 100 stocks × 60% trigger × 180s / 5 并发 ≈ 36 min。实际触发率通常
+        # ~20%,20×180/5=12 min,充裕。
+        #   - 6/25 timeout 120→180:火山 kimi(B)吞吐 ~20 tok/s(A minimax-m3
+        #     ~39),真实分析 3000-5000 tok 输出在慢早高峰会破 120s。探活:轻请求
+        #     ~2s,2000tok 重请求 A 22s / B 45s。同日把 run_daily_analysis_job 的
+        #     5 并发修回(曾退化成串行 → 慢早高峰串行 × 120s 把整批拖垮)。
         kwargs: dict[str, Any] = {
             "api_key": settings.ANTHROPIC_API_KEY,
-            "timeout": 120.0,
+            "timeout": 180.0,
             "max_retries": 0,
         }
         if settings.ANTHROPIC_BASE_URL:

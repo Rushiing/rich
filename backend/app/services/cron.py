@@ -531,9 +531,11 @@ def run_daily_analysis_job(
             "daily analysis job: %d distinct codes, only_missing=%s only_stale=%s force=%s",
             len(codes), only_missing, only_stale, force,
         )
-        generated = 0
-        failed = 0
+        # Skip-pass — serial, read-only on the shared session. Decides which
+        # codes actually need (re)generation; the LLM calls run concurrently
+        # below, each on its own session.
         skipped = 0
+        to_generate: list[str] = []
         for code in codes:
             # force=True: bypass all skip logic AND bypass cache in generate().
             if not force:
@@ -552,24 +554,58 @@ def run_daily_analysis_job(
                 elif only_stale and analysis_cached(db, code) is not None:
                     skipped += 1
                     continue
-            try:
-                analysis_generate(db, code, force=force)
-                generated += 1
-            except Exception:
-                failed += 1
-                logger.exception("daily analysis job: %s failed", code)
-        logger.info(
-            "daily analysis job: generated=%d failed=%d skipped=%d",
-            generated, failed, skipped,
-        )
-        return {
-            "codes": len(codes),
-            "generated": generated,
-            "failed": failed,
-            "skipped": skipped,
-        }
+            to_generate.append(code)
     finally:
         db.close()
+
+    # 6/25: generation runs CONCURRENTLY (max_workers=5). This loop had silently
+    # regressed to serial — on a slow 火山 morning each code burned the full
+    # timeout one after another, so the 09:35 run ground for hours and the tail
+    # starved (recommendations went stale). analysis.py's timeout budget always
+    # assumed this 5-way fan-out (~115×0.6×180s/5 ≈ 41min < cycle). Each worker
+    # opens its OWN Session — SQLAlchemy Session is not thread-safe — and
+    # generate() commits internally; distinct codes never touch the same row.
+    generated = 0
+    failed = 0
+
+    def _generate_one(code: str):
+        wdb = SessionLocal()
+        try:
+            analysis_generate(wdb, code, force=force)
+            return (code, None)
+        except Exception as e:  # noqa: BLE001 — isolate per-code failure
+            return (code, e)
+        finally:
+            wdb.close()
+
+    if to_generate:
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            futures = [pool.submit(_generate_one, c) for c in to_generate]
+            for fut in as_completed(futures):
+                code, err = fut.result()
+                if err is None:
+                    generated += 1
+                elif "Timeout" in type(err).__name__:
+                    # 火山 慢 / 长生成超时 —— 预期的负载信号,一行 warning,不刷全栈。
+                    failed += 1
+                    logger.warning("daily analysis job: %s LLM 超时", code)
+                else:
+                    failed += 1
+                    logger.error(
+                        "daily analysis job: %s failed: %s: %s",
+                        code, type(err).__name__, str(err)[:160],
+                    )
+
+    logger.info(
+        "daily analysis job: generated=%d failed=%d skipped=%d",
+        generated, failed, skipped,
+    )
+    return {
+        "codes": len(codes),
+        "generated": generated,
+        "failed": failed,
+        "skipped": skipped,
+    }
 
 
 def _daily_analysis_tick():
