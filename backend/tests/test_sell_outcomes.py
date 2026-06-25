@@ -87,6 +87,23 @@ def test_outperformer_not_hit():
     print("✓ 跑赢市场 → 不 hit")
 
 
+def test_baseline_missing_excluded():
+    """无同日同板块市场基线(无 AnalysisOutcome)→ 排除出 excess 统计,不退化成绝对涨跌。"""
+    db = _db()
+    for d, c in [("2026-06-01", 10.0), ("2026-06-02", 9.8), ("2026-06-03", 9.6),
+                 ("2026-06-04", 9.4), ("2026-06-05", 9.2), ("2026-06-06", 9.0)]:
+        db.add(Kline(code="600000", date=d, close=c, ma20=10.0))
+    db.commit()  # 故意不加 AnalysisOutcome 基线
+    record_sell_signal(db, "600000", {"level": 1, "triggers": [{"key": "capital_outflow"}]}, fired_at=FIRED)
+    backfill_sell_returns(db=db)
+    stats = sell_signal_stats(db=db)
+    assert stats["total_clean"] == 1
+    assert stats["baseline_missing"] == 1
+    assert stats["overall"]["n"] == 0  # 没进 excess 统计
+    assert stats["overall"]["avg_excess_d5"] is None
+    print("✓ 缺基线行已排除(不污染 avg_excess_d5)")
+
+
 def test_empty_safe():
     db = _db()
     assert backfill_sell_returns(db=db) == {"scanned": 0, "clean": 0, "no_basis": 0}
@@ -98,5 +115,6 @@ def test_empty_safe():
 if __name__ == "__main__":
     test_backfill_and_avoid_drawdown()
     test_outperformer_not_hit()
+    test_baseline_missing_excluded()
     test_empty_safe()
     print("\nALL PASS")

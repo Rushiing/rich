@@ -167,9 +167,15 @@ def sell_signal_stats(db: Session | None = None) -> dict[str, Any]:
 
     overall = _bucket()
     by_trigger: dict[str, dict[str, Any]] = {}
+    baseline_missing = 0
     for o in rows:
-        # 缺基线(当天无分析数据)→ 退化成对绝对收益(market=0,即"触发后是否绝对下跌")。
-        base = seg_baseline.get((_gen_day(o.fired_at), market_board(o.code)), 0.0)
+        key = (_gen_day(o.fired_at), market_board(o.code))
+        # 缺市场基线(当天无分析数据)→ **排除出统计**(codex 关门审 P1):若退化成
+        # base=0,避免回撤秤就变成"绝对涨跌",口径污染结论。单列计数,不进 excess。
+        if key not in seg_baseline:
+            baseline_missing += 1
+            continue
+        base = seg_baseline[key]
         excess = o.return_d5 - base
         hit = excess < 0  # 触发后跑输板块 = 该卖
         is_dedup = id(o) in dedup_ids
@@ -204,8 +210,10 @@ def sell_signal_stats(db: Session | None = None) -> dict[str, Any]:
 
     return {
         "total_clean": len(rows),
+        "baseline_missing": baseline_missing,  # 缺市场基线、未进 excess 统计的行
         "overall": _fmt(overall),
         "by_trigger": {k: _fmt(v) for k, v in by_trigger.items()},
         "note": "avg_excess_d5 < 0 = 触发后跑输同板块 = 卖出信号有 edge(避免回撤);"
+                "缺市场基线的行已排除(不退化成绝对涨跌);"
                 "初期 n 小、样本不足、不对客(claim 闸:60 天滚动跑赢才亮『有效』)",
     }
