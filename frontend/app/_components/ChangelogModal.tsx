@@ -17,6 +17,13 @@ import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { CHANGELOG, LATEST_CHANGELOG } from "../../lib/changelog";
 
+// 极简 markdown:把 **粗体** 渲染成 <strong>(同 changelog 页面)。
+function boldify(text: string) {
+  return text.split("**").map((seg, i) =>
+    i % 2 === 1 ? <strong key={i}>{seg}</strong> : seg,
+  );
+}
+
 // Bumped to v2 (2026-05-10 evening) — the 5/10 entry was rewritten that
 // same day to reflect the password + invite-code auth (replacing the
 // earlier SMS-only description). Bumping the key forces a re-pop so users
@@ -122,7 +129,7 @@ export default function ChangelogModal() {
                 color: "var(--text)",
               }}>
                 {sec.items.map((item, j) => (
-                  <li key={j}>{item}</li>
+                  <li key={j}>{boldify(item)}</li>
                 ))}
               </ul>
             </div>

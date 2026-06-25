@@ -11,6 +11,13 @@
 
 import { CHANGELOG } from "../../lib/changelog";
 
+// 极简 markdown:把 **粗体** 渲染成 <strong>。changelog item 用。
+function boldify(text: string) {
+  return text.split("**").map((seg, i) =>
+    i % 2 === 1 ? <strong key={i}>{seg}</strong> : seg,
+  );
+}
+
 export default function ChangelogPage() {
   return (
     <main style={{ padding: 20, maxWidth: 880, margin: "0 auto" }}>
@@ -55,7 +62,7 @@ export default function ChangelogPage() {
                     color: "var(--text)",
                   }}>
                     {sec.items.map((item, j) => (
-                      <li key={j}>{item}</li>
+                      <li key={j}>{boldify(item)}</li>
                     ))}
                   </ul>
                 </div>
