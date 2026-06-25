@@ -748,6 +748,23 @@ class PeerRow(BaseModel):
     is_cross_industry: bool = False
 
 
+@router.get("/{code}/sell-risk")
+def get_sell_risk(
+    code: str,
+    db: Session = Depends(get_db),
+    user_id: int | None = Depends(require_auth),
+):
+    """卖出线 S3:该票当前的客观风险信号(live,非缓存)。返回 {level, triggers:
+    [{key, reason}]} 或 null(无风险)。**有效性验证中、不对客承诺** —— 前端按
+    持仓盈亏档融合成 护利 / 护本 / 观察 的动作,框「客观提示·验证中」。
+    Ownership-scoped 到用户 watchlist。"""
+    owner = resolve_owner(user_id, db)
+    if not _user_watchlist(db, owner).filter(Watchlist.code == code).first():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not in watchlist")
+    from ..services.sell_signal import sell_risk_signal
+    return sell_risk_signal(db, code)
+
+
 @router.get("/{code}/peers", response_model=list[PeerRow])
 def get_peers(
     code: str,

@@ -3,7 +3,7 @@
 import { use, useEffect, useState, type ReactNode } from "react";
 import {
   api, ActionableTier, ActionableTiers, HitRateSummary, Holding, KeyTable, NextDayOutlook,
-  PeerRow, StockAnalysis, StockDetail, StopLossLevel,
+  PeerRow, SellRisk, StockAnalysis, StockDetail, StopLossLevel,
   confidenceBucket, confidenceLabel,
 } from "../../../lib/api";
 // 持仓决策漏斗状态 —— per-stock localStorage（held/盈亏/风险偏好三个点选），
@@ -45,6 +45,8 @@ export default function StockDetailPage({
   // 6/3: global hit_rate summary — fed to KeyTableCard so the actionable
   // verdict shows "AI 历史命中 X% (n=Y)" right below it. Silent failure.
   const [hitRate, setHitRate] = useState<HitRateSummary | null>(null);
+  // 卖出线 S3:该票当前客观风险信号(live)。null = 无风险/未登录(静默)。
+  const [sellRisk, setSellRisk] = useState<SellRisk | null>(null);
   // S1 (6/10): holding mirrored up from HoldingCard (which owns the
   // fetch + edit flow) so ScenarioAdviceCard can highlight the quadrant
   // matching the user's REAL P&L instead of showing four equal rows.
@@ -85,6 +87,8 @@ export default function StockDetailPage({
     // 6/3: pull hit_rate summary once per code mount. Backend caches
     // 30 min so this is cheap and stable.
     api.hitRateSummary().then(setHitRate).catch(() => {});
+    // 卖出线 S3:拉当前风险信号(供应性、静默失败)。
+    api.getSellRisk(code).then(setSellRisk).catch(() => setSellRisk(null));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code]);
 
@@ -186,6 +190,7 @@ export default function StockDetailPage({
                     ? (detail.price - holding.cost_price) / holding.cost_price * 100
                     : null
                 }
+                sellRisk={sellRisk}
               />
               <HoldingCard
                 code={code}
@@ -663,7 +668,7 @@ function FreshnessBar({
 }
 
 function KeyTableCard({
-  code, kt, currentPrice, hitRate, holdingPnlPct = null,
+  code, kt, currentPrice, hitRate, holdingPnlPct = null, sellRisk = null,
 }: {
   // 漏斗状态用 code 做 per-stock localStorage key。
   code: string;
@@ -673,6 +678,8 @@ function KeyTableCard({
   // S1: user's actual P&L % (null = no holding recorded). 仅在没存过漏斗状态时
   // 用来预填盈亏档（已录成本价 → 反映其浮盈/浮亏档），不写回 localStorage。
   holdingPnlPct?: number | null;
+  // 卖出线 S3:该票当前客观风险信号(live),按漏斗盈亏档融合成动作。
+  sellRisk?: SellRisk | null;
 }) {
   // 决策漏斗状态：持仓 / 盈亏 / 风险偏好。默认（Rush 拍板）持有·盈·激进。
   // 初值优先级：localStorage 存过 → 用存的；否则若已录成本价（holdingPnlPct
@@ -877,6 +884,12 @@ function KeyTableCard({
         actionable={view.action}
       />
 
+      {/* 卖出线 S3:当前客观风险信号(live)。按漏斗盈亏档融合成护利/护本/观察的
+          动作,框「客观提示·验证中」—— 不承诺卖得准,只对当下客观状态负责。 */}
+      {sellRisk && sellRisk.triggers && sellRisk.triggers.length > 0 && (
+        <SellRiskCard risk={sellRisk} held={funnel.held} pnl={funnel.pnl} />
+      )}
+
       {/* 甜区漏斗（决策第一屏）：持仓 → 盈亏 → 风险，三行都"可点可不点"。
           一个有边框的容器框住，轻量 chip 行。默认 持有·盈·激进，已给一版建议。 */}
       <div style={{
@@ -996,6 +1009,37 @@ function KeyTableCard({
 }
 
 // 漏斗一行：左侧标签 + 右侧 chip 组。轻量行布局，复用现有间距风格。
+// 卖出线 S3:当前状态风险卡。动作按持仓盈亏档**融合**(三线原则:解耦引擎、
+// 融合表达)。仅给动作措辞,**不承诺有效性** —— 框「客观提示·验证中」,延续
+// 诚实纪律(卖出还没战绩,不借买入信用、不说"卖得准")。
+function SellRiskCard({ risk, held, pnl }: { risk: SellRisk; held: boolean; pnl: PnlBucket }) {
+  const action = !held
+    ? "你尚未持仓:这票当前状态转弱,暂不是买点(不催卖)。"
+    : pnl === "盈"
+    ? "护利:浮盈到了该保护的位置,可考虑锁定部分利润。"
+    : pnl === "亏"
+    ? "护本:当初持有的理由在松动,控制回撤、守住本金。"
+    : "观察:持有理由在转弱,留意,可考虑轻减。";
+  return (
+    <div style={{
+      padding: "12px 14px", border: "1px solid var(--border)", borderRadius: 8,
+      background: "rgba(245, 158, 11, 0.08)", borderLeft: "3px solid #f59e0b",
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>⚠️ 当前状态风险提示</span>
+        <span style={{ fontSize: 11, color: "var(--text-faint)" }}>客观信号 · 有效性验证中</span>
+      </div>
+      <ul style={{ margin: "0 0 8px", paddingLeft: 18, color: "var(--text-soft)", fontSize: 13, lineHeight: 1.6 }}>
+        {risk.triggers.map((t) => <li key={t.key}>{t.reason}</li>)}
+      </ul>
+      <div style={{ fontSize: 13, color: "var(--text)", lineHeight: 1.6 }}>{action}</div>
+      <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 6, lineHeight: 1.5 }}>
+        这是基于当前客观状态的提示,不是预测下跌;卖出信号的历史有效性我们还在攒数验证中。
+      </div>
+    </div>
+  );
+}
+
 function FunnelRow({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>

@@ -193,6 +193,10 @@ export type StockAnalysis = {
 // 本股 5 支 + 本股),详情页纯渲染不过 LLM。本股 is_self=true 高亮;跨行业
 // fallback peer is_cross_industry=true 且财务列可能 null(不在 watchlist
 // 没财报)→ 前端显示"—"。
+// 卖出线 S3:当前状态风险信号(客观触发 + 人话理由)。有效性验证中。
+export type SellRiskTrigger = { key: string; reason: string };
+export type SellRisk = { level: number; triggers: SellRiskTrigger[] };
+
 export type PeerRow = {
   code: string;
   name: string | null;
@@ -483,6 +487,9 @@ export const api = {
     ),
   getPeers: (code: string) =>
     request<PeerRow[]>(`/api/stocks/${code}/peers`),
+  // 卖出线 S3:该票当前客观风险信号(live)。null = 无风险。有效性验证中。
+  getSellRisk: (code: string) =>
+    request<SellRisk | null>(`/api/stocks/${code}/sell-risk`),
   hitRateSummary: () =>
     request<HitRateSummary>(`/api/stocks/hit-rate-summary`),
   actionItems: () =>
