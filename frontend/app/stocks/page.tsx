@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useEffect, useRef, useState } from "react";
-import { api, ActionItemsOut, AnalysisBrief, HitRateSummary, StockRow, confidenceBucket, confidenceLabel } from "../../lib/api";
+import { api, ActionItemsOut, AnalysisBrief, FunnelStateOut, HitRateSummary, StockRow, confidenceBucket, confidenceLabel } from "../../lib/api";
 import { getFunnelState, setFunnelState, reportFunnelChoice } from "../../lib/holdingFunnel";
 import Tooltip from "../_components/Tooltip";
 import { groupByBoard } from "../../lib/market";
@@ -165,6 +165,8 @@ export default function StocksPage() {
   // Silent failure: hit_rate is supplementary, shouldn't drag the page
   // down if outcomes service is unhealthy.
   const [hitRate, setHitRate] = useState<HitRateSummary | null>(null);
+  // ③ 跨设备:用户每只票的服务端最新漏斗选择(给 HeldToggle hydrate,跟账号走)。
+  const [funnelMap, setFunnelMap] = useState<Record<string, FunnelStateOut> | null>(null);
   // S1 (6/10): 今日需行动 — holdings-aware sell triggers. Refreshed
   // alongside the row list (refresh()) so a stop-loss breach shows up
   // within one auto-refresh cycle. Silent failure: supplementary.
@@ -223,6 +225,8 @@ export default function StocksPage() {
     // 6/3: hit_rate summary — single mount fetch, silent failure (it's
     // supplementary tooltip content, not blocking).
     api.hitRateSummary().then(setHitRate).catch(() => {});
+    // ③ 跨设备:拉我的全部最新漏斗选择(静默失败)。
+    api.getMyFunnel().then(setFunnelMap).catch(() => {});
     // If a job is already running (e.g., user reloaded mid-batch), join it.
     api.snapshotStatus().then((s) => {
       if (s.running) startPolling();
@@ -539,7 +543,7 @@ export default function StocksPage() {
             </tr>
           )}
           {/* Filter mode: flat list of whichever bucket is selected. */}
-          {!loading && filter !== null && visibleRowsSorted.map((r) => stockRow(r, toggleStar))}
+          {!loading && filter !== null && visibleRowsSorted.map((r) => stockRow(r, toggleStar, funnelMap?.[r.code]?.held))}
           {/* Default mode: 市场为外层(科创板 teal 摘出),买卖分组退到每个
               市场区内部的中性折叠次序。强调权给市场维度,符合「一次只强调一个
               维度」规范。行模板(stockRow)不变。 */}
@@ -574,7 +578,7 @@ export default function StocksPage() {
                           <span style={{ color: "var(--text-muted)" }}>({groupRows.length})</span>
                         </td>
                       </tr>
-                      {!isCollapsed && groupRows.map((r) => stockRow(r, toggleStar))}
+                      {!isCollapsed && groupRows.map((r) => stockRow(r, toggleStar, funnelMap?.[r.code]?.held))}
                     </Fragment>
                   );
                 });
@@ -986,20 +990,25 @@ function hexA(hex: string, a: number): string {
 // （详情页漏斗共用）。列表只捕获"持有吗"这一个最便宜、最高含金量的 bit，
 // 盈亏/风险留到详情页。SSR 安全：初值在挂载后才从 localStorage 读，避免
 // 服务端渲染与客户端不一致（hydration mismatch）。
-function HeldToggle({ code }: { code: string }) {
-  // null = 尚未从 localStorage 读出（SSR / 首帧），不上色。
-  // 列表页只在用户**显式标记过**该票时才点亮"持有" —— 不沿用详情页漏斗
-  // 的 held:true 默认（那是给建议用的偏置，不该让列表把没标过的票全涂红、
-  // 替用户断言持仓）。所以这里探 localStorage 是否真有该 code 的条目。
+function HeldToggle({ code, serverHeld }: { code: string; serverHeld?: boolean }) {
+  // null = 尚未读出（SSR / 首帧），不上色。
+  // ③ 跨设备:服务端有该票最新选择(serverHeld 非 undefined)→ 以**账号**为准、
+  // 同步回 localStorage;否则探 localStorage(只在用户显式标记过时才点亮,不沿用
+  // 详情页 held:true 默认 —— 那是建议偏置,不该把没标过的票全涂红)。
   const [held, setHeld] = useState<boolean | null>(null);
   useEffect(() => {
+    if (serverHeld !== undefined) {
+      setHeld(serverHeld);
+      try { setFunnelState(code, { held: serverHeld }); } catch { /* noop */ }
+      return;
+    }
     try {
       const raw = window.localStorage.getItem(`rich:funnel:${code}`);
       setHeld(raw ? JSON.parse(raw).held === true : false);
     } catch {
       setHeld(false);
     }
-  }, [code]);
+  }, [code, serverHeld]);
   const active = held === true;
   return (
     <button
@@ -1034,7 +1043,7 @@ function HeldToggle({ code }: { code: string }) {
 // share one source of truth. `onToggleStar` is required because the star
 // toggle needs access to component state, but rest of the row is pure
 // data → JSX.
-function stockRow(r: StockRow, onToggleStar: (code: string) => void) {
+function stockRow(r: StockRow, onToggleStar: (code: string) => void, serverHeld?: boolean) {
   return (
     <tr key={r.code} style={r.has_strong_signal ? rowStrong : undefined}>
       <td style={{ ...td, width: 28, padding: "10px 0 10px 6px" }}>
@@ -1063,7 +1072,7 @@ function stockRow(r: StockRow, onToggleStar: (code: string) => void) {
       <td style={td}>
         <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
           {r.name}
-          <HeldToggle code={r.code} />
+          <HeldToggle code={r.code} serverHeld={serverHeld} />
         </span>
       </td>
       <td style={{

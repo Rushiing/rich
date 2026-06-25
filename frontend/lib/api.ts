@@ -193,6 +193,9 @@ export type StockAnalysis = {
 // 本股 5 支 + 本股),详情页纯渲染不过 LLM。本股 is_self=true 高亮;跨行业
 // fallback peer is_cross_industry=true 且财务列可能 null(不在 watchlist
 // 没财报)→ 前端显示"—"。
+// ③ 漏斗状态读回(服务端最新选择,用于跨设备 hydrate)。
+export type FunnelStateOut = { held: boolean; pnl: string | null; tier: string };
+
 // 卖出线 S3:当前状态风险信号(客观触发 + 人话理由)。有效性验证中。
 export type SellRiskTrigger = { key: string; reason: string };
 export type SellRisk = { level: number; triggers: SellRiskTrigger[] };
@@ -516,6 +519,11 @@ export const api = {
     }),
   deleteHolding: (code: string) =>
     request<{ ok: boolean }>(`/api/holdings/${code}`, { method: "DELETE" }),
+  // ③ 漏斗状态读回(跨设备/跟账号):该票最新选择 + 我的全部最新选择。
+  getFunnelLatest: (code: string) =>
+    request<FunnelStateOut | null>(`/api/funnel/${code}/latest`),
+  getMyFunnel: () =>
+    request<Record<string, FunnelStateOut>>(`/api/funnel/mine`),
   // ---- ③ 持仓决策漏斗埋点 (fire-and-forget) ----
   // 绝不走 request():后者 401 会跳登录、!ok 会 throw。埋点必须静默 —— 不能
   // 因未登录/网络问题打断用户;localStorage 仍是 UI 真相。失败全吞。

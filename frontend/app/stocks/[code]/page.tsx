@@ -698,6 +698,25 @@ function KeyTableCard({
     reportFunnelChoice(code);
   };
 
+  // ③ 跨设备 hydrate:挂载后从服务端拉该票最新选择,有就覆盖 localStorage —— 让
+  // 点选跟**账号**走、换电脑也在(服务端没记录则退回 localStorage/默认)。
+  useEffect(() => {
+    let alive = true;
+    api.getFunnelLatest(code)
+      .then((srv) => {
+        if (!alive || !srv) return;
+        const next = setFunnelState(code, {
+          held: srv.held,
+          pnl: (srv.pnl as PnlBucket) ?? getFunnelState(code).pnl,
+          tier: srv.tier as TierKey,
+        });
+        setFunnel(next);
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code]);
+
   const tier = funnel.tier;
   const tiers = kt.actionable_tiers;
 

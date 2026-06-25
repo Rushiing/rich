@@ -31,6 +31,12 @@ class FunnelChoiceIn(BaseModel):
     tier: str = Field(max_length=16)
 
 
+class FunnelStateOut(BaseModel):
+    held: bool
+    pnl: str | None
+    tier: str
+
+
 def _require_owner(user_id: int | None, db: Session) -> int:
     owner = resolve_owner(user_id, db)
     if owner is None:
@@ -74,3 +80,47 @@ def log_funnel_choice(
     ))
     db.commit()
     return {"ok": True}
+
+
+@router.get("/mine")
+def my_funnel_choices(
+    db: Session = Depends(get_db),
+    user_id: int | None = Depends(require_auth),
+):
+    """用户每只票的**最新**漏斗选择(给列表页 hydrate,让点选跟账号走、跨设备一致)。
+    返回 {code: {held, pnl, tier}}。"""
+    owner = _require_owner(user_id, db)
+    rows = (
+        db.query(FunnelChoice)
+        .filter(FunnelChoice.user_id == owner)
+        .order_by(
+            FunnelChoice.code,
+            FunnelChoice.created_at.desc(),
+            FunnelChoice.id.desc(),
+        )
+        .all()
+    )
+    out: dict[str, dict] = {}
+    for r in rows:
+        if r.code not in out:  # 每 code 第一条 = 最新(已按 code, created_at desc 排)
+            out[r.code] = {"held": r.held, "pnl": r.pnl, "tier": r.tier}
+    return out
+
+
+@router.get("/{code}/latest", response_model=FunnelStateOut | None)
+def latest_funnel_choice(
+    code: str,
+    db: Session = Depends(get_db),
+    user_id: int | None = Depends(require_auth),
+):
+    """该票最新漏斗选择(详情页 hydrate)。null = 没记录过 → 前端退回 localStorage/默认。"""
+    owner = _require_owner(user_id, db)
+    row = (
+        db.query(FunnelChoice)
+        .filter(FunnelChoice.user_id == owner, FunnelChoice.code == code)
+        .order_by(FunnelChoice.created_at.desc(), FunnelChoice.id.desc())
+        .first()
+    )
+    if not row:
+        return None
+    return FunnelStateOut(held=row.held, pnl=row.pnl, tier=row.tier)
