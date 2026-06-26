@@ -17,6 +17,7 @@ Two responsibilities:
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
@@ -24,9 +25,12 @@ from sqlalchemy.orm import Session
 from ..config import settings
 from ..db import SessionLocal
 from ..models import User, Watchlist
-from ..services import sms
 
 logger = logging.getLogger(__name__)
+
+# 手机号格式校验(11 位)。原在 services/sms.py,SMS 清理后内联到这里 —— 它跟
+# 短信无关,只是个号码正则,唯一调用方是下面的 migrate_admin_watchlist。
+_PHONE_RE = re.compile(r"^1[3-9]\d{9}$")
 
 
 _admin_id_cache: int | None = None
@@ -64,7 +68,7 @@ def migrate_admin_watchlist() -> dict:
     if not settings.ADMIN_PHONE:
         logger.info("admin migration: ADMIN_PHONE not set, skipping")
         return {"skipped": True}
-    if not sms.is_valid_phone(settings.ADMIN_PHONE):
+    if not _PHONE_RE.match(settings.ADMIN_PHONE or ""):
         logger.error(
             "admin migration: ADMIN_PHONE=%r is not a valid 11-digit "
             "Chinese mobile; skipping (fix env var to retry)",

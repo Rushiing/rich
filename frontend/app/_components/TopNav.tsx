@@ -5,7 +5,7 @@
  * shares the same brand + links + theme toggle + user chip. Page-level
  * headers keep only their title and page-specific actions.
  *
- * Hidden on the auth pages (/login, /register, /login/sms) — pre-auth
+ * Hidden on the auth pages (/login, /register) — pre-auth
  * users have nothing to navigate to.
  */
 

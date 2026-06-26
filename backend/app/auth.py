@@ -1,19 +1,14 @@
-"""SMS-based auth for the rich app (Phase 6).
+"""Per-user auth for the rich app(邀请码 + 手机号 + 密码)。
 
-Migration history:
-- v1 (Phase 0): single shared APP_PASSWORD; cookie payload `{"v": 1}`
-- v2 (Phase 6): per-user via SMS verification; cookie payload
-    `{"v": 2, "uid": int}` carries the authenticated user id
+Cookie payload `{"v": 2, "uid": int}` 携带认证用户 id。老的 v1 cookie(单一共享
+密码时代,payload `{"v": 1}`、无 uid)读时仍接受,但 surface 成 `user_id=None`
+→ require_auth 在用户态路由上转成 401(除非 AUTH_DISABLED 这个 dev 绕过开着)。
 
-Both schemas are accepted on read so an in-flight cookie from the v1 era
-(if AUTH_DISABLED was on or someone still has a single-password session)
-keeps working through the rollout window. v1 cookies surface as
-`user_id=None`, which require_auth turns into a 401 on user-scoped routes
-unless AUTH_DISABLED is set.
+6/26:SMS 验证 + 单一共享密码登录已移除 —— 认证纯 per-user 手机号+密码,注册靠
+邀请码。
 """
 from __future__ import annotations
 
-import hmac
 from typing import Optional
 
 from fastapi import Cookie, HTTPException, status
@@ -54,12 +49,6 @@ def decode_token(token: str) -> dict | None:
     if not isinstance(payload, dict):
         return None
     return payload
-
-
-def check_password(password: str) -> bool:
-    """Single-password legacy check. Retained so AUTH_DISABLED-bypass and
-    the legacy /api/auth/login endpoint still work without DB writes."""
-    return hmac.compare_digest(password.encode(), settings.APP_PASSWORD.encode())
 
 
 def require_auth(rich_session: str | None = Cookie(default=None)) -> int | None:

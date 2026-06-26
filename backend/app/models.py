@@ -11,13 +11,12 @@ from .db import Base
 
 
 class User(Base):
-    """SMS-verified end user.
+    """End user(邀请码注册 + 手机号 + 密码)。
 
-    `phone` is the canonical identity (11-digit Chinese mobile). We don't
-    store passwords — every login goes through SMS verification, and
-    persistence relies on the signed cookie carrying user_id (see
-    auth.issue_token / verify_token). Phone is unique; a new login on the
-    same number just re-signs a new cookie for the existing row.
+    `phone` is the canonical identity (11-digit Chinese mobile), unique.
+    认证用 per-user 密码(password_hash)+ 签名 cookie 携带 user_id
+    (见 auth.issue_token / verify_token)。
+    (SMS 验证已于 6/26 移除;phone_verified_at 是那时代的遗留列,保留历史数据。)
     """
     __tablename__ = "users"
 
@@ -32,11 +31,8 @@ class User(Base):
     last_login_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True,
     )
-    # Phase 6.5: password-based auth replacing dev-mode SMS. Nullable on
-    # rollout — existing SMS-verified rows have NULL until the migration
-    # script (or admin endpoint) sets a temporary hash. Users with a NULL
-    # password_hash can't log in via /auth/login; they need an admin reset
-    # or fall back to the legacy SMS dev path until that's removed.
+    # Per-user 密码 hash。Nullable:早期 SMS-verified 老行可能为 NULL —— 这类
+    # 用户无法走 /auth/login,需管理员重置设个临时 hash(SMS 回退路径已移除)。
     password_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
     # 6/20: per-user 关注板块 — display-layer preference only. The pool
     # itself stays global (see virtual_pool.PRIORITY_SECTORS); this just

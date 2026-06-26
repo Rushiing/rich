@@ -8,7 +8,6 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    APP_PASSWORD: str = "change-me"
     AUTH_SECRET: str = "change-me-to-32-bytes-of-random-hex"
     DATABASE_URL: str = "postgresql+psycopg://rich:rich@localhost:5432/rich"
     FRONTEND_ORIGIN: str = "http://localhost:3000"
@@ -70,18 +69,6 @@ class Settings(BaseSettings):
     # COOKIE_SECURE —— 生产 HTTPS 下应 True(cookie 仅经 HTTPS 传)。本地 HTTP
     # 调试默认 False。Railway 设 COOKIE_SECURE=true。
     COOKIE_SECURE: bool = False
-
-    # --- Phase 6: SMS auth + admin migration -------------------------------
-    # Aliyun SMS credentials. When ALIYUN_SMS_ACCESS_KEY_ID is empty we run
-    # in dev mode: the verification code is fixed at SMS_DEV_CODE and only
-    # phone numbers in SMS_DEV_WHITELIST receive a "200 sent" response.
-    # On Railway, set the four ALIYUN_* values + leave SMS_DEV_* empty.
-    ALIYUN_SMS_ACCESS_KEY_ID: str = ""
-    ALIYUN_SMS_ACCESS_KEY_SECRET: str = ""
-    ALIYUN_SMS_SIGN_NAME: str = ""        # 已审批的签名，例如 "rich"
-    ALIYUN_SMS_TEMPLATE_CODE: str = ""    # 已审批的模板，例如 "SMS_xxxxxxxx"
-    SMS_DEV_CODE: str = "8888"            # dev-mode universal code
-    SMS_DEV_WHITELIST: str = ""           # comma-separated 11-digit phones
 
     # Admin user setup — used by the one-shot startup migration in
     # services/users.py. When set, lifespan ensures a User row with this

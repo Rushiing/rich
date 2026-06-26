@@ -25,12 +25,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ..auth import (
-    COOKIE_NAME, check_password, decode_token, issue_token,
+    COOKIE_NAME, decode_token, issue_token,
 )
 from ..config import settings
 from ..db import get_db
 from ..models import InviteCode, User
-from ..services import sms
 from ..services.passwords import (
     PasswordError, hash_password, validate as validate_password, verify_password,
 )
@@ -133,70 +132,6 @@ def login(body: LoginRequest, response: Response, db: Session = Depends(get_db))
 
     _set_session_cookie(response, user.id)
     return {"ok": True, "user_id": user.id, "phone": user.phone}
-
-
-# --- SMS flow (transitional) ---------------------------------------------
-
-
-class SmsSendRequest(BaseModel):
-    phone: str = Field(min_length=11, max_length=11)
-
-
-class SmsVerifyRequest(BaseModel):
-    phone: str = Field(min_length=11, max_length=11)
-    code: str = Field(min_length=4, max_length=6)
-
-
-@router.post("/sms/send")
-def sms_send(body: SmsSendRequest):
-    try:
-        result = sms.send_code(body.phone)
-    except sms.SmsError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    return result
-
-
-@router.post("/sms/verify")
-def sms_verify(body: SmsVerifyRequest, response: Response, db: Session = Depends(get_db)):
-    if not sms.verify_code(body.phone, body.code):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="验证码错误或已过期")
-
-    user = db.query(User).filter(User.phone == body.phone).first()
-    now = datetime.now(timezone.utc)
-    if user is None:
-        user = User(phone=body.phone, phone_verified_at=now, last_login_at=now)
-        db.add(user)
-    else:
-        user.phone_verified_at = now
-        user.last_login_at = now
-    db.commit()
-    db.refresh(user)
-
-    _set_session_cookie(response, user.id)
-    return {"ok": True, "user_id": user.id, "phone": user.phone}
-
-
-# --- Legacy single-password (kept for AUTH_DISABLED tests) ---------------
-
-
-class LegacyLoginRequest(BaseModel):
-    password: str
-
-
-@router.post("/legacy-login")
-def legacy_login(body: LegacyLoginRequest, response: Response):
-    """Single-shared-password gate. Cookie issued has no user_id; routes
-    that require user scoping treat it as anonymous."""
-    if not check_password(body.password):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid password")
-    token = issue_token()  # v1, no uid
-    response.set_cookie(
-        key=COOKIE_NAME, value=token,
-        httponly=True, samesite="lax",
-        secure=settings.COOKIE_SECURE,
-        max_age=COOKIE_MAX_AGE, path="/",
-    )
-    return {"ok": True}
 
 
 @router.post("/logout")

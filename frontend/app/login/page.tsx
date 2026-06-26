@@ -1,8 +1,7 @@
 "use client";
 
 /**
- * Phone + password login. Replaces the SMS-flow login (which is now
- * fallback-only at /login/sms while existing users migrate over).
+ * Phone + password login(SMS 登录已于 6/26 移除,认证纯 per-user 手机号+密码)。
  *
  * Form: phone + password → POST /api/auth/login → redirect /stocks.
  * Link to /register for new users with an invite code.
@@ -113,9 +112,6 @@ export default function LoginPage() {
         }}>
           <a href="/register" style={{ color: "var(--link)", textDecoration: "none" }}>
             没有账号？凭邀请码注册 →
-          </a>
-          <a href="/login/sms" style={{ color: "var(--text-faint)", textDecoration: "none" }}>
-            短信验证码登录
           </a>
         </div>
       </form>
