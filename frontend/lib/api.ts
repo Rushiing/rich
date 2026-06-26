@@ -180,6 +180,9 @@ export type StockAnalysis = {
   created_at: string;
   snapshot_id: number | null;
   is_fresh: boolean;
+  // 6/26: 不 fresh 的原因(price_move / signal_change / stale / no_anchor),
+  // FreshnessBar 据此显准确文案 —— 行情大动别误标"(>4h)"。
+  stale_reason?: string | null;
   // "single" | "debate" — when "debate" the detail page shows a banner +
   // auto-scrolls to the 看多 vs 看空 section.
   mode?: string | null;

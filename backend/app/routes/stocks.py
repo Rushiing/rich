@@ -586,9 +586,15 @@ class AnalysisOut(BaseModel):
     # for legacy rows pre-this-schema-bump. Detail page shows it in the
     # footnote so users can mentally weight the verdict.
     data_completeness: int | None = None
+    # 6/26: 缓存"不是最新"的原因 tag(should_reanalyze 返回):price_move /
+    # signal_change / stale / no_anchor。前端据此显准确文案,不把 price_move
+    # (行情大动)误标成 "缓存已过期 (>4h)"。
+    stale_reason: str | None = None
 
     @classmethod
-    def from_row(cls, row: Analysis, is_fresh: bool) -> "AnalysisOut":
+    def from_row(
+        cls, row: Analysis, is_fresh: bool, stale_reason: str | None = None,
+    ) -> "AnalysisOut":
         return cls(
             code=row.code,
             key_table=row.key_table,
@@ -600,6 +606,7 @@ class AnalysisOut(BaseModel):
             is_fresh=is_fresh,
             mode=getattr(row, "mode", None) or "single",
             data_completeness=getattr(row, "data_completeness", None),
+            stale_reason=stale_reason,
         )
 
 
@@ -631,9 +638,12 @@ def get_analysis(
         db.query(Snapshot).filter(Snapshot.id == row.snapshot_id).first()
         if row.snapshot_id is not None else None
     )
-    needs_repaint, _ = should_reanalyze(latest_snap, row, anchor_snap,
-                                        respect_cooldown=False)
-    return AnalysisOut.from_row(row, is_fresh=not needs_repaint)
+    needs_repaint, reason = should_reanalyze(latest_snap, row, anchor_snap,
+                                             respect_cooldown=False)
+    return AnalysisOut.from_row(
+        row, is_fresh=not needs_repaint,
+        stale_reason=(reason if needs_repaint else None),
+    )
 
 
 @router.post("/{code}/analysis", response_model=AnalysisOut)

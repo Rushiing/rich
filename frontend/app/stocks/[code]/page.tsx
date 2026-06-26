@@ -614,6 +614,16 @@ function EmptyState({ onGenerate, generating, err }: { onGenerate: () => void; g
   );
 }
 
+// 6/26:缓存"不是最新"的原因不只是时效 —— should_reanalyze 还会因行情大动
+// (price_move)/盘面信号变(signal_change)提前标记。按原因显准确文案,别把
+// 一只今天大跌的票误标成"(>4h)"。
+function staleLabel(reason?: string | null): string {
+  if (reason === "price_move") return "行情已变动,建议重新生成";
+  if (reason === "signal_change") return "盘面信号已变,建议重新生成";
+  if (reason === "stale") return "缓存已过期 (>4h)";
+  return "建议重新生成"; // no_anchor / 其他
+}
+
 function FreshnessBar({
   analysis, generating, onRegenerate, onDebate,
 }: {
@@ -626,7 +636,7 @@ function FreshnessBar({
     <div style={{ marginTop: 16, display: "flex", alignItems: "center", justifyContent: "space-between", color: "var(--text-muted)", fontSize: 12, gap: 8, flexWrap: "wrap" }}>
       <span>
         生成于 {new Date(analysis.created_at).toLocaleString("zh-CN")}
-        {!analysis.is_fresh && <span style={{ color: "#facc15", marginLeft: 8 }}>· 缓存已过期 (&gt;4h)</span>}
+        {!analysis.is_fresh && <span style={{ color: "#facc15", marginLeft: 8 }}>· {staleLabel(analysis.stale_reason)}</span>}
         {/* Model name intentionally hidden from end users. */}
       </span>
       <div style={{ display: "flex", gap: 6 }}>
