@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from ..auth import (
     COOKIE_NAME, check_password, decode_token, issue_token,
 )
+from ..config import settings
 from ..db import get_db
 from ..models import InviteCode, User
 from ..services import sms
