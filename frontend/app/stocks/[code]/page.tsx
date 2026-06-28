@@ -15,6 +15,33 @@ import {
 } from "../../../lib/holdingFunnel";
 import Tooltip from "../../_components/Tooltip";
 
+// 6/28: 详情页生成/重新生成走异步——POST 只启动任务,这里轮询状态直到完成。
+// 慢网关单次解析 ~50s,超过 Railway ~30s HTTP 代理上限,同步请求会 Failed to
+// fetch。每 3s 轮一次,最多 ~3.5 分钟;debate 模式 3 次调用更慢,留足余量。
+async function pollAnalysisDone(code: string): Promise<void> {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  for (let i = 0; i < 70; i++) {
+    await sleep(3000);
+    const st = await api.singleAnalysisStatus(code);
+    if (!st.running) {
+      if (st.error) throw new Error(humanizeAnalysisError(st.error));
+      return;
+    }
+  }
+  throw new Error("生成超时(>3 分钟),请稍后重试");
+}
+
+// 把后端原始异常压成一句对客文案。绝大多数是网关侧问题(超时/限流/模型名),
+// 用户能做的只有重试,所以不暴露堆栈细节。
+function humanizeAnalysisError(raw: string): string {
+  const s = raw.toLowerCase();
+  if (s.includes("timed out") || s.includes("timeout")) return "模型响应超时,请重试";
+  if (s.includes("429") || s.includes("rate")) return "模型限流,请稍后重试";
+  if (s.includes("401") || s.includes("403") || s.includes("auth")) return "模型服务鉴权失败(请检查后台配置)";
+  if (s.includes("unusable") || s.includes("incomplete")) return "模型输出不完整,请重试";
+  return "生成失败,请重试";
+}
+
 // 漏斗三行的点选定义：盈亏档 + 风险偏好。颜色沿用 A股语境（红=进取/涨、绿=保守/跌）。
 const TIER_DEFS: { key: TierKey; label: string; color: string }[] = [
   { key: "aggressive",   label: "激进", color: "#ef4444" },
@@ -100,8 +127,13 @@ export default function StockDetailPage({
       // explicitly clicks "重新生成", they want a fresh LLM call even
       // if the snapshot hasn't changed. Background batch flows leave
       // force off so they dedupe correctly.
-      const a = await api.generateAnalysis(code, mode, { force: true });
-      setAnalysis(a);
+      // 6/28: the POST is now async (a single analysis can take ~50s on a
+      // slow gateway, past Railway's ~30s HTTP proxy cutoff). Start the
+      // job, poll status until done, then re-fetch the freshly cached row.
+      await api.generateAnalysis(code, mode, { force: true });
+      await pollAnalysisDone(code);
+      const a = await api.getAnalysis(code);
+      if (a) setAnalysis(a);
       // Deep mode: scroll users right to the "看多 vs 看空" section so
       // they see the cross-validation payoff immediately. Defer one frame
       // so the new markdown renders before we query the DOM.
@@ -591,7 +623,7 @@ function EmptyState({ onGenerate, generating, err }: { onGenerate: () => void; g
     <div style={{ marginTop: 32, padding: 24, border: "1px solid var(--border)", borderRadius: 8, textAlign: "center" }}>
       <p style={{ color: "var(--text-soft)", fontSize: 14, margin: 0 }}>尚未生成深度解析</p>
       <p style={{ color: "var(--text-faint)", fontSize: 12, marginTop: 6 }}>
-        生成会调一次 Claude API（基于该股票最新 snapshot），约 5–15 秒
+        生成会调一次大模型（基于该股票最新 snapshot），约 30–60 秒，请稍候
       </p>
       <button
         onClick={onGenerate}

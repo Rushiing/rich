@@ -112,6 +112,9 @@ export type SnapshotTriggerResult = { started: boolean; already_running?: boolea
 export type SnapshotStatus = { running: boolean };
 export type AnalysisBatchResult = { started: boolean; already_running?: boolean };
 export type AnalysisBatchStatus = { running: boolean };
+// 6/28: per-code async analysis job (detail-page generate/regenerate).
+export type AnalysisJobResult = { started: boolean; already_running?: boolean };
+export type AnalysisJobStatus = { running: boolean; error?: string | null };
 
 export type ActionableTier = {
   action: string;
@@ -478,15 +481,20 @@ export const api = {
   // 5/29: force=true bypasses the snapshot-id cache. Detail page sets
   // force=true for the user-pressed "重新生成" button (user explicitly
   // wants a fresh take); batch flows don't.
+  // 6/28: async — this POST now only *starts* the job (returns immediately
+  // so we don't trip Railway's ~30s HTTP proxy timeout on slow gateways).
+  // Caller polls singleAnalysisStatus, then re-fetches getAnalysis.
   generateAnalysis: (
     code: string,
     mode: "single" | "debate" = "single",
     opts: { force?: boolean } = {},
   ) =>
-    request<StockAnalysis>(
+    request<AnalysisJobResult>(
       `/api/stocks/${code}/analysis?mode=${mode}${opts.force ? "&force=true" : ""}`,
       { method: "POST" },
     ),
+  singleAnalysisStatus: (code: string) =>
+    request<AnalysisJobStatus>(`/api/stocks/${code}/analysis/status`),
   analysisHistory: (code: string, limit = 10) =>
     request<AnalysisHistoryItem[]>(
       `/api/stocks/${code}/analysis-history?limit=${limit}`,

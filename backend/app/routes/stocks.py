@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 ANALYSIS_FRESH_HOURS = 4
 
 from ..auth import require_auth
-from ..db import get_db
+from ..db import SessionLocal, get_db
 from ..models import Analysis, AnalysisOutcome, Snapshot, Watchlist
 from ..services.analysis import (
     generate as analysis_generate,
@@ -40,6 +40,17 @@ _snapshot_running = False
 # kicking off 23 LLM calls twice if they double-click.
 _analysis_lock = threading.Lock()
 _analysis_running = False
+
+# Per-code guard + result registry for the detail-page "生成深度解析 /
+# 重新生成" button. 6/28: that endpoint went async — a single analysis on a
+# slow gateway (zenmux→minimax-m3 ~50s) blows past Railway's ~30s HTTP proxy
+# timeout, so a synchronous request returned "Failed to fetch" even though
+# the LLM call eventually succeeded in the background. Now the POST fires a
+# daemon thread and returns immediately; the frontend polls /analysis/status
+# and re-fetches the cached row once running flips false. code -> {running,
+# error}. Bounded by the watchlist size, so it never grows unboundedly.
+_single_analysis_lock = threading.Lock()
+_single_analysis_jobs: dict[str, dict[str, Any]] = {}
 
 router = APIRouter(prefix="/api/stocks", tags=["stocks"], dependencies=[Depends(require_auth)])
 
@@ -646,7 +657,42 @@ def get_analysis(
     )
 
 
-@router.post("/{code}/analysis", response_model=AnalysisOut)
+class AnalysisJobResult(BaseModel):
+    started: bool
+    already_running: bool = False
+
+
+class AnalysisJobStatus(BaseModel):
+    running: bool
+    # Short error string when the last run failed; None on success / while
+    # running. The frontend surfaces it instead of a silent stall.
+    error: str | None = None
+
+
+def _run_single_analysis_in_background(code: str, mode: str, force: bool):
+    """Runs one analysis in a daemon thread with its own DB session (the
+    request's session is gone by the time this executes). Records the
+    outcome in _single_analysis_jobs so the /status poll can report it."""
+    db = SessionLocal()
+    err: str | None = None
+    try:
+        analysis_generate(db, code, mode=mode, force=force)
+    except ValueError as e:
+        # code vanished from watchlist mid-flight — treat as a soft error.
+        err = str(e)
+    except Exception as e:  # noqa: BLE001 — surface any LLM/gateway failure
+        logger.exception("single analysis job failed for %s", code)
+        err = str(e)
+    finally:
+        db.close()
+        with _single_analysis_lock:
+            job = _single_analysis_jobs.get(code)
+            if job is not None:
+                job["running"] = False
+                job["error"] = err
+
+
+@router.post("/{code}/analysis", response_model=AnalysisJobResult)
 def generate_analysis(
     code: str,
     mode: str = "single",
@@ -654,11 +700,20 @@ def generate_analysis(
     db: Session = Depends(get_db),
     user_id: int | None = Depends(require_auth),
 ):
-    """Force regenerate. Scoped to the user's watchlist (404 if not theirs)
-    so users can't burn LLM tokens for codes they don't follow.
+    """Kick off a force-regenerate in the background. Scoped to the user's
+    watchlist (404 if not theirs) so users can't burn LLM tokens for codes
+    they don't follow.
+
+    6/28: async fire-and-forget. A single analysis on a slow gateway can
+    take ~50s; Railway's HTTP proxy kills requests past ~30s, so the old
+    synchronous handler returned "Failed to fetch" to the browser even
+    though the LLM call kept running and eventually persisted its row. Now
+    we launch a daemon thread and return immediately; the frontend polls
+    `GET /{code}/analysis/status` and re-fetches the cached row (via
+    `GET /{code}/analysis`) once running flips false.
 
     `?mode=debate` runs the bull/bear/judge debate pipeline (3 LLM calls,
-    ~30s, sharper red-flag detection). Default is `single` (~10s, one call).
+    sharper red-flag detection). Default is `single` (one call).
 
     `?force=true` (5/29) bypasses the snapshot-id cache: even if the
     cached analysis is based on the same snapshot, re-call the LLM.
@@ -671,13 +726,34 @@ def generate_analysis(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not in watchlist")
     if mode not in ("single", "debate"):
         raise HTTPException(status_code=400, detail="mode must be single or debate")
-    try:
-        row = analysis_generate(db, code, mode=mode, force=force)
-    except RuntimeError as e:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
-    return AnalysisOut.from_row(row, is_fresh=True)
+
+    with _single_analysis_lock:
+        job = _single_analysis_jobs.get(code)
+        if job is not None and job["running"]:
+            return AnalysisJobResult(started=False, already_running=True)
+        # Mark running synchronously in the request thread so a /status poll
+        # racing right behind the POST never sees a stale running=false.
+        _single_analysis_jobs[code] = {"running": True, "error": None}
+
+    threading.Thread(
+        target=_run_single_analysis_in_background,
+        kwargs={"code": code, "mode": mode, "force": force},
+        daemon=True,
+        name=f"analysis-{code}",
+    ).start()
+    return AnalysisJobResult(started=True)
+
+
+@router.get("/{code}/analysis/status", response_model=AnalysisJobStatus)
+def single_analysis_status(code: str):
+    """Poll target for the detail-page generate/regenerate flow. No auth
+    (mirrors /analysis/batch/status) — leaks only a boolean + error string
+    for a code the caller already named."""
+    with _single_analysis_lock:
+        job = _single_analysis_jobs.get(code)
+        if job is None:
+            return AnalysisJobStatus(running=False, error=None)
+        return AnalysisJobStatus(running=job["running"], error=job["error"])
 
 
 class AnalysisHistoryItem(BaseModel):

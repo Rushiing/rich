@@ -2,16 +2,18 @@
 
 All under `/api/_diag/*` on the backend. Three traits in common:
 
-- **Public** — no auth required, intentional. They surface schema / counts /
-  config, never user data, and `AUTH_DISABLED=true` is on in prod anyway.
-  Each endpoint's docstring re-states this.
+- **Token-guarded** (since 6/24 security pass) — every `/api/_diag/*` route
+  is behind `DIAG_TOKEN` and is **fail-closed**: requests must carry the
+  `X-Diag-Token` header or they're rejected. Prod runs `AUTH_DISABLED=false`
+  + `COOKIE_SECURE=true`. (They surface schema / counts / config, never user
+  data, but are no longer public.)
 - **Idempotent** unless docstring says otherwise. Re-running is safe.
 - **Long-running ones are async** — they fire a daemon thread and return
   `{started: true}` immediately, with a sibling `/status` endpoint for
   progress. Pattern was forced by Railway's HTTP proxy killing requests
   past ~30 s.
 
-Prod base URL: `https://pure-emotion-production-6722.up.railway.app`
+Prod base URL: `https://rich-production-afb6.up.railway.app`
 
 ---
 
