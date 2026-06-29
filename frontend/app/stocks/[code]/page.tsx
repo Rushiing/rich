@@ -213,7 +213,6 @@ export default function StockDetailPage({
                 generating={generating}
                 genMode={regenMode}
                 onRegenerate={() => regenerate("single")}
-                onDebate={() => regenerate("debate")}
                 onDeep={() => regenerate("deep")}
               />
               {err && <div style={{ color: "#ef4444", marginTop: 8, fontSize: 13 }}>{err}</div>}
@@ -665,13 +664,12 @@ function staleLabel(reason?: string | null): string {
 }
 
 function FreshnessBar({
-  analysis, generating, genMode, onRegenerate, onDebate, onDeep,
+  analysis, generating, genMode, onRegenerate, onDeep,
 }: {
   analysis: StockAnalysis;
   generating: boolean;
   genMode: "single" | "debate" | "deep" | null;
   onRegenerate: () => void;
-  onDebate: () => void;
   onDeep: () => void;
 }) {
   return (
@@ -682,23 +680,6 @@ function FreshnessBar({
         {/* Model name intentionally hidden from end users. */}
       </span>
       <div style={{ display: "flex", gap: 6 }}>
-        <Tooltip content="更深入的解析模式：从看多和看空两个角度交叉验证，风险点检测更准。约 30 秒，比常规解析慢一些。">
-          <button
-            onClick={onDebate}
-            disabled={generating}
-            style={{
-              padding: "4px 10px",
-              background: "transparent",
-              color: "var(--text-soft)",
-              border: "1px solid var(--border-mid)",
-              borderRadius: 4,
-              fontSize: 12,
-              cursor: generating ? "not-allowed" : "pointer",
-            }}
-          >
-            🔬 深度解析
-          </button>
-        </Tooltip>
         <Tooltip content="更细的一档:对这只票多花些时间,把逻辑、风险点挖得更透,结论更扎实。约 90 秒,适合你特别看重、想吃透的票。">
           <button
             onClick={onDeep}
