@@ -587,6 +587,49 @@ def diag_outcomes_detail():
         db.close()
 
 
+@app.get("/api/_diag/mode-usage")
+def diag_mode_usage():
+    """各 mode 的 anchor 数 —— 「深度解析(debate)/深度研究(deep)/重新生成
+    + cron(single)」三档的使用量读数。
+
+    为什么这是干净的点击代理:cron 日更只跑 single,所以 **debate / deep 的
+    anchor 只可能来自用户在详情页主动点按钮**;single 则是 cron + 手动重新
+    生成的混合(不纯)。`mode` 字段不受 5/28 的 prompt_version tagging bug
+    影响(那 bug 只错标 prompt_version),所以无需排除污染期,直接 count。
+
+    用途:判断「深度解析」这档到底有没有人用(决定要不要砍/改名)。"""
+    from sqlalchemy import func as sa_func
+    from .db import SessionLocal
+    from .models import AnalysisOutcome
+    db = SessionLocal()
+    try:
+        rows = db.query(
+            AnalysisOutcome.mode,
+            sa_func.count(AnalysisOutcome.id),
+            sa_func.count(sa_func.distinct(AnalysisOutcome.code)),
+            sa_func.min(AnalysisOutcome.generated_at),
+            sa_func.max(AnalysisOutcome.generated_at),
+        ).group_by(AnalysisOutcome.mode).all()
+        out = []
+        for mode, n, n_codes, first, last in rows:
+            out.append({
+                "mode": mode or "(null→single)",
+                "anchors": n,
+                "distinct_codes": n_codes,
+                "first": first.isoformat() if first else None,
+                "last": last.isoformat() if last else None,
+            })
+        out.sort(key=lambda x: -x["anchors"])
+        return {
+            "by_mode": out,
+            "note": ("debate/deep = 用户主动点击(cron 只跑 single);"
+                     "single = cron + 手动重新生成混合。看 debate 的 anchors "
+                     "判断「深度解析」这档的真实使用量。"),
+        }
+    finally:
+        db.close()
+
+
 @app.post("/api/_diag/migrate-prompt-version")
 def diag_migrate_prompt_version():
     """One-off retroactive fix for the pre-c231b60 hardcode bug.

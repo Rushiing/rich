@@ -631,7 +631,7 @@ function EmptyState({ onGenerate, generating, err }: { onGenerate: () => void; g
     <div style={{ marginTop: 32, padding: 24, border: "1px solid var(--border)", borderRadius: 8, textAlign: "center" }}>
       <p style={{ color: "var(--text-soft)", fontSize: 14, margin: 0 }}>尚未生成深度解析</p>
       <p style={{ color: "var(--text-faint)", fontSize: 12, marginTop: 6 }}>
-        生成会调一次大模型（基于该股票最新 snapshot），约 30–60 秒，请稍候
+        生成会基于该股票最新行情算一遍，约 30–60 秒，请稍候
       </p>
       <button
         onClick={onGenerate}
@@ -699,7 +699,7 @@ function FreshnessBar({
             🔬 深度解析
           </button>
         </Tooltip>
-        <Tooltip content="最强推理模式:换用 thinking 大模型(qwen3.7-max),先逐步推理再下结论,红旗检测和分析更细。约 90 秒,最慢但最深,适合重点票深挖。">
+        <Tooltip content="更细的一档:对这只票多花些时间,把逻辑、风险点挖得更透,结论更扎实。约 90 秒,适合你特别看重、想吃透的票。">
           <button
             onClick={onDeep}
             disabled={generating}
@@ -713,7 +713,7 @@ function FreshnessBar({
               cursor: generating ? "not-allowed" : "pointer",
             }}
           >
-            {generating && genMode === "deep" ? "深度推理中…约90秒" : "🧠 深度研究"}
+            {generating && genMode === "deep" ? "深度研究中…约 90 秒" : "🧠 深度研究"}
           </button>
         </Tooltip>
         <button
