@@ -93,6 +93,9 @@ export default function StockDetailPage({
   }
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
+  // 当前正在跑的解析模式 —— 让 FreshnessBar 在 deep(thinking, ~90s)时
+  // 显示"深度推理中…"提示, 不让用户以为卡死。
+  const [regenMode, setRegenMode] = useState<"single" | "debate" | "deep" | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   async function loadCached() {
@@ -119,8 +122,9 @@ export default function StockDetailPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code]);
 
-  async function regenerate(mode: "single" | "debate" = "single") {
+  async function regenerate(mode: "single" | "debate" | "deep" = "single") {
     setGenerating(true);
+    setRegenMode(mode);
     setErr(null);
     try {
       // 5/29: force=true bypasses snapshot-id cache. When a user
@@ -137,15 +141,17 @@ export default function StockDetailPage({
       // Deep mode: scroll users right to the "看多 vs 看空" section so
       // they see the cross-validation payoff immediately. Defer one frame
       // so the new markdown renders before we query the DOM.
-      if (mode === "debate") {
+      if (mode === "debate" || mode === "deep") {
         // S2: deep analysis is collapsed by default — expand before the
-        // scroll so the target section exists in the DOM.
+        // scroll so the target section exists in the DOM. deep(thinking)
+        // 和 debate 一样产出更长分析, 同样自动展开 + 滚动到分析处。
         jumpToDebateSection();
       }
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setGenerating(false);
+      setRegenMode(null);
     }
   }
 
@@ -205,8 +211,10 @@ export default function StockDetailPage({
               <FreshnessBar
                 analysis={analysis}
                 generating={generating}
+                genMode={regenMode}
                 onRegenerate={() => regenerate("single")}
                 onDebate={() => regenerate("debate")}
+                onDeep={() => regenerate("deep")}
               />
               {err && <div style={{ color: "#ef4444", marginTop: 8, fontSize: 13 }}>{err}</div>}
               {analysis.mode === "debate" && (
@@ -657,12 +665,14 @@ function staleLabel(reason?: string | null): string {
 }
 
 function FreshnessBar({
-  analysis, generating, onRegenerate, onDebate,
+  analysis, generating, genMode, onRegenerate, onDebate, onDeep,
 }: {
   analysis: StockAnalysis;
   generating: boolean;
+  genMode: "single" | "debate" | "deep" | null;
   onRegenerate: () => void;
   onDebate: () => void;
+  onDeep: () => void;
 }) {
   return (
     <div style={{ marginTop: 16, display: "flex", alignItems: "center", justifyContent: "space-between", color: "var(--text-muted)", fontSize: 12, gap: 8, flexWrap: "wrap" }}>
@@ -687,6 +697,23 @@ function FreshnessBar({
             }}
           >
             🔬 深度解析
+          </button>
+        </Tooltip>
+        <Tooltip content="最强推理模式:换用 thinking 大模型(qwen3.7-max),先逐步推理再下结论,红旗检测和分析更细。约 90 秒,最慢但最深,适合重点票深挖。">
+          <button
+            onClick={onDeep}
+            disabled={generating}
+            style={{
+              padding: "4px 10px",
+              background: "transparent",
+              color: "var(--text-soft)",
+              border: "1px solid var(--border-mid)",
+              borderRadius: 4,
+              fontSize: 12,
+              cursor: generating ? "not-allowed" : "pointer",
+            }}
+          >
+            {generating && genMode === "deep" ? "深度推理中…约90秒" : "🧠 深度研究"}
           </button>
         </Tooltip>
         <button

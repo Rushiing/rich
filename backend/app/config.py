@@ -37,6 +37,22 @@ class Settings(BaseSettings):
     ANALYSIS_MODEL_B: str = ""
     ANALYSIS_AB_PCT: int = 0  # 0-100; % of (code, day) buckets sent to model B
 
+    # --- 单股深挖档 (deep mode, 6/29) --------------------------------------
+    # 详情页用户主动点「🔬 深度研究」时走的一条独立路径:OpenAI 兼容协议 +
+    # thinking 模型(qwen3.7-max / deepseek-v4-pro)。~90s,reasoning 真生效。
+    # 为什么不走 ANTHROPIC_BASE_URL:该 provider 的 Anthropic 兼容层对 thinking
+    # 模型坏(force tool_choice 400 或静默吐损坏 JSON);只有 OpenAI 兼容协议
+    # (/compatible-mode/v1) + stream + tool_choice="auto" 能跑通结构化输出。
+    # batch/single/debate 路径不受影响(仍走 ANTHROPIC_*)。
+    # **默认关闭**:ANALYSIS_DEEP_MODEL 为空 = 深挖档禁用(mode=deep 返回 503)。
+    OPENAI_COMPAT_BASE_URL: str = ""   # 形如 https://.../compatible-mode/v1
+    OPENAI_COMPAT_API_KEY: str = ""    # 为空时 adapter fallback 到 ANTHROPIC_API_KEY
+    ANALYSIS_DEEP_MODEL: str = ""      # 推荐 qwen3.7-max;空 = 禁用深挖档
+    # qwen/deepseek 在 stream 下默认就 thinking(实测 ~90s, reasoning 生效),
+    # 显式传 enable_thinking=true 反而逼它多推理 → 慢到 ~118s。故默认 False。
+    # 只有 kimi 系列需显式 true 才开 thinking —— 换 kimi 当 deep 模型时再开。
+    ANALYSIS_DEEP_ENABLE_THINKING: bool = False
+
     # --- Replay eval gateway (火山 ARK coding plan) -------------------------
     # Separate from ANTHROPIC_* so the eval script can reach candidate models
     # without touching the production analysis path. Eval-only — runtime

@@ -1422,7 +1422,9 @@ def generate(
             return existing_cached
 
     strat = get_strategy(strategy_name)
-    if client is None:
+    # deep 档走 OpenAI 兼容协议(httpx, 见 analysis_thinking), 不需要 Anthropic
+    # client, 也不强求 ANTHROPIC_API_KEY(deep 用 OPENAI_COMPAT_API_KEY)。
+    if client is None and mode != "deep":
         if not settings.ANTHROPIC_API_KEY:
             raise RuntimeError(
                 "ANTHROPIC_API_KEY not set. Add it in Railway → backend → Variables."
@@ -1456,12 +1458,19 @@ def generate(
 
     model = settings.ANALYSIS_MODEL or DEFAULT_MODEL
 
+    if mode == "deep":
+        # 深挖档: 覆盖为专用 thinking 模型(OpenAI 兼容路径)。不参与 A/B
+        # —— 这是用户在详情页主动触发的单股深挖, 不是 batch 分桶。
+        model = settings.ANALYSIS_DEEP_MODEL
+        if not model:
+            raise RuntimeError("深挖档未配置 ANALYSIS_DEEP_MODEL")
+
     # Model A/B (6/10): deterministic (code, BJT day) bucketing so a stock
     # stays on one model all trading day — intraday re-analyses comparing
     # against their own anchor must not flap between models. sha1, not
     # builtin hash(): the latter is salted per-process and would reshuffle
     # buckets on every redeploy.
-    if settings.ANALYSIS_MODEL_B and settings.ANALYSIS_AB_PCT > 0:
+    if mode != "deep" and settings.ANALYSIS_MODEL_B and settings.ANALYSIS_AB_PCT > 0:
         import hashlib
         bjt_day = datetime.now(timezone(timedelta(hours=8))).date().isoformat()
         bucket = int(hashlib.sha1(f"{code}:{bjt_day}".encode()).hexdigest(), 16) % 100
@@ -1496,6 +1505,17 @@ def generate(
     else:
         system_blocks = _system_prompt(strat)
 
+    # 单股深挖档(deep): 走 OpenAI 兼容协议 + thinking 模型, 直接拿同形状
+    # payload, 跳过下面的 Anthropic tool_choice 调用。输出 schema 一致, 后续
+    # strip-thinking / validate / 持久化 / record_anchor 完全复用。
+    deep_payload: dict[str, Any] | None = None
+    if mode == "deep":
+        from .analysis_thinking import call_thinking
+        logger.info("analysis[%s] deep mode via OpenAI-compat thinking model %s", code, model)
+        deep_payload = call_thinking(system_blocks[0]["text"], base_user, model)
+
+    # 以下 Anthropic 调用仅 single / debate 用(deep 已短路)。base_kwargs /
+    # _call_once 在 deep 模式被定义但不调用, 无害。
     # tool_choice negotiation: most providers accept the strict
     # `{"type":"tool", "name":...}` shape, but some only support `any`/`auto`.
     # We try strict first, fall back to `any` on a 400 — for our single-tool
@@ -1558,17 +1578,19 @@ def generate(
     # App-level retry: kimi/dashscope 偶发 stream 截断或 partial JSON,
     # 一次重试大概率成功。SDK 层 max_retries=0 不变 (避免 SDK retry
     # 内联 backoff 让单 call 时长爆增)。
-    msg, tool_use, err_tag = _call_once()
-    if err_tag is not None:
-        logger.info("analysis[%s] %s on first try, retrying once...", code, err_tag)
+    if mode == "deep":
+        payload: dict[str, Any] = deep_payload  # type: ignore[assignment]
+    else:
         msg, tool_use, err_tag = _call_once()
         if err_tag is not None:
-            raise RuntimeError(
-                f"LLM output unusable after 1 retry (err={err_tag}). "
-                f"stop_reason={getattr(msg, 'stop_reason', None)}"
-            )
-
-    payload: dict[str, Any] = tool_use.input  # type: ignore[assignment]
+            logger.info("analysis[%s] %s on first try, retrying once...", code, err_tag)
+            msg, tool_use, err_tag = _call_once()
+            if err_tag is not None:
+                raise RuntimeError(
+                    f"LLM output unusable after 1 retry (err={err_tag}). "
+                    f"stop_reason={getattr(msg, 'stop_reason', None)}"
+                )
+        payload = tool_use.input  # type: ignore[assignment]
 
     # Strip analysis_thinking — it's the CoT scratchpad, useful for the
     # model but not for display / persistence. Log a snippet so we can

@@ -715,6 +715,9 @@ def generate_analysis(
     `?mode=debate` runs the bull/bear/judge debate pipeline (3 LLM calls,
     sharper red-flag detection). Default is `single` (one call).
 
+    `?mode=deep` (6/29) 单股深挖:走 OpenAI 兼容协议 + thinking 模型
+    (qwen3.7-max,~90s),用户主动触发。需配 ANALYSIS_DEEP_MODEL,否则 503。
+
     `?force=true` (5/29) bypasses the snapshot-id cache: even if the
     cached analysis is based on the same snapshot, re-call the LLM.
     Frontend detail-page "重新生成" button sets this to true (user
@@ -724,8 +727,10 @@ def generate_analysis(
     owner = resolve_owner(user_id, db)
     if not _user_watchlist(db, owner).filter(Watchlist.code == code).first():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not in watchlist")
-    if mode not in ("single", "debate"):
-        raise HTTPException(status_code=400, detail="mode must be single or debate")
+    # deep 走和 single/debate 一样的异步后台路径 —— 尤其重要:deep ~90s 远超
+    # Railway 30s HTTP 代理上限, 同步必被杀, 后台线程 + 轮询正好兜住。
+    if mode not in ("single", "debate", "deep"):
+        raise HTTPException(status_code=400, detail="mode must be single, debate or deep")
 
     with _single_analysis_lock:
         job = _single_analysis_jobs.get(code)

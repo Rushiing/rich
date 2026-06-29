@@ -486,7 +486,7 @@ export const api = {
   // Caller polls singleAnalysisStatus, then re-fetches getAnalysis.
   generateAnalysis: (
     code: string,
-    mode: "single" | "debate" = "single",
+    mode: "single" | "debate" | "deep" = "single",
     opts: { force?: boolean } = {},
   ) =>
     request<AnalysisJobResult>(
