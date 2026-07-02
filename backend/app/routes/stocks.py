@@ -335,9 +335,9 @@ class HitRateBucket(BaseModel):
 
 
 class HitRateSummary(BaseModel):
-    """Public-facing snippet for the UI. Filters to v2.5-single (debate
-    sample is too small to publish) and buy/sell only (others have no
-    directional claim so no hit_rate)."""
+    """Public-facing snippet for the UI. Filters to `-single` prompt
+    versions (v2.5/v2.6/... 按 n 加权合并;debate/deep sample 太小不公示)
+    and buy/sell only (others have no directional claim so no hit_rate)."""
     by_actionable: dict[str, HitRateBucket]
     # 7/2: 持仓立场轴的战绩 — scenario_hit_stats 的 4 个情境桶(key =
     # not_holding / holding_big_gain / holding_small / holding_big_loss)。
@@ -355,7 +355,7 @@ _HIT_RATE_CACHE_TTL = 30 * 60  # 30 min
 @router.get("/hit-rate-summary", response_model=HitRateSummary)
 def get_hit_rate_summary():
     """Hit-rate summary surfaced in list view tooltips + detail page.
-    Filtered to v2.5-single buy/sell. 30-min in-process cache."""
+    Filtered to `-single` versions, buy/sell. 30-min in-process cache."""
     import time
     from ..services import outcomes as outcomes_svc
     now = time.time()

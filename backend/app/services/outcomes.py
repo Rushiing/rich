@@ -459,7 +459,11 @@ def scenario_hit_stats(db: Session | None = None) -> dict[str, Any]:
     的 4 个情境各计一票(同一前向收益、不同方向声明),中性不评分。超额按
     (日,板块)隔离基线,去重保留每日每股最后锚点。
 
-    ⚠️ 初期 n 很小,/api/_diag/scenario-stats 据此标"样本不足、暂无定论"。"""
+    ⚠️ 初期 n 很小,/api/_diag/scenario-stats 据此标"样本不足、暂无定论"。
+
+    7/2: 只统计 `-single` 版本锚点 — hit-rate-summary 的 by_scenario 与
+    by_actionable 必须同口径(后者一直是 -single only),否则 deep/debate
+    档攒起来后,详情页"持仓立场战绩"会混入不同管线的信用。"""
     own = db is None
     db = db or SessionLocal()
     try:
@@ -468,6 +472,7 @@ def scenario_hit_stats(db: Session | None = None) -> dict[str, Any]:
             .filter(AnalysisOutcome.return_d5.isnot(None))
             .filter(AnalysisOutcome.returns_recomputed_at.isnot(None))
             .filter(AnalysisOutcome.scenario_directions.isnot(None))
+            .filter(AnalysisOutcome.prompt_version.like("%-single"))
             .all()
         )
     finally:

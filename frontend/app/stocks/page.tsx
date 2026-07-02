@@ -317,6 +317,15 @@ export default function StocksPage() {
   // Filter only narrows the visible set; sort + strong-signal highlighting
   // were already applied server-side, so just keep that order.
   const heldOf = (code: string) => funnelMap?.[code]?.held;
+  // HeldToggle 点选 → 乐观更新 funnelMap,chip/分组/筛选立即重派生
+  // (否则要刷新页面才生效 — funnelMap 只在挂载时拉一次)。服务端上报
+  // 由 HeldToggle 内部的 reportFunnelChoice 负责,这里只管本地视图。
+  function onHeldChange(code: string, held: boolean) {
+    setFunnelMap((m) => ({
+      ...(m ?? {}),
+      [code]: { held, pnl: m?.[code]?.pnl ?? null, tier: m?.[code]?.tier ?? "aggressive" },
+    }));
+  }
   const visibleRows = filter === null
     ? rows
     : rows.filter((r) => {
@@ -576,7 +585,7 @@ export default function StocksPage() {
             </tr>
           )}
           {/* Filter mode: flat list of whichever bucket is selected. */}
-          {!loading && filter !== null && visibleRowsSorted.map((r) => stockRow(r, toggleStar, funnelMap?.[r.code]?.held))}
+          {!loading && filter !== null && visibleRowsSorted.map((r) => stockRow(r, toggleStar, funnelMap?.[r.code]?.held, onHeldChange))}
           {/* Default mode: 市场为外层(科创板 teal 摘出),买卖分组退到每个
               市场区内部的中性折叠次序。强调权给市场维度,符合「一次只强调一个
               维度」规范。行模板(stockRow)不变。 */}
@@ -611,7 +620,7 @@ export default function StocksPage() {
                           <span style={{ color: "var(--text-muted)" }}>({groupRows.length})</span>
                         </td>
                       </tr>
-                      {!isCollapsed && groupRows.map((r) => stockRow(r, toggleStar, funnelMap?.[r.code]?.held))}
+                      {!isCollapsed && groupRows.map((r) => stockRow(r, toggleStar, funnelMap?.[r.code]?.held, onHeldChange))}
                     </Fragment>
                   );
                 });
@@ -1051,7 +1060,11 @@ function hexA(hex: string, a: number): string {
 // （详情页漏斗共用）。列表只捕获"持有吗"这一个最便宜、最高含金量的 bit，
 // 盈亏/风险留到详情页。SSR 安全：初值在挂载后才从 localStorage 读，避免
 // 服务端渲染与客户端不一致（hydration mismatch）。
-function HeldToggle({ code, serverHeld }: { code: string; serverHeld?: boolean }) {
+function HeldToggle({ code, serverHeld, onChange }: {
+  code: string;
+  serverHeld?: boolean;
+  onChange?: (code: string, held: boolean) => void;
+}) {
   // null = 尚未读出（SSR / 首帧），不上色。
   // ③ 跨设备:服务端有该票最新选择(serverHeld 非 undefined)→ 以**账号**为准、
   // 同步回 localStorage;否则探 localStorage。
@@ -1093,6 +1106,7 @@ function HeldToggle({ code, serverHeld }: { code: string; serverHeld?: boolean }
         setExplicit(true);
         setFunnelState(code, { held: next });
         reportFunnelChoice(code); // ③ 服务端埋点(去抖、静默)
+        onChange?.(code, next);   // 乐观同步 funnelMap → chip/分组即时切轴
       }}
       title={active
         ? (explicit ? "已标记持有，点一下改为未持仓" : "默认按持有展示，点一下标记为未持仓")
@@ -1119,7 +1133,12 @@ function HeldToggle({ code, serverHeld }: { code: string; serverHeld?: boolean }
 // share one source of truth. `onToggleStar` is required because the star
 // toggle needs access to component state, but rest of the row is pure
 // data → JSX.
-function stockRow(r: StockRow, onToggleStar: (code: string) => void, serverHeld?: boolean) {
+function stockRow(
+  r: StockRow,
+  onToggleStar: (code: string) => void,
+  serverHeld?: boolean,
+  onHeldChange?: (code: string, held: boolean) => void,
+) {
   return (
     <tr key={r.code} style={r.has_strong_signal ? rowStrong : undefined}>
       <td style={{ ...td, width: 28, padding: "10px 0 10px 6px" }}>
@@ -1148,7 +1167,7 @@ function stockRow(r: StockRow, onToggleStar: (code: string) => void, serverHeld?
       <td style={td}>
         <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
           {r.name}
-          <HeldToggle code={r.code} serverHeld={serverHeld} />
+          <HeldToggle code={r.code} serverHeld={serverHeld} onChange={onHeldChange} />
         </span>
       </td>
       <td style={{

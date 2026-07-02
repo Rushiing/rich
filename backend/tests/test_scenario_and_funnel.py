@@ -34,7 +34,10 @@ def _fresh_session():
 _NOW = datetime(2026, 6, 1, 2, 0, tzinfo=timezone.utc)
 
 
-def _outcome(_id, code, gen_day, ret, dirs, clean=True):
+def _outcome(_id, code, gen_day, ret, dirs, clean=True,
+             prompt_version="v2.5-single"):
+    # 7/2: scenario_hit_stats 只统计 -single 版本(与 by_actionable 同口径),
+    # fixture 默认造 single 锚点;deep/debate 用 prompt_version 参数覆盖。
     return AnalysisOutcome(
         id=_id, code=code,
         generated_at=datetime(2026, 6, gen_day, 2, 0, tzinfo=timezone.utc),
@@ -42,6 +45,7 @@ def _outcome(_id, code, gen_day, ret, dirs, clean=True):
         return_d5=ret,
         returns_recomputed_at=_NOW if clean else None,
         scenario_directions=dirs,
+        prompt_version=prompt_version,
     )
 
 
@@ -66,6 +70,9 @@ def test_scenario_hit_directions():
     db.add(_outcome(3, "600000", 3, 2.0, None))
     # row4: 有方向但 unclean(returns_recomputed_at=None)→ 排除
     db.add(_outcome(4, "600000", 4, 2.0, {"not_holding": "看多"}, clean=False))
+    # row5: deep 档锚点 → 排除(by_scenario 只吃 -single,与 by_actionable 同口径)
+    db.add(_outcome(5, "600000", 5, 8.0, {"not_holding": "看多"},
+                    prompt_version="v2.6-deep"))
     db.commit()
 
     res = scenario_hit_stats(db=db)

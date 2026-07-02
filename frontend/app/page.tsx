@@ -11,8 +11,9 @@
 
 import { useEffect, useState } from "react";
 import {
-  api, IndexQuote, SectorPicksResponse, StockRow,
+  api, FunnelStateOut, IndexQuote, SectorPicksResponse, StockRow,
 } from "../lib/api";
+import { holderStanceFor } from "../lib/holdingFunnel";
 
 const ACTIONABLE_STYLE: Record<string, { color: string; label: string }> = {
   "建议买入":   { color: "#ef4444", label: "买" },
@@ -21,13 +22,30 @@ const ACTIONABLE_STYLE: Record<string, { color: string; label: string }> = {
   "不建议入手": { color: "#6b7280", label: "不入" },
 };
 
+// 7/2 持仓立场轴:与盯盘列表同口径 — 默认按已持仓看(显式标未持的行走
+// actionable)。verdict chip 和"今日要看"判定都从这一个派生走。
+function verdictFor(
+  r: StockRow, serverHeld?: boolean,
+): { color: string; label: string; direction: string | null } | null {
+  const a = r.analysis;
+  if (!a || !a.actionable) return null;
+  const held = serverHeld !== false; // undefined = 没标过 → 默认持仓
+  const stance = held ? holderStanceFor(a.holder_direction) : null;
+  if (stance) return { color: stance.color, label: stance.short, direction: stance.direction };
+  const s = ACTIONABLE_STYLE[a.actionable] ?? { color: "#9ca3af", label: a.actionable };
+  return { ...s, direction: null };
+}
+
 // A watchlist row is "worth looking at today" if it has a strong signal,
-// moved hard, or carries an actionable buy/sell verdict.
-function worthAttention(r: StockRow): boolean {
+// moved hard, or carries a directional verdict (买/卖,或持仓立场的
+// 看多/看空 — 不建议入手+持仓看空 的票以前会漏掉,603986 案例)。
+function worthAttention(r: StockRow, serverHeld?: boolean): boolean {
   if (r.has_strong_signal) return true;
   if (r.change_pct != null && Math.abs(r.change_pct) >= 5) return true;
+  const v = verdictFor(r, serverHeld);
+  if (v?.direction === "看空" || v?.direction === "看多") return true;
   const a = r.analysis?.actionable;
-  return a === "建议买入" || a === "建议卖出";
+  return v?.direction == null && (a === "建议买入" || a === "建议卖出");
 }
 
 export default function DashboardPage() {
@@ -64,15 +82,21 @@ export default function DashboardPage() {
       .catch((e) => setRowsError(e instanceof Error ? e.message : String(e)));
   }
 
+  // 持仓立场轴:用户显式标过未持的票走买家视角,与盯盘列表同源。静默失败
+  // (拉不到就全按默认持仓,只影响 chip axis 不阻塞页面)。
+  const [funnelMap, setFunnelMap] = useState<Record<string, FunnelStateOut> | null>(null);
+
   useEffect(() => {
     loadIndices();
     loadPicks();
     loadRows();
+    api.getMyFunnel().then(setFunnelMap).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const heldOf = (code: string) => funnelMap?.[code]?.held;
   const attention = (rows ?? [])
-    .filter(worthAttention)
+    .filter((r) => worthAttention(r, heldOf(r.code)))
     .slice(0, 10);
 
   return (
@@ -158,9 +182,7 @@ export default function DashboardPage() {
         ) : (
           <div style={{ border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
             {attention.map((r, i) => {
-              const verdict = r.analysis?.actionable
-                ? ACTIONABLE_STYLE[r.analysis.actionable]
-                : null;
+              const verdict = verdictFor(r, heldOf(r.code));
               return (
                 <a
                   key={r.code}
