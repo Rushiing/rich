@@ -817,6 +817,20 @@ def _smart_analyze_tick():
         logger.exception("smart analyze tick failed")
 
 
+def _smart_analyze_postclose_tick():
+    """盘后 smart tick (7/2)。盘中 smart cron 最后一跳是 14:35,而涨跌停这类
+    强信号往往 15:00 收盘 snapshot 才落上去,龙虎榜/公告类更是 16:00 盘后
+    pass 才有 —— 这些票会带着「新强信号,当前建议未纳入」在今日需行动里挂
+    一晚上(沪电股份 limit_down 案例)。15:10 / 16:10 各补一跳,直接调
+    run_smart_intraday_analysis(不走 _is_intraday guard,它 15:00 后恒
+    False)。安全性:should_reanalyze 只对 snapshot 实质变化的票触发,
+    非交易日/无变化时零 LLM 调用;30min cooldown 照常生效。"""
+    try:
+        run_smart_intraday_analysis()
+    except Exception:
+        logger.exception("smart analyze post-close tick failed")
+
+
 def _outcomes_tick():
     """Daily post-close:维护 analysis outcomes 的前向收益。Runs after
     _kline_tick (16:30) so the latest close is already in the DB.
@@ -996,6 +1010,19 @@ def start_scheduler() -> None:
             timezone="Asia/Shanghai",
         ),
         id="smart_analyze_30min",
+        replace_existing=True,
+        misfire_grace_time=600,
+    )
+    # 盘后 smart tick (7/2):接住收盘/盘后 snapshot 上才出现的新强信号,
+    # 不然要等次日 09:35。15:10 在 15:00 收盘 snapshot 之后,16:10 在
+    # 16:00 盘后 pass(龙虎榜/公告)之后,各留 10 分钟落库缓冲。
+    sched.add_job(
+        _smart_analyze_postclose_tick,
+        CronTrigger(
+            day_of_week="mon-fri", hour="15,16", minute=10,
+            timezone="Asia/Shanghai",
+        ),
+        id="smart_analyze_postclose",
         replace_existing=True,
         misfire_grace_time=600,
     )
