@@ -11,7 +11,7 @@ import {
 import {
   FunnelState, PnlBucket, TierKey,
   getFunnelState, setFunnelState, pnlBucketFromPct, scenarioKeyFor,
-  reportFunnelChoice,
+  holderStanceFor, reportFunnelChoice,
 } from "../../../lib/holdingFunnel";
 import Tooltip from "../../_components/Tooltip";
 
@@ -792,14 +792,33 @@ function KeyTableCard({
     "#9ca3af";                                  // 观望
 
   // 漏斗出口：持仓 + 盈亏 → 选中 scenario_advice 的一条。
-  const scenarioText = kt.scenario_advice?.[scenarioKeyFor(funnel.held, funnel.pnl)];
+  const scenarioKey = scenarioKeyFor(funnel.held, funnel.pnl);
+  const scenarioText = kt.scenario_advice?.[scenarioKey];
+
+  // 7/2 持仓立场轴:actionable 的枚举混了两个受众(买入/观望/不建议入手
+  // 说给未持仓者,建议卖出说给持仓者),持有态下大字继续显 actionable 会
+  // 出现"不建议入手"×"浮盈分批卖出"的立场打架。持有时大字改由用户所在
+  // 象限的 scenario_direction 驱动;未持仓/legacy 行(无 direction)回落
+  // actionable。
+  const stanceDir = funnel.held ? kt.scenario_direction?.[scenarioKey] : undefined;
+  const holderStance = funnel.held ? holderStanceFor(stanceDir) : null;
+  const headline = holderStance
+    ? { label: holderStance.label, color: holderStance.color }
+    : { label: view.action, color: actionableColor };
 
   return (
     <section style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 12 }}>
       {/* Header card: actionable verdict + company portrait + red flags */}
       <div style={{ padding: 16, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8 }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
-          <div style={{ fontSize: 22, fontWeight: 600, color: actionableColor }}>{view.action}</div>
+          <div style={{ fontSize: 22, fontWeight: 600, color: headline.color }}>{headline.label}</div>
+          {/* 持仓立场作大字时,未持仓视角的 actionable 降级成一枚小字注,
+              两个受众的结论都在但主次分明。 */}
+          {holderStance && (
+            <span style={{ color: "var(--text-faint)", fontSize: 12 }}>
+              未持仓视角:{kt.actionable}
+            </span>
+          )}
           {/* 6/3: valid_window 从 ConfidenceCard 底部提到 actionable 同
               行 — 它跟 actionable 一样是"决策信息",不应该被置信度数字压
               住。视觉权重:小一号字 + 灰底 chip,physically 同行但不抢
@@ -834,7 +853,11 @@ function KeyTableCard({
             (剥掉市场 beta — 大跌日卖出"命中"不算本事)。超额是否支撑
             verdict 决定颜色:买入要正、卖出要负才算真区分度。 */}
         {(() => {
-          const hb = hitRate?.by_actionable[view.action];
+          // 持仓立场作大字 → 战绩口径切到该情境的 scenario 记分,避免
+          // 大字说"减仓"、命中率却挂在"不建议入手"上的口径错位。
+          const hb = holderStance
+            ? hitRate?.by_scenario?.[scenarioKey]
+            : hitRate?.by_actionable[view.action];
           if (!hb || hb.hit_rate == null) return null;
           const rate = hb.hit_rate_dedup ?? hb.hit_rate;
           const nShown = hb.n_unique ?? hb.n;
@@ -845,7 +868,9 @@ function KeyTableCard({
           const excess = hb.excess_return_d5;
           const excessSupports =
             excess != null &&
-            (view.action === "建议买入" ? excess > 1 : excess < -1);
+            (holderStance
+              ? (stanceDir === "看空" ? excess < -1 : stanceDir === "看多" ? excess > 1 : false)
+              : (view.action === "建议买入" ? excess > 1 : excess < -1));
           return (
             <div style={{
               marginTop: 8,
@@ -883,7 +908,10 @@ function KeyTableCard({
           const firstStop = kt.stop_loss_levels && kt.stop_loss_levels.length > 0
             ? kt.stop_loss_levels.reduce((a, b) => (b.price > a.price ? b : a))
             : null;
-          const sellish = view.action === "建议卖出" || view.action === "不建议入手";
+          // 持有态优先看象限立场:看空 → 卖出侧触发价;未持仓/legacy 按 actionable。
+          const sellish = holderStance
+            ? stanceDir === "看空"
+            : view.action === "建议卖出" || view.action === "不建议入手";
           const stopDist = firstStop && currentPrice
             ? (currentPrice - firstStop.price) / currentPrice * 100
             : null;
@@ -898,9 +926,9 @@ function KeyTableCard({
                 v: `${firstStop.price.toFixed(2)}${stopDist != null ? `（距现价 ${stopDist >= 0 ? "-" : "+"}${Math.abs(stopDist).toFixed(1)}%）` : ""}`,
               });
             }
-          } else if (view.action === "建议买入") {
+          } else if (view.action === "建议买入" || (holderStance && stanceDir === "看多")) {
             if (view.buy_price_low != null && view.buy_price_high != null) {
-              seg.push({ k: "买入区间", v: `${view.buy_price_low.toFixed(2)} – ${view.buy_price_high.toFixed(2)}` });
+              seg.push({ k: funnel.held ? "加仓区间" : "买入区间", v: `${view.buy_price_low.toFixed(2)} – ${view.buy_price_high.toFixed(2)}` });
             }
             if (firstStop) {
               seg.push({ k: "止损", v: firstStop.price.toFixed(2) });

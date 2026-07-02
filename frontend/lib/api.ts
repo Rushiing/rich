@@ -31,6 +31,10 @@ export type AnalysisBrief = {
   // Surfaced in list view as the last (highlighted) line of the
   // 操作建议 cell so users see decision freshness at a glance.
   valid_window?: string | null;
+  // 7/2: 持仓者立场轴(scenario_direction/advice 的 holding_small 格 =
+  // "盈亏无关"的默认持仓立场)。null = legacy 行,前端回落 actionable。
+  holder_direction?: string | null;   // 看多 / 看空 / 中性
+  holder_advice?: string | null;
 };
 
 export type StopLossLevel = {
@@ -44,6 +48,14 @@ export type ScenarioAdvice = {
   holding_big_gain: string;
   holding_small: string;
   holding_big_loss: string;
+};
+
+// 每条 scenario_advice 的方向标签(看多/看空/中性),S0 起模型必填并独立记分。
+export type ScenarioDirection = {
+  not_holding?: string;
+  holding_big_gain?: string;
+  holding_small?: string;
+  holding_big_loss?: string;
 };
 
 export type RiskScores = {
@@ -63,6 +75,8 @@ export type StockRow = {
   name: string;
   exchange: string;
   last_ts: string | null;
+  // 7/2: 现价列回归(最近一次抓取,交易时段内近实时)。
+  price: number | null;
   // 今日涨跌 — kept on the row even though the redesign hides "价格"
   change_pct: number | null;
   // Phase 7: 3-day rolling
@@ -155,6 +169,8 @@ export type KeyTable = {
   hold_period: string;
   stop_loss_levels: StopLossLevel[];
   scenario_advice: ScenarioAdvice;
+  // Optional: legacy rows pre-S0 don't carry it.
+  scenario_direction?: ScenarioDirection;
   // Phase 8: optional because legacy cached rows from before this schema
   // bump won't have it. UI gracefully degrades.
   actionable_tiers?: ActionableTiers;
@@ -239,6 +255,9 @@ export type HitRateBucket = {
 
 export type HitRateSummary = {
   by_actionable: Record<string, HitRateBucket>;  // keyed by "建议买入" / "建议卖出"
+  // 7/2: 持仓立场轴战绩,keyed by scenario key (not_holding / holding_big_gain
+  // / holding_small / holding_big_loss)。大字结论走持仓立场时命中率跟着切。
+  by_scenario?: Record<string, HitRateBucket>;
   total_scored: number;
   cached_at: string;
 };
@@ -251,7 +270,7 @@ export type HitRateSummary = {
 export type ActionItem = {
   code: string;
   name: string;
-  type: "stop_loss_breach" | "sell_verdict" | "valid_window_expired" | "signal_alert";
+  type: "stop_loss_breach" | "sell_verdict" | "sell_stance" | "valid_window_expired" | "signal_alert";
   severity: "urgent" | "warn";
   message: string;
 };

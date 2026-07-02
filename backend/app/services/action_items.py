@@ -1,13 +1,19 @@
 """今日需行动 — 持仓感知的卖出触发 (S1).
 
-For each holding of the requesting user, check the (globally shared)
-latest snapshot + cached analysis for conditions that mean "今天该看一眼
-这支票了":
+7/2 持仓立场轴:检查范围从"录了成本价的 Holding"扩成**默认持仓**全集
+(Rush 拍板 — 盯盘池绝大比例是持仓票):用户自选列表里的每只票都查,
+除非用户在漏斗里显式标了未持仓(FunnelChoice.held=False)。
+
+For each such code, check the (globally shared) latest snapshot + cached
+analysis for conditions that mean "今天该看一眼这支票了":
 
 1. stop_loss_breach — current price at/below any of the analysis's
    stop_loss_levels. The single most direct "act now" signal.
-2. sell_verdict — the cached analysis verdict is 建议卖出 on a stock the
-   user actually holds.
+2. sell_verdict — the cached analysis verdict is 建议卖出.
+2b. sell_stance — 用户所在持仓象限(录了成本价 → 按浮盈亏算;漏斗标了
+   盈亏档 → 按标的;都没有 → holding_small)的 scenario_direction 是
+   看空。这补上了 actionable=不建议入手(买家视角)但持仓者早该减仓的
+   漏洞(603986 案例)。actionable 已是 建议卖出 时不重复报。
 3. valid_window_expired — the analysis declared a validity window and the
    machine-checkable kinds (跌破 X.XX / N 个交易日内 / 本周内) have
    verifiably lapsed. Event-driven windows ("出 Q3 财报前") can't be
@@ -20,7 +26,7 @@ Spec says no push notifications — the 盯盘 page's「今日需行动」sectio
 the push surrogate, so this is computed on request, read-only, no cron.
 
 Pure evaluation logic is separated from DB orchestration for testability:
-evaluate_holding() takes plain rows, compute_for_user() does the queries.
+evaluate_code() takes plain rows, compute_for_user() does the queries.
 """
 from __future__ import annotations
 
@@ -32,7 +38,7 @@ from typing import Any
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
-from ..models import Analysis, Holding, Snapshot, Watchlist
+from ..models import Analysis, FunnelChoice, Holding, Snapshot, Watchlist
 from .signals import STRONG_SIGNALS
 
 logger = logging.getLogger(__name__)
@@ -116,21 +122,23 @@ def check_valid_window(
 
 
 # ---------------------------------------------------------------------------
-# Per-holding evaluation (pure)
+# Per-code evaluation (pure)
 # ---------------------------------------------------------------------------
 
-def evaluate_holding(
-    holding: Holding,
+def evaluate_code(
+    code: str,
     name: str | None,
     snap: Snapshot | None,
     analysis: Analysis | None,
     anchor_snap: Snapshot | None,
+    quadrant: str = "holding_small",
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
-    """Run the four checks for one holding. Returns 0..n action items:
+    """Run the checks for one (default-)held code. `quadrant` is the user's
+    持仓情境 key (holding_big_gain / holding_small / holding_big_loss) used
+    by the sell_stance check. Returns 0..n action items:
     {code, name, type, severity, message}. severity ∈ {urgent, warn}."""
     items: list[dict[str, Any]] = []
-    code = holding.code
     display = name or code
     price = snap.price if snap is not None else None
 
@@ -175,6 +183,24 @@ def evaluate_holding(
             "type": "sell_verdict", "severity": "urgent",
             "message": msg,
         })
+    # 2b. 持仓象限立场看空(sell_stance)。actionable 混了两个受众——
+    # 不建议入手 是说给买家的,持仓者的动作在 scenario_advice 里;这里把
+    # 用户象限的看空立场提上来。actionable 已是 建议卖出 时不重复报
+    # (同一个意图);severity=warn,保持 sell_verdict(urgent)的信号层级。
+    elif analysis is not None:
+        sdir = kt.get("scenario_direction") or {}
+        if isinstance(sdir, dict) and sdir.get(quadrant) == "看空":
+            sadv = kt.get("scenario_advice") or {}
+            advice = sadv.get(quadrant) if isinstance(sadv, dict) else None
+            age = _age_days(analysis.created_at)
+            msg = f"AI 对持仓者立场看空：{advice or '建议关注减仓时机'}"
+            if age >= 1:
+                msg += f"（解析生成于 {age} 天前）"
+            items.append({
+                "code": code, "name": display,
+                "type": "sell_stance", "severity": "warn",
+                "message": msg,
+            })
 
     # 3. validity window lapsed.
     if analysis is not None and kt.get("valid_window"):
@@ -216,30 +242,59 @@ def evaluate_holding(
 
 _SEVERITY_ORDER = {"urgent": 0, "warn": 1}
 _TYPE_ORDER = {
-    "stop_loss_breach": 0, "sell_verdict": 1,
-    "signal_alert": 2, "valid_window_expired": 3,
+    "stop_loss_breach": 0, "sell_verdict": 1, "sell_stance": 2,
+    "signal_alert": 3, "valid_window_expired": 4,
 }
+
+_PNL_TO_QUADRANT = {"盈": "holding_big_gain", "亏": "holding_big_loss"}
 
 
 def compute_for_user(db: Session, owner_id: int | None) -> dict[str, Any]:
-    """Action items across all holdings of `owner_id`. Cheap: one query
+    """Action items across the user's **default-held** universe: 自选列表
+    ∪ 录了成本价的 Holding,减去漏斗里显式标了未持仓的票。Cheap: one query
     per table, evaluation is in-memory."""
-    holdings = db.query(Holding).filter(Holding.user_id == owner_id).all()
-    if not holdings:
-        return {"items": [], "checked_holdings": 0}
+    holdings = {
+        h.code: h for h in
+        db.query(Holding).filter(Holding.user_id == owner_id).all()
+    }
+    wq = db.query(Watchlist)
+    if owner_id is not None:
+        wq = wq.filter(Watchlist.user_id == owner_id)
+    watch_rows = wq.all()
 
-    codes = [h.code for h in holdings]
+    # Latest funnel choice per code (append-only table → newest row wins).
+    # owner_id None(legacy no-auth)时查不到属于谁的选择,全按默认持仓。
+    latest_funnel: dict[str, FunnelChoice] = {}
+    if owner_id is not None:
+        fq = (
+            db.query(FunnelChoice)
+            .filter(FunnelChoice.user_id == owner_id)
+            .order_by(desc(FunnelChoice.created_at), desc(FunnelChoice.id))
+        )
+        for fc in fq:
+            latest_funnel.setdefault(fc.code, fc)
+
+    codes = set(w.code for w in watch_rows) | set(holdings.keys())
+    # 显式标了未持仓的票出列;录了成本价的 Holding 视为持有(覆盖旧漏斗标记)。
+    codes = {
+        c for c in codes
+        if c in holdings
+        or c not in latest_funnel
+        or latest_funnel[c].held
+    }
+    if not codes:
+        return {"items": [], "checked_holdings": 0}
 
     # Names: prefer the user's own watchlist rows; fall back to any user's
     # row for the code (names are market facts, not per-user state).
     names: dict[str, str] = {}
-    for w in db.query(Watchlist).filter(Watchlist.code.in_(codes)).all():
+    for w in db.query(Watchlist).filter(Watchlist.code.in_(list(codes))).all():
         if w.user_id == owner_id or w.code not in names:
             names[w.code] = w.name
 
     analyses = {
         a.code: a for a in
-        db.query(Analysis).filter(Analysis.code.in_(codes)).all()
+        db.query(Analysis).filter(Analysis.code.in_(list(codes))).all()
     }
 
     # Latest snapshot per code + anchor snapshots referenced by analyses.
@@ -262,12 +317,32 @@ def compute_for_user(db: Session, owner_id: int | None) -> dict[str, Any]:
          if anchor_ids else [])
     }
 
+    def _quadrant(code: str) -> str:
+        """用户所在持仓象限:成本价可算 → 按浮盈亏(±10% = 大幅,同前端
+        pnlBucketFromPct);漏斗标过盈亏档 → 按标的;都没有 → 小幅波动
+        (盈亏不构成决策因素的默认格)。"""
+        h = holdings.get(code)
+        snap = latest.get(code)
+        price = snap.price if snap is not None else None
+        if h is not None and h.cost_price and price is not None:
+            pct = (price - h.cost_price) / h.cost_price * 100
+            if pct >= 10:
+                return "holding_big_gain"
+            if pct <= -10:
+                return "holding_big_loss"
+            return "holding_small"
+        fc = latest_funnel.get(code)
+        if fc is not None and fc.held and fc.pnl:
+            return _PNL_TO_QUADRANT.get(fc.pnl, "holding_small")
+        return "holding_small"
+
     items: list[dict[str, Any]] = []
-    for h in holdings:
-        a = analyses.get(h.code)
+    for code in sorted(codes):
+        a = analyses.get(code)
         anchor = anchors_by_id.get(a.snapshot_id) if a is not None else None
-        items.extend(evaluate_holding(
-            h, names.get(h.code), latest.get(h.code), a, anchor,
+        items.extend(evaluate_code(
+            code, names.get(code), latest.get(code), a, anchor,
+            quadrant=_quadrant(code),
         ))
 
     items.sort(key=lambda it: (
@@ -275,4 +350,4 @@ def compute_for_user(db: Session, owner_id: int | None) -> dict[str, Any]:
         _TYPE_ORDER.get(it["type"], 9),
         it["code"],
     ))
-    return {"items": items, "checked_holdings": len(holdings)}
+    return {"items": items, "checked_holdings": len(codes)}

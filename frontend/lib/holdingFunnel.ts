@@ -1,6 +1,7 @@
 // 持仓决策漏斗状态 —— 详情页/列表页共用。轻量:只存"持有/盈亏/风险偏好"三个
 // 点选,**不要成本价**(内测用户嫌录入麻烦)。per-stock localStorage 持久化。
-// 默认(Rush 拍板):持有 · 盈 · 激进 —— 因为自选池绝大比例是已持仓票。
+// 默认(Rush 拍板 7/2):持有 · 平 · 激进 —— 自选池绝大比例是已持仓票,但
+// **不揣测盈亏**:"平"(小幅波动)正是盈亏不构成决策因素的那一格。
 //
 // ③ 埋点记分(把"已持仓建议含金量高"从肉眼变成验证数)是后端、后续单独做;
 // v1 先 localStorage 把交互跑通。
@@ -11,7 +12,7 @@ export type TierKey = "aggressive" | "neutral" | "conservative";
 export type PnlBucket = "盈" | "平" | "亏";
 export type FunnelState = { held: boolean; pnl: PnlBucket; tier: TierKey };
 
-const DEFAULT: FunnelState = { held: true, pnl: "盈", tier: "aggressive" };
+const DEFAULT: FunnelState = { held: true, pnl: "平", tier: "aggressive" };
 const PNLS: PnlBucket[] = ["盈", "平", "亏"];
 const TIERS: TierKey[] = ["aggressive", "neutral", "conservative"];
 const keyOf = (code: string) => `rich:funnel:${code}`;
@@ -61,6 +62,18 @@ export function scenarioKeyFor(held: boolean, pnl: PnlBucket): ScenarioKey {
   if (pnl === "盈") return "holding_big_gain";
   if (pnl === "亏") return "holding_big_loss";
   return "holding_small";
+}
+
+// 7/2 持仓立场轴:scenario_direction(看多/看空/中性)→ 持仓者视角的
+// 结论展示。详情页大字 + 列表页 chip 共用一套映射,保证两处口径一致。
+// A股语境:红=买/涨,绿=卖/跌。label 给详情页大字,short 给列表 chip。
+export type HolderStance = { label: string; short: string; color: string; direction: string };
+
+export function holderStanceFor(direction: string | null | undefined): HolderStance | null {
+  if (direction === "看空") return { label: "建议减仓/离场", short: "减仓/离场", color: "#22c55e", direction };
+  if (direction === "看多") return { label: "可持有/加仓", short: "持有/加仓", color: "#ef4444", direction };
+  if (direction === "中性") return { label: "持有观望", short: "持有观望", color: "#9ca3af", direction };
+  return null;
 }
 
 // ③ 服务端埋点:把当前 localStorage 漏斗态 fire-and-forget 上报。同一 code

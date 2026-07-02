@@ -90,6 +90,13 @@ class AnalysisBrief(BaseModel):
     # last line so users see decision freshness at a glance. None for
     # legacy rows pre-valid_window schema.
     valid_window: str | None = None
+    # 7/2: 持仓者立场轴。盯盘池的票绝大多数是已持仓票(Rush 拍板:默认持仓、
+    # 不揣测盈亏),所以列表的主 chip 改按持仓者视角展示。holding_small
+    # (小幅盈/亏)正是"盈亏不构成决策因素"的那一格 —— 取它当默认持仓立场。
+    # actionable 保留:显式标了未持仓的行仍用它。legacy 行无 scenario_*
+    # 字段 → None,前端回落 actionable。
+    holder_direction: str | None = None   # scenario_direction.holding_small: 看多/看空/中性
+    holder_advice: str | None = None      # scenario_advice.holding_small 原文
 
 
 class StockRow(BaseModel):
@@ -100,6 +107,9 @@ class StockRow(BaseModel):
     # 今日 columns kept (the Phase 7 ask removed "价格" + "信号" from the
     # list display, but the data stays — UI just doesn't render those
     # columns anymore. change_pct labels as "今日涨跌" on frontend.)
+    # 7/2: price 列回归 — 最近一次抓取的现价(交易时段内 quotes_5min 五分钟
+    # 一跳,近实时)。
+    price: float | None
     change_pct: float | None
     # Phase 7 new columns: 3-day rolling metrics
     change_pct_3d: float | None       # 3日涨幅 %
@@ -224,6 +234,8 @@ def list_stocks(
         anchor = (anchor_snaps.get(a.snapshot_id)
                   if a.snapshot_id is not None else None)
         needs_repaint, _ = should_reanalyze(snap, a, anchor, respect_cooldown=False)
+        sdir = kt.get("scenario_direction") or {}
+        sadv = kt.get("scenario_advice") or {}
         return AnalysisBrief(
             actionable=str(kt.get("actionable") or ""),
             one_line_reason=str(kt.get("one_line_reason") or ""),
@@ -236,6 +248,12 @@ def list_stocks(
                                if kt.get("confidence_reason") else None),
             valid_window=(str(kt["valid_window"])
                           if kt.get("valid_window") else None),
+            holder_direction=(str(sdir["holding_small"])
+                              if isinstance(sdir, dict) and sdir.get("holding_small")
+                              else None),
+            holder_advice=(str(sadv["holding_small"])
+                           if isinstance(sadv, dict) and sadv.get("holding_small")
+                           else None),
         )
 
     rows: list[StockRow] = []
@@ -247,6 +265,7 @@ def list_stocks(
             name=w.name,
             exchange=w.exchange,
             last_ts=s.ts.isoformat() if s else None,
+            price=(s.price if s else None),
             change_pct=(s.change_pct if s else None),
             change_pct_3d=(s.change_pct_3d if s else None),
             turnover_rate_3d=(s.turnover_rate_3d if s else None),
@@ -320,6 +339,11 @@ class HitRateSummary(BaseModel):
     sample is too small to publish) and buy/sell only (others have no
     directional claim so no hit_rate)."""
     by_actionable: dict[str, HitRateBucket]
+    # 7/2: 持仓立场轴的战绩 — scenario_hit_stats 的 4 个情境桶(key =
+    # not_holding / holding_big_gain / holding_small / holding_big_loss)。
+    # 详情页大字结论换成持仓立场后,命中率口径必须跟着切,否则又是
+    # 大字说"减仓"、战绩挂"不建议入手"的口径错位。
+    by_scenario: dict[str, HitRateBucket] = {}
     total_scored: int
     cached_at: str
 
@@ -340,22 +364,54 @@ def get_hit_rate_summary():
         return _hit_rate_cache["data"]
 
     raw = outcomes_svc.hit_rate_stats()
-    by_actionable: dict[str, HitRateBucket] = {}
+    # 7/2: 接受所有 -single 版本(v2.5/v2.6/...) — 公示数是信任信号,按
+    # 版本切的 A/B 看 diag outcomes-stats。debate/deep 桶照旧不公示。
+    # 同一 actionable 会有多个版本桶 → 按 n / n_unique 加权合并(对
+    # 计数型比率是精确合并)。
+    def _wavg(pairs: list[tuple[float | None, int]]) -> float | None:
+        num = sum(v * w for v, w in pairs if v is not None and w)
+        den = sum(w for v, w in pairs if v is not None and w)
+        return round(num / den, 1) if den else None
+
+    merged: dict[str, list[dict]] = {}
     for b in raw["buckets"]:
-        if b["prompt_version"] != "v2.5-single":
+        if not str(b["prompt_version"]).endswith("-single"):
             continue
         if b["actionable"] not in ("建议买入", "建议卖出"):
             continue
-        by_actionable[b["actionable"]] = HitRateBucket(
-            n=b["n"],
-            hit_rate=b["hit_rate"],
-            avg_return_d5=b["avg_return_d5"],
-            n_unique=b.get("n_unique"),
-            hit_rate_dedup=b.get("hit_rate_dedup"),
-            excess_return_d5=b.get("excess_return_d5"),
+        merged.setdefault(b["actionable"], []).append(b)
+
+    by_actionable: dict[str, HitRateBucket] = {}
+    for actionable, bs in merged.items():
+        n = sum(b["n"] for b in bs)
+        n_unique = sum(b.get("n_unique") or 0 for b in bs)
+        by_actionable[actionable] = HitRateBucket(
+            n=n,
+            hit_rate=_wavg([(b["hit_rate"], b["n"]) for b in bs]),
+            avg_return_d5=_wavg([(b["avg_return_d5"], b["n"]) for b in bs]),
+            n_unique=n_unique or None,
+            hit_rate_dedup=_wavg(
+                [(b.get("hit_rate_dedup"), b.get("n_unique") or 0) for b in bs]),
+            excess_return_d5=_wavg([(b.get("excess_return_d5"), b["n"]) for b in bs]),
         )
+    by_scenario: dict[str, HitRateBucket] = {}
+    try:
+        sraw = outcomes_svc.scenario_hit_stats()
+        for b in sraw["scenarios"]:
+            by_scenario[b["scenario"]] = HitRateBucket(
+                n=b["n_scored"],
+                hit_rate=b["hit_rate"],
+                avg_return_d5=b["avg_return_d5"],
+                n_unique=b.get("n_unique"),
+                hit_rate_dedup=b.get("hit_rate_dedup"),
+                excess_return_d5=b.get("excess_return_d5"),
+            )
+    except Exception:
+        logger.exception("scenario_hit_stats failed; by_scenario omitted")
+
     payload = HitRateSummary(
         by_actionable=by_actionable,
+        by_scenario=by_scenario,
         total_scored=raw["total_scored"],
         cached_at=datetime.now(timezone.utc).isoformat(),
     )
@@ -367,13 +423,15 @@ def get_hit_rate_summary():
 class ActionItem(BaseModel):
     code: str
     name: str
-    type: str       # stop_loss_breach | sell_verdict | valid_window_expired | signal_alert
+    type: str       # stop_loss_breach | sell_verdict | sell_stance | valid_window_expired | signal_alert
     severity: str   # urgent | warn
     message: str
 
 
 class ActionItemsOut(BaseModel):
     items: list[ActionItem]
+    # 7/2 起 = 按默认持仓口径检查的 code 数(自选 ∪ Holding − 显式未持),
+    # 不再只数录了成本价的 Holding。字段名保留兼容前端。
     checked_holdings: int
 
 
@@ -382,10 +440,10 @@ def get_action_items(
     db: Session = Depends(get_db),
     user_id: int | None = Depends(require_auth),
 ):
-    """S1 (6/10): 今日需行动 — holdings-aware sell triggers. For each of
-    the user's holdings: stop-loss breach / sell verdict / lapsed validity
-    window / new strong signal since the analysis anchor. Computed on
-    request (spec excludes push; the 盯盘 banner is the push surrogate).
+    """S1 (6/10): 今日需行动 — holdings-aware sell triggers. 7/2 持仓立场
+    轴:检查范围扩成默认持仓全集(自选 ∪ Holding − 漏斗显式未持),新增
+    sell_stance(用户象限 scenario_direction 看空)。Computed on request
+    (spec excludes push; the 盯盘 banner is the push surrogate).
     NOTE: declared before /{code} so the literal path wins routing."""
     from ..services import action_items as action_items_svc
     owner = resolve_owner(user_id, db)

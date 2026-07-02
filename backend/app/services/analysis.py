@@ -51,7 +51,10 @@ DEFAULT_MODEL = "kimi-k2.5"
 # "v2.5-debate" even though half were single-mode. Fix it on new
 # anchors via prompt_version_for(); old rows can be retroactively
 # corrected with a one-off UPDATE keyed on `mode` if needed.
-PROMPT_VERSION_BASE = "v2.5"
+# 7/2 v2.6: 新增 actionable 受众语义段(买卖两类受众拆清 + 持仓象限方向
+# 不许与顶部结论打架)— 预期会改变 actionable/scenario_direction 的分布,
+# 记分桶必须分开。
+PROMPT_VERSION_BASE = "v2.6"
 
 
 def prompt_version_for(mode: str | None) -> str:
@@ -1061,6 +1064,20 @@ def _system_prompt(strategy: Strategy) -> list[dict[str, Any]]:
         "- 始终调用 submit_analysis 工具**一次**，不要给出其他文本\n"
         "- **先填 analysis_thinking 字段把推理写完，再填 key_table 和 deep_analysis 的结构化结果**。\n"
         "  不允许跳过 analysis_thinking 直接给结论。这是为了让你思考更充分，质量更高。\n"
+        "\n"
+        "# actionable 的受众(很重要,7/2 新增)\n"
+        "\n"
+        "actionable 的四个值混了两个受众,填的时候要想清楚在对谁说话:\n"
+        "- 建议买入 / 观望 / 不建议入手 → 说给**还没持仓的人**(要不要进场)\n"
+        "- 建议卖出 → 说给**已持仓的人**(要不要离场)\n"
+        "一只票完全可以同时'没持仓的别买'+'持仓的该减仓'。所以:\n"
+        "- **持仓者的动作永远写进 scenario_advice 的三个持仓档**,别因为给了"
+        "不建议入手 就把持仓者的话省略或和稀泥\n"
+        "- scenario_direction 的方向标签必须与 advice 文本一致(减仓/止盈/"
+        "止损/离场=看空),用户界面和记分都以它为准\n"
+        "- actionable 与持仓象限方向不许打架:给了 建议买入 就不该让"
+        "持仓小幅波动档看空;给了 建议卖出/不建议入手 就不该让持仓档看多。"
+        "真有分歧说明你没想清楚方向,重新想。\n"
         "\n"
         "# 次日走势预判（next_day_outlook）\n"
         "\n"

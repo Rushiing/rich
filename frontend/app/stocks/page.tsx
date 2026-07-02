@@ -2,7 +2,7 @@
 
 import { Fragment, useEffect, useRef, useState } from "react";
 import { api, ActionItemsOut, AnalysisBrief, FunnelStateOut, HitRateSummary, StockRow, confidenceBucket, confidenceLabel } from "../../lib/api";
-import { getFunnelState, setFunnelState, reportFunnelChoice } from "../../lib/holdingFunnel";
+import { HolderStance, holderStanceFor, setFunnelState, reportFunnelChoice } from "../../lib/holdingFunnel";
 import Tooltip from "../_components/Tooltip";
 import { groupByBoard } from "../../lib/market";
 import { SegmentHeader } from "../_components/SegmentSection";
@@ -84,24 +84,51 @@ const exchangeLabel: Record<string, string> = {
 // list, so they default to collapsed.
 type GroupKey = "buy" | "sell" | "watch" | "other";
 
+// 7/2 持仓立场轴:标签改成双受众读法 — 前半是持仓者动作(默认),
+// 后半是未持仓者动作(显式标未持的行)。
 const GROUP_DEFS: {
   key: GroupKey;
   label: string;
   color: string;
   defaultCollapsed: boolean;
 }[] = [
-  { key: "buy",   label: "建议买入",       color: "#ef4444", defaultCollapsed: false },
-  { key: "sell",  label: "建议卖出",       color: "#22c55e", defaultCollapsed: false },
-  { key: "watch", label: "观望",           color: "#9ca3af", defaultCollapsed: true  },
-  { key: "other", label: "不入手 + 待生成", color: "#6b7280", defaultCollapsed: true  },
+  { key: "sell",  label: "减仓/离场 · 卖出", color: "#22c55e", defaultCollapsed: false },
+  { key: "buy",   label: "持有/加仓 · 买入", color: "#ef4444", defaultCollapsed: false },
+  { key: "watch", label: "持有观望 · 观望",  color: "#9ca3af", defaultCollapsed: true  },
+  { key: "other", label: "不入手 + 待生成",  color: "#6b7280", defaultCollapsed: true  },
 ];
 
-function groupOf(r: StockRow): GroupKey {
-  const a = r.analysis?.actionable;
-  if (a === "建议买入")    return "buy";
-  if (a === "建议卖出")    return "sell";
-  if (a === "观望")        return "watch";
-  return "other"; // 不建议入手 / 待生成 / 未知 actionable 都归这里
+// 7/2 持仓立场轴:每行的"派生结论"。盯盘池的票默认视为已持仓(Rush 拍板,
+// 不揣测盈亏 → 取 holding_small 象限的立场),显式标了未持仓(服务端漏斗
+// held=false)或 legacy 行(无 holder_direction)回落买家视角 actionable。
+// chip / 分组 / 筛选三处都从这一个派生走,保证轴一致。
+type RowVerdict =
+  | { kind: "holder"; stance: HolderStance; advice: string | null }
+  | { kind: "actionable"; value: string }
+  | { kind: "pending" };
+
+function rowVerdict(r: StockRow, serverHeld?: boolean): RowVerdict {
+  const a = r.analysis;
+  if (!a || !a.actionable) return { kind: "pending" };
+  const held = serverHeld !== false; // undefined = 没标过 → 默认持仓
+  const stance = held ? holderStanceFor(a.holder_direction) : null;
+  if (stance) return { kind: "holder", stance, advice: a.holder_advice ?? null };
+  return { kind: "actionable", value: a.actionable };
+}
+
+function groupOf(r: StockRow, serverHeld?: boolean): GroupKey {
+  const v = rowVerdict(r, serverHeld);
+  if (v.kind === "holder") {
+    if (v.stance.direction === "看空") return "sell";
+    if (v.stance.direction === "看多") return "buy";
+    return "watch";
+  }
+  if (v.kind === "actionable") {
+    if (v.value === "建议买入") return "buy";
+    if (v.value === "建议卖出") return "sell";
+    if (v.value === "观望")     return "watch";
+  }
+  return "other"; // 不建议入手(未持仓行) / 待生成 / 未知 都归这里
 }
 
 const DEFAULT_COLLAPSED: Record<GroupKey, boolean> = Object.fromEntries(
@@ -109,10 +136,13 @@ const DEFAULT_COLLAPSED: Record<GroupKey, boolean> = Object.fromEntries(
 ) as Record<GroupKey, boolean>;
 
 // 市场为外层后,买卖分组退成每个 market 区内部的中性次序。把一段 rows
-// 按 actionable 分组(starred 置顶),供市场区内复用。
-function actionableGroups(segRows: StockRow[]): Record<GroupKey, StockRow[]> {
+// 按派生结论分组(starred 置顶),供市场区内复用。
+function actionableGroups(
+  segRows: StockRow[],
+  heldOf: (code: string) => boolean | undefined,
+): Record<GroupKey, StockRow[]> {
   const g: Record<GroupKey, StockRow[]> = { buy: [], sell: [], watch: [], other: [] };
-  for (const r of segRows) g[groupOf(r)].push(r);
+  for (const r of segRows) g[groupOf(r, heldOf(r.code))].push(r);
   for (const k of Object.keys(g) as GroupKey[]) {
     g[k].sort((a, b) => Number(b.starred) - Number(a.starred));
   }
@@ -171,8 +201,9 @@ export default function StocksPage() {
   // alongside the row list (refresh()) so a stop-loss breach shows up
   // within one auto-refresh cycle. Silent failure: supplementary.
   const [actionItems, setActionItems] = useState<ActionItemsOut | null>(null);
-  // null = show all rows; otherwise exact match against StockRow.analysis.actionable
-  // (or "__pending" for rows that don't have a cached analysis yet).
+  // null = show all rows; otherwise a derived-verdict GroupKey (7/2 持仓
+  // 立场轴 — 跟分组/chip 同一个派生),or "__pending" for rows without a
+  // cached analysis yet.
   const [filter, setFilter] = useState<string | null>(null);
   // Per-group fold state. Initialized from GROUP_DEFS' defaults; only
   // applies when filter === null (the grouped view). Filter mode flattens.
@@ -285,12 +316,13 @@ export default function StocksPage() {
 
   // Filter only narrows the visible set; sort + strong-signal highlighting
   // were already applied server-side, so just keep that order.
+  const heldOf = (code: string) => funnelMap?.[code]?.held;
   const visibleRows = filter === null
     ? rows
     : rows.filter((r) => {
         const a = r.analysis?.actionable ?? "";
         if (filter === "__pending") return !a;
-        return a === filter;
+        return !!a && groupOf(r, heldOf(r.code)) === filter;
       });
 
   async function manualSnapshot() {
@@ -468,7 +500,7 @@ export default function StocksPage() {
           透明度,降低用户对 AI 建议的盲信门槛。 */}
       <HitRateBanner hitRate={hitRate} />
 
-      <ActionableFilter rows={rows} value={filter} onChange={setFilter} />
+      <ActionableFilter rows={rows} value={filter} onChange={setFilter} heldOf={heldOf} />
 
       <div style={{ marginTop: 8, color: "var(--text-muted)", fontSize: 13 }}>
         {filter === null ? `共 ${rows.length} 支` : `${visibleRows.length} / ${rows.length} 支`}
@@ -503,6 +535,7 @@ export default function StocksPage() {
             <th style={{ ...th, width: 28 }} aria-label="特别关注"></th>
             <th style={th}>代码</th>
             <th style={th}>名称</th>
+            <th style={{ ...th, textAlign: "right" }}>现价</th>
             <th style={{ ...th, textAlign: "right" }}>今日</th>
             <th style={{ ...th, textAlign: "right" }}>3日涨幅</th>
             <th style={{ ...th, textAlign: "right" }}>3日换手</th>
@@ -516,7 +549,7 @@ export default function StocksPage() {
         <tbody>
           {loading && (
             <tr>
-              <td colSpan={11} style={{ ...td, textAlign: "center", color: "var(--text-faint)" }}>
+              <td colSpan={12} style={{ ...td, textAlign: "center", color: "var(--text-faint)" }}>
                 加载中…
               </td>
             </tr>
@@ -526,7 +559,7 @@ export default function StocksPage() {
               banner above instead, so we don't mislead with "自选池为空"). */}
           {!loading && rows.length === 0 && !loadError && (
             <tr>
-              <td colSpan={11} style={{ ...td, textAlign: "center", color: "var(--text-faint)" }}>
+              <td colSpan={12} style={{ ...td, textAlign: "center", color: "var(--text-faint)" }}>
                 自选池为空，先去
                 <a href="/watchlist" style={{ color: "var(--link)", marginLeft: 4 }}>
                   导入股票
@@ -537,7 +570,7 @@ export default function StocksPage() {
           )}
           {!loading && rows.length > 0 && filter !== null && visibleRows.length === 0 && (
             <tr>
-              <td colSpan={11} style={{ ...td, textAlign: "center", color: "var(--text-faint)" }}>
+              <td colSpan={12} style={{ ...td, textAlign: "center", color: "var(--text-faint)" }}>
                 当前筛选下没有股票
               </td>
             </tr>
@@ -549,9 +582,9 @@ export default function StocksPage() {
               维度」规范。行模板(stockRow)不变。 */}
           {!loading && filter === null && groupByBoard(rows, (r) => r.code).map((seg) => (
             <Fragment key={seg.board}>
-              <SegmentHeader as="row" colSpan={11} board={seg.board} count={seg.items.length} />
+              <SegmentHeader as="row" colSpan={12} board={seg.board} count={seg.items.length} />
               {(() => {
-                const segGroups = actionableGroups(seg.items);
+                const segGroups = actionableGroups(seg.items, heldOf);
                 return GROUP_DEFS.map(({ key, label }) => {
                   const groupRows = segGroups[key];
                   if (groupRows.length === 0) return null;
@@ -563,7 +596,7 @@ export default function StocksPage() {
                         onClick={() => toggleGroup(ck, isCollapsed)}
                         style={{ cursor: "pointer", background: "var(--bg)" }}
                       >
-                        <td colSpan={11} style={{
+                        <td colSpan={12} style={{
                           padding: "6px 10px 6px 22px",
                           borderBottom: "1px solid var(--border-faint)",
                           fontSize: 12,
@@ -603,6 +636,7 @@ export default function StocksPage() {
 const ACTION_TYPE_LABEL: Record<string, string> = {
   stop_loss_breach: "跌破止损",
   sell_verdict: "建议卖出",
+  sell_stance: "持仓看空",
   valid_window_expired: "建议已过期",
   signal_alert: "新强信号",
 };
@@ -629,7 +663,7 @@ function ActionItemsBanner({ data }: { data: ActionItemsOut | null }) {
       }}>
         <span>⚠️ 今日需行动</span>
         <span style={{ color: "var(--text-muted)", fontWeight: 400 }}>
-          持仓 {data.checked_holdings} 支中 {data.items.length} 条触发
+          按持仓检查 {data.checked_holdings} 支,{data.items.length} 条触发
           {urgentCount > 0 && `（紧急 ${urgentCount}）`}
         </span>
       </div>
@@ -766,39 +800,41 @@ function ActionableFilter({
   rows,
   value,
   onChange,
+  heldOf,
 }: {
   rows: StockRow[];
   value: string | null;
   onChange: (next: string | null) => void;
+  heldOf: (code: string) => boolean | undefined;
 }) {
-  // Count how many rows fall into each bucket so we can show "建议买入 (3)".
-  // 0-count buckets stay clickable but visually muted — useful when waiting
-  // for the next analysis pass to populate them.
+  // 7/2 持仓立场轴:筛选桶与分组/chip 同一个派生(groupOf),不再按裸
+  // actionable 匹配 — 否则 chip 显"减仓/离场"的行点"卖出"筛不出来。
+  // 0-count buckets stay clickable but visually muted.
   const counts: Record<string, number> = {
-    "建议买入": 0, "观望": 0, "建议卖出": 0, "不建议入手": 0, __pending: 0,
+    buy: 0, sell: 0, watch: 0, other: 0, __pending: 0,
   };
   for (const r of rows) {
-    const a = r.analysis?.actionable;
-    if (!a) counts.__pending += 1;
-    else if (a in counts) counts[a] += 1;
-    else counts.__pending += 1; // unknown enum value -> treat as pending
+    if (!r.analysis?.actionable) counts.__pending += 1;
+    else counts[groupOf(r, heldOf(r.code))] += 1;
   }
 
+  const GROUP_COLOR: Record<string, string> = Object.fromEntries(
+    GROUP_DEFS.map((g) => [g.key, g.color]),
+  );
   const buttons: { key: string | null; label: string; count: number }[] = [
-    { key: null,           label: "全部",   count: rows.length },
-    { key: "建议买入",     label: "买入",   count: counts["建议买入"] },
-    { key: "观望",         label: "观望",   count: counts["观望"] },
-    { key: "建议卖出",     label: "卖出",   count: counts["建议卖出"] },
-    { key: "不建议入手",   label: "不入手", count: counts["不建议入手"] },
-    { key: "__pending",    label: "待生成", count: counts.__pending },
+    { key: null,         label: "全部",        count: rows.length },
+    { key: "sell",       label: "减仓·卖出",   count: counts.sell },
+    { key: "buy",        label: "加仓·买入",   count: counts.buy },
+    { key: "watch",      label: "观望",        count: counts.watch },
+    { key: "other",      label: "不入手",      count: counts.other },
+    { key: "__pending",  label: "待生成",      count: counts.__pending },
   ];
 
   return (
     <div style={{ marginTop: 16, display: "flex", gap: 6, flexWrap: "wrap" }}>
       {buttons.map((b) => {
         const active = value === b.key;
-        const themed = b.key && b.key !== "__pending" ? ACTIONABLE_STYLE[b.key] : null;
-        const accent = themed?.color ?? "#9ca3af";
+        const accent = (b.key && b.key !== "__pending" ? GROUP_COLOR[b.key] : null) ?? "#9ca3af";
         return (
           <button
             key={b.key ?? "all"}
@@ -822,23 +858,31 @@ function ActionableFilter({
   );
 }
 
-function ActionableCell({ analysis }: { analysis: AnalysisBrief | null }) {
+function ActionableCell({ analysis, serverHeld }: { analysis: AnalysisBrief | null; serverHeld?: boolean }) {
   if (!analysis || !analysis.actionable) {
     return <span style={{ color: "var(--text-dim)", fontSize: 12 }}>待生成</span>;
   }
-  const style = ACTIONABLE_STYLE[analysis.actionable] ?? {
-    color: "#9ca3af",
-    label: analysis.actionable,
-  };
+  // 7/2 持仓立场轴:默认持仓 → 主 chip 显持仓者立场(减仓/离场 等),
+  // tooltip 里保留未持仓视角的 actionable;显式标未持/legacy 行沿用旧 chip。
+  const held = serverHeld !== false;
+  const stance = held ? holderStanceFor(analysis.holder_direction) : null;
+  const style = stance
+    ? { color: stance.color, label: stance.short }
+    : ACTIONABLE_STYLE[analysis.actionable] ?? {
+        color: "#9ca3af",
+        label: analysis.actionable,
+      };
   const flagCount = analysis.red_flags?.length ?? 0;
   const explainBlurb = ACTIONABLE_EXPLAIN[analysis.actionable] ?? "";
-  // 5/28: low-confidence visual degradation. Only applied when actionable
-  // is one of the directional verdicts (买/卖) — observing/不入手 are
+  // 5/28: low-confidence visual degradation. Only applied when the verdict
+  // is directional (买/卖 or 持仓立场的看多/看空) — observing/不入手 are
   // already "no action" so a confidence bucket doesn't change their
   // weight visually. Dashed border + reduced opacity is the signal:
   // "the model said this but isn't sure, slow down".
   const confBucket = confidenceBucket(analysis.confidence);
-  const isActionable = analysis.actionable === "建议买入" || analysis.actionable === "建议卖出";
+  const isActionable = stance
+    ? stance.direction !== "中性"
+    : analysis.actionable === "建议买入" || analysis.actionable === "建议卖出";
   const degraded = confBucket === "low" && isActionable;
   return (
     // Wider on desktop (ultrawide-friendly), still capped so a single line of
@@ -849,10 +893,27 @@ function ActionableCell({ analysis }: { analysis: AnalysisBrief | null }) {
         <Tooltip
           content={
             <div>
-              <div style={{ fontWeight: 600, marginBottom: 4 }}>{analysis.actionable}</div>
-              <div style={{ color: "var(--text-soft)" }}>{explainBlurb}</div>
+              {stance ? (
+                <>
+                  <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                    持仓者视角:{stance.label}
+                  </div>
+                  {analysis.holder_advice && (
+                    <div style={{ color: "var(--text-soft)" }}>{analysis.holder_advice}</div>
+                  )}
+                  <div style={{ marginTop: 4, color: "var(--text-faint)", fontSize: 11 }}>
+                    未持仓视角:{analysis.actionable}。盯盘池默认按已持仓展示,
+                    点名称旁的「持有/未持」可切换。
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div style={{ fontWeight: 600, marginBottom: 4 }}>{analysis.actionable}</div>
+                  <div style={{ color: "var(--text-soft)" }}>{explainBlurb}</div>
+                </>
+              )}
               {/* 6/3: 全局历史命中率 moved to top-of-list HitRateBanner
-                  (per-row tooltip 重复同一数字是噪音). 这里只留 actionable
+                  (per-row tooltip 重复同一数字是噪音). 这里只留结论
                   解释 + 低置信警告。 */}
               {degraded && (
                 <div style={{ marginTop: 4, color: "#f59e0b", fontSize: 11 }}>
@@ -993,23 +1054,35 @@ function hexA(hex: string, a: number): string {
 function HeldToggle({ code, serverHeld }: { code: string; serverHeld?: boolean }) {
   // null = 尚未读出（SSR / 首帧），不上色。
   // ③ 跨设备:服务端有该票最新选择(serverHeld 非 undefined)→ 以**账号**为准、
-  // 同步回 localStorage;否则探 localStorage(只在用户显式标记过时才点亮,不沿用
-  // 详情页 held:true 默认 —— 那是建议偏置,不该把没标过的票全涂红)。
+  // 同步回 localStorage;否则探 localStorage。
+  // 7/2 持仓立场轴:没标过的票默认视为持有(Rush 拍板 — 盯盘池绝大比例是
+  // 持仓票),与操作建议 chip 的默认持仓口径保持一致;显式标记过的用高亮
+  // 区分(红=确认持有),默认态弱化显示。
   const [held, setHeld] = useState<boolean | null>(null);
+  const [explicit, setExplicit] = useState(false);
   useEffect(() => {
     if (serverHeld !== undefined) {
       setHeld(serverHeld);
+      setExplicit(true);
       try { setFunnelState(code, { held: serverHeld }); } catch { /* noop */ }
       return;
     }
     try {
       const raw = window.localStorage.getItem(`rich:funnel:${code}`);
-      setHeld(raw ? JSON.parse(raw).held === true : false);
+      if (raw) {
+        setHeld(JSON.parse(raw).held === true);
+        setExplicit(true);
+      } else {
+        setHeld(true); // 默认持仓
+        setExplicit(false);
+      }
     } catch {
-      setHeld(false);
+      setHeld(true);
+      setExplicit(false);
     }
   }, [code, serverHeld]);
   const active = held === true;
+  const confirmed = active && explicit;
   return (
     <button
       type="button"
@@ -1017,18 +1090,21 @@ function HeldToggle({ code, serverHeld }: { code: string; serverHeld?: boolean }
         e.stopPropagation();
         const next = !active;
         setHeld(next);
+        setExplicit(true);
         setFunnelState(code, { held: next });
         reportFunnelChoice(code); // ③ 服务端埋点(去抖、静默)
       }}
-      title={active ? "已标记持有，点一下取消" : "标记为持有"}
+      title={active
+        ? (explicit ? "已标记持有，点一下改为未持仓" : "默认按持有展示，点一下标记为未持仓")
+        : "已标记未持仓，点一下标记为持有"}
       style={{
         padding: "1px 7px",
         borderRadius: 10,
-        border: `1px solid ${active ? "#ef4444" : "var(--border)"}`,
-        background: active ? "rgba(239, 68, 68, 0.15)" : "transparent",
-        color: active ? "#ef4444" : "var(--text-dim)",
+        border: `1px solid ${confirmed ? "#ef4444" : "var(--border)"}`,
+        background: confirmed ? "rgba(239, 68, 68, 0.15)" : "transparent",
+        color: confirmed ? "#ef4444" : active ? "var(--text-soft)" : "var(--text-dim)",
         fontSize: 11,
-        fontWeight: active ? 600 : 400,
+        fontWeight: confirmed ? 600 : 400,
         cursor: "pointer",
         whiteSpace: "nowrap",
         lineHeight: 1.4,
@@ -1079,6 +1155,14 @@ function stockRow(r: StockRow, onToggleStar: (code: string) => void, serverHeld?
         ...td,
         textAlign: "right",
         fontFamily: "monospace",
+        color: r.change_pct == null ? "var(--text-soft)" : r.change_pct >= 0 ? "#ef4444" : "#22c55e",
+      }}>
+        {r.price != null ? r.price.toFixed(2) : "-"}
+      </td>
+      <td style={{
+        ...td,
+        textAlign: "right",
+        fontFamily: "monospace",
         color: r.change_pct == null ? "var(--text-muted)" : r.change_pct >= 0 ? "#ef4444" : "#22c55e",
       }}>
         {r.change_pct != null ? `${r.change_pct >= 0 ? "+" : ""}${r.change_pct.toFixed(2)}%` : "-"}
@@ -1101,7 +1185,7 @@ function stockRow(r: StockRow, onToggleStar: (code: string) => void, serverHeld?
         <IndustryWaterCell row={r} />
       </td>
       <td style={td}>
-        <ActionableCell analysis={r.analysis} />
+        <ActionableCell analysis={r.analysis} serverHeld={serverHeld} />
       </td>
       <td style={{ ...td, color: "var(--text-faint)", fontSize: 12 }}>
         {r.last_ts ? new Date(r.last_ts).toLocaleString("zh-CN", { hour: "2-digit", minute: "2-digit", month: "numeric", day: "numeric" }) : "未抓取"}

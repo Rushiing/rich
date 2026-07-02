@@ -212,6 +212,31 @@ def _validate_price_fields(payload: dict[str, Any], corrections: list[str]) -> N
         _fix_pair(outlook, "target_low", "target_high")
 
 
+def _validate_stance_consistency(payload: dict[str, Any], corrections: list[str]) -> None:
+    """7/2 持仓立场轴:拦 actionable 与持仓象限方向的**真矛盾**(prompt 已
+    明令禁止,但模型偶尔还是会打架):
+      - actionable=建议买入 但 持仓小幅波动档(holding_small)看空
+      - actionable=建议卖出/不建议入手 但 holding_small 看多
+    只记可见 correction 不改内容 — 方向和结论谁对谁错这里判不了,标出来
+    让用户降权重看待 + 让我们从 red_flags 里统计矛盾率。
+    (注意 603986 那类"不建议入手 + 持仓看空"**不是**矛盾 — 那是同一
+    看空立场对两类受众,不在此列。)"""
+    key_table = payload.get("key_table")
+    if not isinstance(key_table, dict):
+        return
+    sdir = key_table.get("scenario_direction")
+    if not isinstance(sdir, dict):
+        return
+    actionable = key_table.get("actionable")
+    hs = sdir.get("holding_small")
+    if actionable == "建议买入" and hs == "看空":
+        _trip(corrections,
+              "⚠️ 结论自相矛盾:顶部建议买入但持仓立场看空,请降权重看待")
+    elif actionable in ("建议卖出", "不建议入手") and hs == "看多":
+        _trip(corrections,
+              f"⚠️ 结论自相矛盾:顶部{actionable}但持仓立场看多,请降权重看待")
+
+
 def _validate_earnings_collapse(
     payload: dict[str, Any], w: Watchlist, corrections: list[str],
 ) -> None:
@@ -338,6 +363,7 @@ def validate_and_correct(
     corrections: list[str] = []
     _validate_st(payload, w, corrections)
     _validate_price_fields(payload, corrections)
+    _validate_stance_consistency(payload, corrections)
     _validate_earnings_collapse(payload, w, corrections)
     _validate_technical_breakdown(payload, snapshot, corrections)
     _validate_numeric_consistency(payload, snapshot, corrections)
