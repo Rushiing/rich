@@ -160,6 +160,58 @@ def _validate_numeric_consistency(
                   f"⚠️ 建议买入价上限 {buy_high:.2f} 超过当前价 30%，已下调")
 
 
+def _validate_price_fields(payload: dict[str, Any], corrections: list[str]) -> None:
+    """7/2: the tool schema marks buy/sell price fields as required numbers,
+    but some gateways don't enforce it (seen: MiniMax-M2.5 returning
+    sell_price_low/high=null on a 不建议入手 verdict). We do NOT fabricate
+    prices — the rule is:
+      - non-numeric garbage (strings etc.) is coerced to float or nulled
+      - a half-null pair is nulled entirely (a one-sided range is meaningless)
+      - a fully-null top-level pair trips a visible correction, so the user
+        knows the model omitted it (frontend renders "—")
+    Tier-level buy pairs and next_day_outlook targets get the same coercion
+    silently — a null range there is a legitimate "don't act" expression.
+    """
+    key_table = payload.get("key_table")
+    if not isinstance(key_table, dict):
+        return
+
+    def _num(v: Any) -> float | None:
+        if isinstance(v, bool):
+            return None
+        if isinstance(v, (int, float)):
+            return float(v)
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    def _fix_pair(container: dict[str, Any], low_key: str, high_key: str) -> bool:
+        """Coerce both ends; null the pair if either end is missing.
+        Returns True when the pair ends up null."""
+        low, high = _num(container.get(low_key)), _num(container.get(high_key))
+        if low is None or high is None:
+            container[low_key] = container[high_key] = None
+            return True
+        container[low_key], container[high_key] = low, high
+        return False
+
+    if _fix_pair(key_table, "buy_price_low", "buy_price_high"):
+        _trip(corrections, "⚠️ 模型未给出买入区间，已置空")
+    if _fix_pair(key_table, "sell_price_low", "sell_price_high"):
+        _trip(corrections, "⚠️ 模型未给出卖出区间，已置空")
+
+    tiers = key_table.get("actionable_tiers")
+    if isinstance(tiers, dict):
+        for tier in tiers.values():
+            if isinstance(tier, dict):
+                _fix_pair(tier, "buy_price_low", "buy_price_high")
+
+    outlook = key_table.get("next_day_outlook")
+    if isinstance(outlook, dict):
+        _fix_pair(outlook, "target_low", "target_high")
+
+
 def _validate_earnings_collapse(
     payload: dict[str, Any], w: Watchlist, corrections: list[str],
 ) -> None:
@@ -285,6 +337,7 @@ def validate_and_correct(
     are prepended to key_table.red_flags so the user sees what rules fired."""
     corrections: list[str] = []
     _validate_st(payload, w, corrections)
+    _validate_price_fields(payload, corrections)
     _validate_earnings_collapse(payload, w, corrections)
     _validate_technical_breakdown(payload, snapshot, corrections)
     _validate_numeric_consistency(payload, snapshot, corrections)
