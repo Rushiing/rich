@@ -778,7 +778,7 @@ function HitRateBanner({ hitRate }: { hitRate: HitRateSummary | null }) {
           AI 历史命中率
         </span>
         <span style={{ color: "var(--text-faint)", fontSize: 11 }}>
-          基于 v2.5-single 模型 · 共 {hitRate.total_scored} 条已结算样本
+          基于单股解析历史 · 共 {hitRate.total_scored} 条已结算样本
         </span>
       </div>
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
