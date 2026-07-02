@@ -116,11 +116,14 @@ export type AnalysisBatchStatus = { running: boolean };
 export type AnalysisJobResult = { started: boolean; already_running?: boolean };
 export type AnalysisJobStatus = { running: boolean; error?: string | null };
 
+// 7/2: price fields are nullable — the tool schema says required number,
+// but some gateways/models (seen: MiniMax-M2.5 on a 不建议入手 verdict)
+// return null anyway, and those rows are already persisted. UI renders "—".
 export type ActionableTier = {
   action: string;
   position_pct: number;
-  buy_price_low: number;
-  buy_price_high: number;
+  buy_price_low: number | null;
+  buy_price_high: number | null;
   hold_period: string;
   reason: string;
 };
@@ -133,8 +136,8 @@ export type ActionableTiers = {
 
 export type NextDayOutlook = {
   trend: string;          // 看涨 / 看平 / 看跌
-  target_low: number;
-  target_high: number;
+  target_low: number | null;
+  target_high: number | null;
   reasoning: string;
   confidence: string;
 };
@@ -144,10 +147,10 @@ export type KeyTable = {
   actionable: string;
   one_line_reason: string;
   red_flags: string[];
-  buy_price_low: number;
-  buy_price_high: number;
-  sell_price_low: number;
-  sell_price_high: number;
+  buy_price_low: number | null;
+  buy_price_high: number | null;
+  sell_price_low: number | null;
+  sell_price_high: number | null;
   position_pct: number;
   hold_period: string;
   stop_loss_levels: StopLossLevel[];

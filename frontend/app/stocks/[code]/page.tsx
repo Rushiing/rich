@@ -551,7 +551,8 @@ function HoldingCard({
   }
   // Distance to the sell range.
   let sellNote: { text: string; color: string } | null = null;
-  if (keyTable && price != null) {
+  if (keyTable && price != null
+      && keyTable.sell_price_low != null && keyTable.sell_price_high != null) {
     if (price >= keyTable.sell_price_low) {
       sellNote = { text: `已进入 AI 卖出区间（${keyTable.sell_price_low.toFixed(2)}–${keyTable.sell_price_high.toFixed(2)}），可考虑减仓`, color: "#facc15" };
     } else {
@@ -898,7 +899,9 @@ function KeyTableCard({
               });
             }
           } else if (view.action === "建议买入") {
-            seg.push({ k: "买入区间", v: `${view.buy_price_low.toFixed(2)} – ${view.buy_price_high.toFixed(2)}` });
+            if (view.buy_price_low != null && view.buy_price_high != null) {
+              seg.push({ k: "买入区间", v: `${view.buy_price_low.toFixed(2)} – ${view.buy_price_high.toFixed(2)}` });
+            }
             if (firstStop) {
               seg.push({ k: "止损", v: firstStop.price.toFixed(2) });
             }
@@ -1030,16 +1033,16 @@ function KeyTableCard({
           <tbody>
             {funnel.held ? (
               <>
-                <KtRow label="合理卖出价" value={`${kt.sell_price_low.toFixed(2)} – ${kt.sell_price_high.toFixed(2)}`} />
+                <KtRow label="合理卖出价" value={fmtPriceRange(kt.sell_price_low, kt.sell_price_high)} />
                 <KtRow label="建议仓位" value={`${view.position_pct.toFixed(0)}%`} />
                 <KtRow label="持有时间" value={view.hold_period} />
-                <KtRow label="合理买入价（加仓参考）" value={`${view.buy_price_low.toFixed(2)} – ${view.buy_price_high.toFixed(2)}`} />
+                <KtRow label="合理买入价（加仓参考）" value={fmtPriceRange(view.buy_price_low, view.buy_price_high)} />
               </>
             ) : (
               <>
-                <KtRow label="合理买入价" value={`${view.buy_price_low.toFixed(2)} – ${view.buy_price_high.toFixed(2)}`} />
+                <KtRow label="合理买入价" value={fmtPriceRange(view.buy_price_low, view.buy_price_high)} />
                 <KtRow label="建议仓位" value={`${view.position_pct.toFixed(0)}%`} />
-                <KtRow label="合理卖出价（参考）" value={`${kt.sell_price_low.toFixed(2)} – ${kt.sell_price_high.toFixed(2)}`} />
+                <KtRow label="合理卖出价（参考）" value={fmtPriceRange(kt.sell_price_low, kt.sell_price_high)} />
               </>
             )}
           </tbody>
@@ -1177,9 +1180,11 @@ function NextDayOutlookCard({ outlook }: { outlook: NextDayOutlook }) {
           <span style={{ fontSize: 20, fontWeight: 600, color: trendColor }}>
             {outlook.trend}
           </span>
-          <span style={{ color: "var(--text-soft)", fontSize: 13, fontFamily: "monospace" }}>
-            模型预估区间 {outlook.target_low.toFixed(2)} – {outlook.target_high.toFixed(2)}
-          </span>
+          {outlook.target_low != null && outlook.target_high != null && (
+            <span style={{ color: "var(--text-soft)", fontSize: 13, fontFamily: "monospace" }}>
+              模型预估区间 {outlook.target_low.toFixed(2)} – {outlook.target_high.toFixed(2)}
+            </span>
+          )}
         </div>
         {outlook.reasoning && (
           <p style={{ color: "var(--text)", fontSize: 13, marginTop: 8, marginBottom: 0, lineHeight: 1.5 }}>
@@ -1189,6 +1194,13 @@ function NextDayOutlookCard({ outlook }: { outlook: NextDayOutlook }) {
       </div>
     </section>
   );
+}
+
+// 7/2: some persisted rows carry null buy/sell prices (gateway ignored the
+// required-number schema) — render "—" instead of crashing.
+function fmtPriceRange(low: number | null, high: number | null): string {
+  if (low == null || high == null) return "—";
+  return `${low.toFixed(2)} – ${high.toFixed(2)}`;
 }
 
 function KtRow({ label, value }: { label: string; value: string }) {
@@ -1285,7 +1297,7 @@ function PriceAlertBanner({
   const DELTA = 0.05;
   let msg: string | null = null;
 
-  if (actionable === "建议买入") {
+  if (actionable === "建议买入" && kt.buy_price_low != null && kt.buy_price_high != null) {
     if (current > kt.buy_price_high * (1 + DELTA)) {
       const pct = ((current - kt.buy_price_high) / kt.buy_price_high * 100).toFixed(1);
       msg = `当前价 ${current.toFixed(2)} 已超出 AI 推荐买入上限 ${kt.buy_price_high.toFixed(2)} 约 ${pct}%，可能已错过推荐区间,建议重新评估或重新生成解析`;
@@ -1293,7 +1305,7 @@ function PriceAlertBanner({
       const pct = ((kt.buy_price_low - current) / kt.buy_price_low * 100).toFixed(1);
       msg = `当前价 ${current.toFixed(2)} 已低于 AI 推荐买入下限 ${kt.buy_price_low.toFixed(2)} 约 ${pct}%，警惕意外利空,建议重新评估`;
     }
-  } else if (actionable === "建议卖出") {
+  } else if (actionable === "建议卖出" && kt.sell_price_low != null && kt.sell_price_high != null) {
     if (current < kt.sell_price_low * (1 - DELTA)) {
       const pct = ((kt.sell_price_low - current) / kt.sell_price_low * 100).toFixed(1);
       msg = `当前价 ${current.toFixed(2)} 已低于 AI 推荐卖出下限 ${kt.sell_price_low.toFixed(2)} 约 ${pct}%，可能已错过卖点`;
